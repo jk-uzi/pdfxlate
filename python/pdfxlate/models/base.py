@@ -17,6 +17,7 @@ three separate dispatch tables.
 from __future__ import annotations
 
 import abc
+import contextvars
 import logging
 import re
 from string import Template
@@ -25,6 +26,18 @@ from typing import Any, Callable, ClassVar
 from pdfxlate.cache import TranslationCache
 
 logger = logging.getLogger(__name__)
+
+# Whether a freshly built adapter should have caching on.  ``build_adapter``
+# sets this for the duration of the constructor call; ``ModelAdapter.__init__``
+# reads it when it creates the cache.  The flag has to be known *before*
+# construction because ``TranslationCache.__init__`` opens and initialises the
+# sqlite file eagerly, so flipping it afterwards would still leave an empty
+# database behind (and make a read-only cache directory fatal).  A contextvar
+# carries the value through the provider subclass constructor, whose signature
+# this module does not control.
+_CACHE_ENABLED: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "pdfxlate_cache_enabled", default=True
+)
 
 # Placeholders the typesetter injects for formulas.  A translation that drops
 # or mangles these corrupts the output PDF, so they are validated after every
@@ -97,7 +110,12 @@ class ModelAdapter(abc.ABC):
         self.ignore_cache = ignore_cache
         # The ultrafast path sets this to bypass cache reads and writes.
         self.no_cache = False
-        self.cache = TranslationCache(self.name, self._cache_params())
+        # ``_CACHE_ENABLED`` is set by build_adapter for the duration of this
+        # constructor call.  Passing it straight into TranslationCache means a
+        # disabled cache never opens (or creates) the sqlite database.
+        self.cache = TranslationCache(
+            self.name, self._cache_params(), enabled=_CACHE_ENABLED.get()
+        )
 
     # --- cache identity -------------------------------------------------
     def _cache_params(self) -> dict[str, Any]:
@@ -197,21 +215,23 @@ def build_adapter(
     """Instantiate the adapter registered for ``provider``.
 
     ``cache_enabled`` mirrors ``CacheSettings.enabled``: when false the
-    adapter's cache is switched off entirely, so nothing is read or written.
-    ``ignore_cache`` is unrelated — it only skips the cache for a single
-    :meth:`ModelAdapter.translate` call.
+    adapter's cache is switched off entirely, so nothing is read or written
+    and no database file is created.  ``ignore_cache`` is unrelated — it only
+    skips the cache for a single :meth:`ModelAdapter.translate` call.
     """
-    adapter = get_adapter(provider)(
-        profile,
-        lang_in,
-        lang_out,
-        prompt=prompt,
-        ignore_cache=ignore_cache,
-    )
-    # Adapter subclasses predate this flag and do not take it as a constructor
-    # argument, so apply it to the cache object here.  TranslationCache treats
-    # ``enabled=False`` as a full bypass of get/set/clear.
-    adapter.cache.enabled = cache_enabled
+    # Publish the flag only for the constructor call, so TranslationCache can
+    # skip opening the database instead of being disabled after the fact.
+    token = _CACHE_ENABLED.set(cache_enabled)
+    try:
+        adapter = get_adapter(provider)(
+            profile,
+            lang_in,
+            lang_out,
+            prompt=prompt,
+            ignore_cache=ignore_cache,
+        )
+    finally:
+        _CACHE_ENABLED.reset(token)
     return adapter
 
 
