@@ -101,9 +101,10 @@ def _endpoint_of(url: str) -> str:
 _LAYOUT_REPO = "wybxc/DocLayout-YOLO-DocStructBench-onnx"
 _LAYOUT_FILE = "doclayout_yolo_docstructbench_imgsz1024.onnx"
 
+_GO_NOTO_FILE = "GoNotoKurrent-Regular.ttf"
 _GO_NOTO_URL = (
     "https://github.com/satbyy/go-noto-universal/releases/download/v7.0/"
-    "GoNotoKurrent-Regular.ttf"
+    f"{_GO_NOTO_FILE}"
 )
 _SOURCE_HAN_URL = (
     "https://github.com/timelic/source-han-serif/releases/download/main/{name}"
@@ -120,7 +121,10 @@ _CJK_FONTS = {
     "ko": "SourceHanSerifKR-Regular.ttf",
 }
 
-# Languages covered by GoNotoKurrent (non-CJK scripts).
+# Non-CJK scripts GoNotoKurrent is known to cover (upstream's ``noto_list``).
+# This is not the full set of languages GoNoto can typeset: Latin and other
+# scripts outside this list also use it, so membership only distinguishes a
+# *recognised* GoNoto language from an unknown code, not supported/unsupported.
 _NOTO_LANGS = {
     "am", "ar", "bn", "bg", "chr", "el", "gu", "iw", "hi", "kn",
     "ml", "mr", "ru", "sr", "ta", "te", "th", "ur", "uk",
@@ -134,16 +138,40 @@ def layout_model_asset() -> Asset:
     return Asset(filename=_LAYOUT_FILE, urls=urls, subdir="models")
 
 
-def font_asset(lang: str) -> Asset:
-    """Return the font asset appropriate for the target language."""
+def font_filename(lang: str) -> str:
+    """Return the font file used to typeset ``lang``.
+
+    The single source of truth for the language→font mapping: CJK codes get a
+    region-specific SourceHanSerif face, everything else gets the pan-Noto
+    fallback.  Unknown codes fall back to GoNoto rather than raising: the
+    target language comes from user input, so a typo or a language we have not
+    enumerated should not abort an otherwise valid translation.  A debug log
+    records the surprise for whoever debugs a mis-rendered script later.
+    """
     lang = lang.lower()
     if name := _CJK_FONTS.get(lang):
-        return Asset(
-            filename=name,
-            urls=(_SOURCE_HAN_URL.format(name=name),),
-            subdir="fonts",
-        )
-    return Asset(filename="GoNotoKurrent-Regular.ttf", urls=(_GO_NOTO_URL,), subdir="fonts")
+        return name
+    if lang not in _NOTO_LANGS:
+        logger.debug("unknown target language %r; falling back to GoNotoKurrent", lang)
+    return _GO_NOTO_FILE
+
+
+def font_asset(lang: str) -> Asset:
+    """Return the font asset appropriate for the target language."""
+    name = font_filename(lang)
+    if name == _GO_NOTO_FILE:
+        return Asset(filename=name, urls=(_GO_NOTO_URL,), subdir="fonts")
+    return Asset(filename=name, urls=(_SOURCE_HAN_URL.format(name=name),), subdir="fonts")
+
+
+def supported_languages() -> set[str]:
+    """Every language code with an explicit font mapping.
+
+    CJK codes map to a region face and :data:`_NOTO_LANGS` to GoNoto.  Other
+    languages still resolve (see :func:`font_filename`), so this is the set of
+    *recognised* codes, not the set that can be translated.
+    """
+    return set(_CJK_FONTS) | set(_NOTO_LANGS)
 
 
 def ocr_data_asset(language: str) -> Asset:
@@ -265,14 +293,26 @@ def ensure_ocr_data(language: str, on_progress=None) -> Path:
     return cache
 
 
-def status() -> dict[str, bool]:
-    """Report which assets are already present, for the UI's first-run guide."""
-    return {
+def status(lang: str | None = None) -> dict[str, bool]:
+    """Report which assets are already present, for the UI's first-run guide.
+
+    ``font_zh``/``font_ja``/``font_ko`` are kept for the renderer, which still
+    reads ``font_zh`` to decide whether to show the first-run banner.  Passing
+    ``lang`` additionally reports ``font_ready_for`` for that target language,
+    so a caller translating to ``ru``/``ar``/``th`` (GoNoto) is not told its
+    font is missing just because no CJK face is cached.  ``lang`` defaults to
+    ``None`` and the key is omitted then, which keeps ``sidecar.py``'s
+    argument-less ``assets.status`` call byte-for-byte compatible.
+    """
+    result = {
         "layout_model": layout_model_asset().target.exists(),
         "font_zh": font_asset("zh").target.exists(),
         "font_ja": font_asset("ja").target.exists(),
         "font_ko": font_asset("ko").target.exists(),
     }
+    if lang is not None:
+        result["font_ready_for"] = font_asset(lang).target.exists()
+    return result
 
 
 def verify_layout_metadata(model_path: Path) -> tuple[int, list[str]]:
