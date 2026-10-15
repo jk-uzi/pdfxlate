@@ -121,6 +121,19 @@ def test_build_adapter_disabled_cache_neither_reads_nor_writes(temp_cache):
     assert enabled.calls == 1
 
 
+def test_build_adapter_disabled_cache_creates_no_file(temp_cache):
+    """Disabling the cache must not leave a database behind on disk.
+
+    TranslationCache opens and initialises its sqlite file in __init__, so the
+    flag has to reach it at construction time; disabling the adapter afterwards
+    would still create the file (and make a read-only cache dir fatal).
+    """
+    db = cache_mod.paths.cache_file()
+    assert not db.exists()
+    build_adapter("counting_test", FakeProfile(), "en", "zh", cache_enabled=False)
+    assert not db.exists()
+
+
 def test_placeholder_preserved_passes(temp_cache):
     adapter = CountingAdapter(FakeProfile(), "en", "zh")
     out = adapter.translate("See {v0} and {v1}.")
