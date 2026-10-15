@@ -1,0 +1,23 @@
+{
+  "name": "pdfxlate",
+  "version": "0.1.0",
+  "description": "Layout-preserving PDF translation with any OpenAI-compatible model",
+  "main": "out/main/main.js",
+  "author": "pdfxlate",
+  "license": "AGPL-3.0-or-later",
+  "scripts": {
+    "build:main": "tsc -p tsconfig.node.json",
+    "build:renderer": "tsc -p tsconfig.renderer.json",
+    "build": "npm run build:main && npm run build:renderer && npm run copy:static",
+    "copy:static": "node scripts/copy-static.mjs",
+    "start": "npm run build && electron .",
+    "dev": "npm run build && electron . --dev",
+    "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.renderer.json --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "electron": "^33.2.0",
+    "typescript": "^5.7.2"
+  },
+  "dependencies": {}
+}

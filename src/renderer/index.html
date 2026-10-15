@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:;"
+    />
+    <title>pdfxlate</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header class="titlebar">
+      <h1>pdfxlate</h1>
+      <span class="subtitle">Layout-preserving PDF translation</span>
+      <span id="engine-status" class="status status--pending">starting…</span>
+    </header>
+
+    <main>
+      <!-- First-run asset setup -->
+      <section id="setup-banner" class="banner hidden">
+        <div class="banner__text">
+          <strong>First run:</strong> the layout model (75&nbsp;MB) and fonts must be
+          downloaded before translating. This happens once.
+        </div>
+        <button id="btn-download-assets" class="btn btn--primary">Download now</button>
+      </section>
+
+      <!-- File selection -->
+      <section class="card">
+        <h2>1. Documents</h2>
+        <div id="dropzone" class="dropzone">
+          <p>Drop PDF files here, or</p>
+          <button id="btn-pick" class="btn">Choose files…</button>
+        </div>
+        <ul id="file-list" class="file-list"></ul>
+      </section>
+
+      <!-- Model configuration -->
+      <section class="card">
+        <h2>2. Model</h2>
+        <div class="grid">
+          <label>
+            Profile
+            <select id="profile-select"></select>
+          </label>
+          <label>
+            Provider
+            <input id="field-provider" type="text" placeholder="openai_compat" />
+          </label>
+          <label>
+            Base URL
+            <input id="field-base-url" type="text" placeholder="https://api.example.com/v1" />
+          </label>
+          <label>
+            API key
+            <input id="field-api-key" type="password" placeholder="sk-…" />
+          </label>
+          <label>
+            Model
+            <input id="field-model" type="text" placeholder="model-name" />
+          </label>
+          <label>
+            Reasoning effort
+            <select id="field-reasoning">
+              <option value="">(default)</option>
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+            </select>
+          </label>
+          <label>
+            Temperature
+            <input id="field-temperature" type="number" step="0.1" min="0" max="2" value="0" />
+          </label>
+          <label>
+            Extra body (JSON)
+            <input
+              id="field-extra-body"
+              type="text"
+              placeholder='{"chat_template_kwargs":{"enable_thinking":true}}'
+            />
+          </label>
+        </div>
+        <div class="row">
+          <button id="btn-save-profile" class="btn">Save profile</button>
+          <span id="profile-msg" class="msg"></span>
+        </div>
+      </section>
+
+      <!-- Translation options -->
+      <section class="card">
+        <h2>3. Options</h2>
+        <div class="grid">
+          <label>
+            Source language
+            <input id="field-lang-in" type="text" value="en" />
+          </label>
+          <label>
+            Target language
+            <input id="field-lang-out" type="text" value="zh" />
+          </label>
+          <label>
+            Mode
+            <select id="field-mode">
+              <option value="fast">fast — ONNX layout detection</option>
+              <option value="ultrafast">ultrafast — native text positions</option>
+            </select>
+          </label>
+          <label>
+            Threads
+            <input id="field-thread" type="number" min="1" max="64" value="4" />
+          </label>
+          <label>
+            Pages (optional)
+            <input id="field-pages" type="text" placeholder="1,3-5" />
+          </label>
+          <label>
+            Output directory
+            <div class="row">
+              <input id="field-output" type="text" readonly placeholder="(same folder as input)" />
+              <button id="btn-pick-output" class="btn btn--small">…</button>
+            </div>
+          </label>
+        </div>
+        <div class="row row--actions">
+          <button id="btn-translate" class="btn btn--primary" disabled>Translate</button>
+          <button id="btn-cancel" class="btn btn--danger hidden">Cancel</button>
+        </div>
+      </section>
+
+      <!-- Progress -->
+      <section id="progress-card" class="card hidden">
+        <h2>Progress</h2>
+        <div class="progress">
+          <div id="progress-bar" class="progress__bar"></div>
+        </div>
+        <p id="progress-text" class="progress__text">Waiting…</p>
+      </section>
+
+      <!-- Results -->
+      <section id="result-card" class="card hidden">
+        <h2>Results</h2>
+        <ul id="result-list" class="file-list"></ul>
+      </section>
+
+      <!-- Log -->
+      <details class="card log-card">
+        <summary>Engine log</summary>
+        <pre id="log-pane"></pre>
+      </details>
+    </main>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

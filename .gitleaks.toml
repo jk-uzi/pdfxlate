@@ -1,0 +1,50 @@
+# gitleaks configuration for pdfxlate.
+#
+# The default ruleset is used; this file only narrows the scan scope so build
+# artefacts and the vendored upstream checkout cannot produce noise that
+# trains reviewers to ignore the scanner.
+#
+# Run manually:
+#   gitleaks detect --source . --no-git        # scan the working tree
+#   gitleaks protect --staged                  # scan only what is staged
+#   gitleaks detect                            # scan full git history
+
+[extend]
+# Keep the built-in rules and add to them rather than replacing them.
+useDefault = true
+
+[allowlist]
+description = "Generated and vendored paths that must not be scanned"
+
+# These never reach the repository:
+#   - dist/, out/, build/  build output (contains minified Electron bundles
+#                          whose packed strings trip generic-api-key)
+#   - references/          upstream PDFMathTranslate clone, own .git, gitignored
+#   - node_modules/, .venv/ third-party dependencies
+#   - assets downloaded at runtime (models, fonts, OCR data)
+paths = [
+    '''dist/''',
+    '''out/''',
+    '''build/''',
+    '''references/''',
+    '''node_modules/''',
+    '''\.venv/''',
+    '''__pycache__/''',
+    '''\.pytest_cache/''',
+    '''package-lock\.json''',
+    '''\.onnx$''',
+    '''\.traineddata$''',
+    '''\.part$''',
+]
+
+# Documentation and test fixtures legitimately contain placeholder credentials
+# such as "sk-xxxx" or an example proxy URL. They are not real secrets.
+# Note: this file itself is excluded from the pattern fallback in
+# .githooks/pre-commit, because writing these examples here would otherwise
+# trip the AWS key pattern.
+regexes = [
+    '''sk-x{3,}''',
+    '''your-api-key''',
+    '''your-proxy''',
+    '''\[Your Key\]''',
+]

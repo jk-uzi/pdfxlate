@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+#
+# Pre-commit hook: block secrets from entering a commit.
+#
+# Activated with:
+#   git config core.hooksPath .githooks
+#
+# This is a plain git hook rather than a pre-commit framework hook on purpose:
+# it has no network dependency and no Python requirement, so it cannot silently
+# fail to install and leave the repository unprotected. It uses the gitleaks
+# binary if available, and falls back to pattern matching if not.
+#
+# Bypass for a known false positive (use sparingly, and say why in the message):
+#   SKIP_SECRET_SCAN=1 git commit ...
+#   git commit --no-verify ...
+
+set -uo pipefail
+
+if [[ "${SKIP_SECRET_SCAN:-}" == "1" ]]; then
+  echo "pre-commit: SKIP_SECRET_SCAN=1, skipping secret scan." >&2
+  exit 0
+fi
+
+status=0
+
+# --- 1. gitleaks on the staged diff ---------------------------------------
+# Preferred scanner: entropy analysis plus a large rule set, so it catches
+# credentials that a fixed pattern list would miss.
+GITLEAKS="$(command -v gitleaks || true)"
+if [[ -z "$GITLEAKS" && -x "$HOME/go/bin/gitleaks" ]]; then
+  GITLEAKS="$HOME/go/bin/gitleaks"
+fi
+
+if [[ -n "$GITLEAKS" ]]; then
+  if ! "$GITLEAKS" protect --staged --redact --no-banner --config .gitleaks.toml; then
+    echo "" >&2
+    echo "pre-commit: gitleaks found a potential secret in the staged changes." >&2
+    echo "            If it is a false positive, add an allowlist entry to" >&2
+    echo "            .gitleaks.toml rather than bypassing the hook." >&2
+    status=1
+  fi
+else
+  echo "pre-commit: gitleaks not found; using pattern fallback." >&2
+  echo "            Install it with: go install github.com/zricethezav/gitleaks/v8@latest" >&2
+fi
+
+# --- 2. Pattern fallback --------------------------------------------------
+# Runs even when gitleaks is present: cheap, and catches the shapes that
+# matter most if the scanner is missing or its rules change.
+staged_files=$(git diff --cached --name-only --diff-filter=ACM)
+if [[ -n "$staged_files" ]]; then
+  # Only scan text files. The lockfile is machine-generated and huge, and the
+  # scanner's own config legitimately contains pattern examples that would
+  # otherwise match.
+  patterns='(-----BEGIN [A-Z ]*PRIVATE KEY-----)|(AKIA[0-9A-Z]{16})|(sk-[A-Za-z0-9_-]{20,})|(ghp_[A-Za-z0-9]{36})|(xox[baprs]-[A-Za-z0-9-]{10,})'
+  hits=$(echo "$staged_files" \
+    | grep -vE '^(package-lock\.json|\.gitleaks\.toml|\.githooks/)' \
+    | while IFS= read -r f; do
+        [[ -f "$f" ]] || continue
+        grep -nEI "$patterns" "$f" 2>/dev/null | sed "s|^|$f:|"
+      done)
+  if [[ -n "$hits" ]]; then
+    echo "" >&2
+    echo "pre-commit: credential-shaped strings found in staged files:" >&2
+    echo "$hits" >&2
+    status=1
+  fi
+fi
+
+# --- 3. Large files -------------------------------------------------------
+# Catches a downloaded model or build artefact being staged by accident.
+# 2 MB is well above any source file here.
+big=$(echo "$staged_files" | while IFS= read -r f; do
+  [[ -f "$f" ]] || continue
+  size=$(wc -c <"$f" 2>/dev/null || echo 0)
+  if [[ "$size" -gt 2097152 ]]; then
+    printf '%s (%.1f MB)\n' "$f" "$(echo "$size / 1048576" | bc -l 2>/dev/null || echo "$size")"
+  fi
+done)
+if [[ -n "$big" ]]; then
+  echo "" >&2
+  echo "pre-commit: these staged files exceed 2 MB:" >&2
+  echo "$big" >&2
+  echo "            Large binaries usually belong in .gitignore, not the repo." >&2
+  status=1
+fi
+
+if [[ "$status" -ne 0 ]]; then
+  echo "" >&2
+  echo "pre-commit: commit blocked." >&2
+  exit 1
+fi
+
+exit 0

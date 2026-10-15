@@ -1,0 +1,75 @@
+# --- Python --------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtualenvs (python/.venv is ~480 MB)
+.venv/
+venv/
+env/
+
+# Packaging / build output
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Test & tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# PyInstaller (optional dev dependency)
+*.manifest
+
+# --- Node / Electron -----------------------------------------------------
+node_modules/
+out/
+release/
+.npm/
+.npmrc
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# --- Reference material --------------------------------------------------
+# Upstream PDFMathTranslate checkout kept only for porting comparison.  It is
+# a full clone with its own .git, so it must never be committed here.
+references/
+
+# --- Downloaded runtime assets -------------------------------------------
+# assets.py fetches these on first run; they belong in the user data
+# directory, never in the repository.
+*.onnx
+*.traineddata
+*.part
+
+# --- Secrets -------------------------------------------------------------
+# config.yaml lives in the platform config dir, but keep local copies out of
+# the repository in case one is created here during testing.
+.env
+.env.*
+!.env.example
+config.yaml
+
+# Key material and credential files. These should never be in the tree at
+# all, but listing them means an accidental `git add -A` cannot stage one.
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*.json
+service-account*.json
+.ssh/
+*.kdbx
+
+# --- OS / editor ---------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
+*~

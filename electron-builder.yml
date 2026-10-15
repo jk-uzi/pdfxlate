@@ -1,0 +1,47 @@
+appId: com.pdfxlate.app
+productName: pdfxlate
+copyright: Copyright © 2026 pdfxlate contributors
+
+directories:
+  output: dist
+  buildResources: build
+
+files:
+  - out/**/*
+  - package.json
+
+# The PyInstaller onedir output is bundled as a resource directory and located
+# at runtime via process.resourcesPath (see src/main/sidecar.ts).
+extraResources:
+  - from: python/dist/pdfxlate-sidecar
+    to: sidecar
+    filter:
+      - "**/*"
+
+# --- Linux -----------------------------------------------------------------
+linux:
+  target:
+    - AppImage
+  category: Office
+  synopsis: Translate PDF documents while preserving their layout
+
+# --- Windows ---------------------------------------------------------------
+win:
+  target:
+    - nsis
+  # Code signing is intentionally omitted: it requires a purchased certificate.
+  # Unsigned builds trigger a SmartScreen warning on first run.
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  perMachine: false
+
+# --- macOS -----------------------------------------------------------------
+mac:
+  target:
+    - dmg
+  category: public.app-category.productivity
+  # Unsigned builds are blocked by Gatekeeper; notarisation needs a Developer
+  # ID certificate. Remove the line below once signing is configured.
+  identity: null
+  hardenedRuntime: false
