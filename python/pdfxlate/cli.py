@@ -43,6 +43,32 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--prompt", help="Path to a custom prompt template file")
 
     parser.add_argument(
+        "--backend",
+        choices=["auto", "cpu", "cuda", "dml"],
+        help="ONNX Runtime execution provider; overrides layout.backend in config",
+    )
+    parser.add_argument(
+        "--onnx",
+        metavar="PATH",
+        help="Custom ONNX layout model path; overrides layout.model_path in config",
+    )
+    # BooleanOptionalAction makes the option tri-state: omitted leaves the
+    # config value alone (None), while --skip-subset-fonts / --no-skip-subset-fonts
+    # force it on/off.  A plain store_true would default to False and silently
+    # override a config that sets skip_subset_fonts: true.
+    parser.add_argument(
+        "--skip-subset-fonts",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Skip font subsetting (better compatibility, larger output)",
+    )
+    parser.add_argument(
+        "--ignore-cache",
+        action="store_true",
+        help="Ignore the translation cache for this run and force retranslation",
+    )
+
+    parser.add_argument(
         "--config-dir",
         help="Override the config/cache/assets directory (used by the desktop app)",
     )
@@ -101,6 +127,13 @@ def main(argv: list[str] | None = None) -> int:
         cfg.translation.lang_in = args.lang_in
     if args.lang_out:
         cfg.translation.lang_out = args.lang_out
+    if args.backend:
+        cfg.layout.backend = args.backend
+    if args.onnx:
+        cfg.layout.model_path = args.onnx
+    # None means the flag was not given, so the config value stands.
+    if args.skip_subset_fonts is not None:
+        cfg.translation.skip_subset_fonts = args.skip_subset_fonts
 
     prompt = None
     if args.prompt:
@@ -125,6 +158,7 @@ def main(argv: list[str] | None = None) -> int:
             progress=report,
             vfont=args.vfont or "",
             vchar=args.vchar or "",
+            ignore_cache=args.ignore_cache,
         )
     except Exception as exc:  # noqa: BLE001 - surface a clean message
         logging.error("%s", exc)

@@ -29,8 +29,14 @@ def build_translator(
     profile_name: str | None = None,
     app_config: config_mod.AppConfig | None = None,
     prompt: str | None = None,
+    ignore_cache: bool = False,
 ) -> ModelAdapter:
-    """Construct the adapter for a named profile."""
+    """Construct the adapter for a named profile.
+
+    ``ignore_cache`` skips the cache for every :meth:`ModelAdapter.translate`
+    call made by this adapter.  It is unrelated to ``cache.enabled``, which
+    switches the cache off entirely.
+    """
     cfg = app_config or config_mod.load()
     profile = cfg.resolve_profile(profile_name)
     return build_adapter(
@@ -40,6 +46,7 @@ def build_translator(
         cfg.translation.lang_out,
         prompt=prompt or cfg.translation.prompt,
         cache_enabled=cfg.cache.enabled,
+        ignore_cache=ignore_cache,
     )
 
 
@@ -57,14 +64,17 @@ def translate(
     vfont: str = "",
     vchar: str = "",
     skip_subset_fonts: bool | None = None,
+    ignore_cache: bool = False,
 ) -> list[tuple[str, str]]:
     """Translate PDF files and write ``-mono``/``-dual`` outputs.
 
     Returns a list of ``(mono_path, dual_path)`` tuples, one per input file.
+    ``ignore_cache`` forces every paragraph to be retranslated for this call,
+    bypassing cache reads and writes.
     """
     paths.ensure_dirs()
     cfg = config or config_mod.load(app_config_path)
-    translator = build_translator(profile, cfg)
+    translator = build_translator(profile, cfg, ignore_cache=ignore_cache)
 
     resolved_mode = mode or cfg.translation.mode
     ultrafast = resolved_mode == "ultrafast"
@@ -107,11 +117,12 @@ def translate_stream(
     cancellation_event: Any = None,
     vfont: str = "",
     vchar: str = "",
+    ignore_cache: bool = False,
 ) -> tuple[bytes, bytes]:
     """Translate an in-memory PDF; returns ``(mono_bytes, dual_bytes)``."""
     paths.ensure_dirs()
     cfg = config or config_mod.load()
-    translator = build_translator(profile, cfg)
+    translator = build_translator(profile, cfg, ignore_cache=ignore_cache)
 
     resolved_mode = mode or cfg.translation.mode
     ultrafast = resolved_mode == "ultrafast"
