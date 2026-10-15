@@ -242,4 +242,72 @@ judge 独立确认「叠印已解决」（对照图能看到修复前的双影�
 - 前端仍无自动化测试。Windows / macOS 打包仍未实机验证。
 - `docs/project-structure.md` 原有的重复章节号（两个 `## 六、`）已修正为 `七、验证状态`。
 
+---
+
+## 2026-10-16（续）：与上游做完整性核对，补齐两处接线缺口
+
+任务：检查上游 `references/PDFMathTranslate` 里还有没有与 PDF 翻译排版相关、
+本项目尚未用到的内容，有就补上（严格限定 PDF 翻译/排版范围）。
+
+### 核对结论：核心管线其实已经完整
+
+逐个文件对比上游 `pdf2zh/`，结论是**移植得相当完整**，没有功能缺失：
+
+| 上游 | 本项目 | 结果 |
+|---|---|---|
+| `pdfinterp.py` | `pdf/interp.py` | **逐字节一致** |
+| `text_spacing.py` | `pdf/text_spacing.py` | **逐字节一致** |
+| `ocr.py` | `pdf/ocr.py` | **逐字节一致**（含页级 OCR 判定、tessdata 下载、`render_char`） |
+| `ultrafast.py` | `pdf/ultrafast.py` | 仅 extras 名不同 |
+| `doclayout.py` | `pdf/layout.py` | 类与方法齐全，仅换掉 babeldoc 的资源查找 |
+| `high_level.py` | `pdf/pipeline.py` | 函数一一对应（含 URL 输入、旋转页、双栏装配） |
+
+**有意不移植**（符合既定范围，不是遗漏）：PDF/A 输出（需新增 `pikepdf` 依赖）、
+`--babeldoc` / `--mode precise`（需另一 submodule + 独立 venv，即上游 `kernel/`）、
+`gui.py` / `backend.py` / `mcp_server.py` / `translator.py`（非 PDF 排版；本项目
+已有 Electron 前端与自研翻译层）。
+
+### 补齐的两处缺口（都用并行 worktree 委派）
+
+**缺口 1：4 个排版选项没有 CLI 入口**。`layout.backend`、`layout.model_path`、
+`translation.skip_subset_fonts` 后端早已支持（config/api/pipeline 全通），但
+`cli.py` 一个都没暴露，用户只能手改 config.yaml。现暴露为 `--backend` /
+`--onnx` / `--skip-subset-fonts` / `--ignore-cache`。
+
+两个值得记的细节：
+
+1. **`--skip-subset-fonts` 必须做成三态**。用普通的 `store_true` 会踩坑：它的默认值
+   是 `False`，用户不传时会把 config.yaml 里写好的 `true` 静默改回 `false`。
+   改用 `BooleanOptionalAction` + `default=None`（不传 = `None` = 不动配置），
+   还免费得到 `--no-skip-subset-fonts`。实测验证：config 写 `true` 而不传 flag 时
+   输出 9.1 MB（子集化被跳过 = 配置保住了），对照不设该配置时 148 KB。
+2. **`--ignore-cache` 之前根本没接线**。`build_adapter()` 支持 `ignore_cache`
+   参数，但 `build_translator()` 从未传给它——所以这个能力一直存在却无法触达。
+   现已从 CLI 一路接到 adapter。它与 `cache.enabled`（写进配置的全局开关）语义不同：
+   前者是「本次调用跳过缓存」，后者是「彻底关掉缓存」。
+   实测：同一 PDF 跑三次，不带 flag 时第二次仅 1 个新请求（命中缓存），
+   带 `--ignore-cache` 时 4 个段落全部重译。
+
+**缺口 2：字体语言映射是死代码**。`assets.py` 的 `_NOTO_LANGS`（19 种非 CJK 语言，
+来自上游 `noto_list`）定义了却从未被引用，字体选择靠无条件回退——行为碰巧正确，
+但语义是错的，还会误导后人。另外 `status()` 硬编码 zh/ja/ko，目标语言是
+`ru`/`ar`/`th` 时前端会**误报字体缺失**并去下载用不上的中日韩字体。
+
+改法：抽出 `font_filename(lang)` 作为语言→字体的**唯一来源**（CJK 查 `_CJK_FONTS`
+取地区字形，其余 GoNoto），`_NOTO_LANGS` 真正参与判断——它只用于区分「已识别的
+GoNoto 语言」与「未知语言码」，**不是「支持/不支持」的分界**（拉丁等脚本不在表里
+也照样用 GoNoto）。未知语言码**宽容回退**到 GoNoto 并记 debug 日志，不抛错：
+目标语言来自用户输入，一个拼写错误不该让整个翻译任务失败。
+`status()` 保留 `font_zh`/`font_ja`/`font_ko` 旧键（前端 `app.ts` 仍读 `font_zh`），
+新增 `font_ready_for`（仅传 `lang` 时出现），因此 `sidecar.py` 的无参调用行为不变——
+这一点用真实 stdio 协议实测确认过。
+
+### 验证
+
+- 测试从 45 增至 **84 passed**（新增 `test_cli_options.py` 16 个、
+  `test_assets_fonts.py` 23 个）。前端 `typecheck` 通过。
+- 端到端回归：译文 1.5 倍长时「真叠印」仍为 6 处、右边界溢出 0（与修复后一致，
+  无回归）；译文≈原文长时与最初的原版**逐页内容流仍逐字节一致**（16/16 页）。
+- 非 CJK 目标语言实测跑通：`--lang-out ru` 选到 GoNotoKurrent 并产出 mono + dual。
+
 

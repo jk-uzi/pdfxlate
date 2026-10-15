@@ -23,6 +23,7 @@ Python 3.12，venv 在 `python/.venv`，包以 editable 方式安装，改源码
 | 改配置项 / 加新配置字段 | `config.py`（`Profile`、`TranslationSettings` 等 pydantic 模型） |
 | 改配置/缓存的存放位置 | `paths.py` |
 | 换模型或字体的下载地址 | `assets.py`（`_LAYOUT_REPO`、`_GO_NOTO_URL`、`_SOURCE_HAN_URL`、`_hf_endpoints`） |
+| 改「哪种语言用哪款字体」 | `assets.py` 的 `font_filename()`——语言→字体的**唯一来源**；`_CJK_FONTS` 与 `_NOTO_LANGS` 只是它的两张表 |
 | 改翻译缓存的键或行为 | `cache.py`（`TranslationCache`）；影响输出的参数要加进 `models/base.py` 的 `_cache_params()` |
 | 改 PDF 排版回填逻辑 | `pdf/converter.py`（`TranslateConverter`，最难的部分） |
 | 改页面解析流程 / 阶段编排 | `pdf/pipeline.py`（`translate` / `translate_stream`） |
@@ -69,10 +70,10 @@ pdfxlate/
 │       ├── __init__.py              惰性暴露 translate / translate_stream
 │       ├── paths.py          93 行  跨平台 config / cache / assets 路径
 │       ├── config.py        218 行  pydantic 配置模型 + YAML 读写
-│       ├── assets.py        309 行  模型 / 字体 / OCR 数据下载与校验
+│       ├── assets.py        349 行  模型 / 字体 / OCR 数据下载与校验
 │       ├── cache.py         144 行  sqlite3 翻译缓存
-│       ├── api.py           150 行  公开 Python API
-│       ├── cli.py           142 行  命令行入口
+│       ├── api.py           161 行  公开 Python API
+│       ├── cli.py           176 行  命令行入口
 │       ├── sidecar.py       277 行  stdio JSON 行协议（Electron 调用）
 │       ├── models/
 │       │   ├── __init__.py     23 行  导出翻译层公开符号
@@ -100,7 +101,9 @@ pdfxlate/
 ├── tests/
 │   ├── test_translation.py   187 行  缓存、占位符、推理标签剥离、注册表、缓存开关
 │   ├── test_openai_compat.py 137 行  适配器参数透传、校验、提示词渲染
-│   └── test_typesetting.py   172 行  字号适配纯函数（放不下时的缩字逻辑）
+│   ├── test_typesetting.py   172 行  字号适配纯函数（放不下时的缩字逻辑）
+│   ├── test_cli_options.py   180 行  CLI 排版选项解析与三态覆盖语义
+│   └── test_assets_fonts.py  113 行  语言→字体映射、status() 兼容性
 └── scripts/
     ├── copy-static.mjs        20 行  拷贝 HTML/CSS 到 out/renderer/
     └── build.sh               40 行  一键构建：PyInstaller → tsc → electron-builder
@@ -131,7 +134,18 @@ Linux `~/.config` + `~/.cache`。
 （`.part` → rename）、镜像回退（`HF_ENDPOINT` → `huggingface.co` → `hf-mirror.com`），
 并把上次成功的端点记在 `assets/.hf_endpoint` 以免每次重付连接超时。
 `verify_layout_metadata()` 校验模型带 `stride` / `names` 元数据。
-`status()` 供 UI 首次运行引导使用。
+
+字体选择：`font_filename(lang)` 是**唯一来源**——CJK 查 `_CJK_FONTS` 取
+SourceHanSerif 的地区字形（CN/TW/JP/KR），其余一律 GoNotoKurrent。
+`_NOTO_LANGS` 列出 GoNoto 已知覆盖的 19 种非 CJK 文字，**它只用于区分「已识别的
+GoNoto 语言」与「未知语言码」，不是「支持/不支持」的分界**——拉丁等脚本不在这张表里
+也照样用 GoNoto。未知语言码**宽容回退**到 GoNoto 并记一条 debug 日志，而不是抛错：
+目标语言来自用户输入，一个拼写错误不该让整个翻译任务失败。
+
+`status()` 供 UI 首次运行引导使用。它**保留** `font_zh` / `font_ja` / `font_ko` 三个旧键
+（前端 `app.ts` 仍读 `font_zh` 决定是否显示引导条），并在传入 `lang` 时追加
+`font_ready_for`，这样目标语言是 `ru`/`ar`/`th`（GoNoto）时不会被误报缺字体。
+`lang` 默认 `None` 且此时该键不出现，因此 `sidecar.py` 的无参调用行为不变。
 
 **`cache.py`** — `TranslationCache`。stdlib sqlite3（上游用 peewee），
 线程局部连接（排版从线程池调用），无 import 副作用。
@@ -194,8 +208,20 @@ Linux `~/.config` + `~/.cache`。
 
 **`api.py`** — `translate()` / `translate_stream()` / `build_translator()`，
 profile 驱动，调用方不碰 provider 内部。`__init__.py` 惰性转出前两个。
+`ignore_cache=True` 让本次调用的每个段落都重译（跳过缓存读写）；它与
+`cache.enabled`（写进配置的全局开关）**语义不同**，别混用。
 
 **`cli.py`** — `build_parser()` / `parse_pages()` / `main()`，调试与批处理用。
+除 profile / 语言 / 页码 / 模式外，还暴露了 4 个**排版**选项，都会覆盖 config.yaml
+里的同名字段：`--backend {auto,cpu,cuda,dml}`（ONNX 执行后端，覆盖 `layout.backend`）、
+`--onnx PATH`（自定义版面模型，覆盖 `layout.model_path`）、
+`--skip-subset-fonts` / `--no-skip-subset-fonts`（字体子集化，覆盖
+`translation.skip_subset_fonts`）、`--ignore-cache`（本次强制重译）。
+
+`--skip-subset-fonts` 用 `argparse.BooleanOptionalAction` + `default=None` 做成**三态**：
+不传是 `None`（不动配置）、传是 `True`、传 `--no-` 是 `False`。这里不能用普通的
+`store_true`——它的默认值是 `False`，不传时会把配置里写好的 `true` 静默改回 `false`。
+`test_cli_options.py` 专门锁住这个语义。
 
 **`sidecar.py`** — Electron 调用的 stdio JSON 行协议。stdout 只走 JSON，
 日志全部走 stderr。方法表：
@@ -259,7 +285,7 @@ profile 驱动，调用方不碰 provider 内部。`__init__.py` 惰性转出前
 ## 五、测试与检查
 
 ```bash
-python/.venv/bin/python -m pytest tests/ -q          # Python，当前 45 passed
+python/.venv/bin/python -m pytest tests/ -q          # Python，当前 84 passed
 python/.venv/bin/python -m pytest tests/ -q -k cache # 单个方向
 npm run typecheck                                    # 前端类型检查
 ```
@@ -269,6 +295,8 @@ npm run typecheck                                    # 前端类型检查
 `test_openai_compat.py` 用 mock 客户端测参数透传与校验，不打真实 API。
 `test_typesetting.py` 测 `converter.fit_font_size()` 这个纯函数（放得下/放不下/
 下限/空段落/零高度/公式固定宽），不构造 PDF，跑得很快。
+`test_cli_options.py` 测 CLI 排版选项的解析与三态覆盖语义（不传时不动配置）。
+`test_assets_fonts.py` 测语言→字体映射与 `status()` 的向后兼容（旧键不能丢）。
 前端目前只有 `typecheck` 通过，尚无自动化测试。
 
 ## 六、提交前密钥扫描
@@ -321,6 +349,14 @@ gitleaks detect                            # 扫 git 历史
   1 处降到 0；译文≈原文长时输出与修复前**逐页内容流逐字节一致**（16/16 页），
   证明修复不影响本来排得下的段落。残余 6 处经逐条核对均为单个拉丁/数学残字
   （`P`、`e`、`¨`）压在中文行上，与原文自带的数学上标重叠同类，非段落相撞。
+- **与上游的完整性核对**（2026-10-16）：逐个文件对比上游 `pdf2zh/`，
+  `pdfinterp.py` / `text_spacing.py` / `ocr.py` 与上游**逐字节一致**（含页级 OCR
+  判定、tessdata 下载、`render_char`），`doclayout.py` 类与方法齐全（仅换掉
+  babeldoc 的资源查找），`high_level.py` 函数一一对应（含 URL 输入、旋转页、
+  双栏装配）。当时发现并补齐的只有两类接线缺口：CLI 未暴露 4 个排版选项、
+  字体语言映射未落地（见下）。**有意不移植**：PDF/A 输出（需新增 `pikepdf`
+  依赖）、`--babeldoc`/`--mode precise`（需另一 submodule + 独立 venv）、
+  `gui.py`/`backend.py`/`mcp_server.py`/`translator.py`（非 PDF 排版）。
 
 ### 移植过程中修掉的问题
 
@@ -341,6 +377,17 @@ gitleaks detect                            # 扫 git 历史
 6. **译文压到下一段 / 冲出栏边界**（2026-10-16）。见 `pdf/converter.py` 一节的
    `fit_font_size()`。旧代码只压行高、下限 1.0，压不下就照画；且换行被 `brk` 挡住。
    已改为缩字号兜底 + 含正文段落均可换行。
+7. **`_NOTO_LANGS` 曾是死代码**（2026-10-16）。定义了 19 种非 CJK 语言却从未被引用，
+   字体选择靠无条件回退——行为碰巧正确但语义是错的，还会误导后人。现抽出
+   `font_filename()` 作为语言→字体的唯一来源，`_NOTO_LANGS` 真正参与判断。
+8. **`status()` 硬编码 zh/ja/ko**（2026-10-16）。目标语言是 `ru`/`ar`/`th` 时，
+   前端会误报字体缺失、并去下载用不上的中日韩字体。现加 `font_ready_for`（传 `lang` 时
+   才有），同时**保留旧键**以免破坏前端与 `sidecar.py` 的无参调用。
+9. **4 个排版选项没有 CLI 入口**（2026-10-16）。`layout.backend`、
+   `layout.model_path`、`translation.skip_subset_fonts` 后端早已支持，但只能手改
+   config.yaml。现暴露为 `--backend` / `--onnx` / `--skip-subset-fonts` /
+   `--ignore-cache`。注意 `--skip-subset-fonts` 必须做成三态（`BooleanOptionalAction`
+   + `default=None`），用 `store_true` 会把配置里的 `true` 静默改回 `false`。
 
 ### 已知遗留
 
