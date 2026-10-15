@@ -2,6 +2,7 @@ import concurrent.futures
 import logging
 import re
 import unicodedata
+from collections import namedtuple
 from time import perf_counter
 from enum import Enum
 
@@ -100,6 +101,109 @@ class Paragraph:
         self.y1: float = y1  # 下边界
         self.size: float = size  # 字体大小
         self.brk: bool = brk  # 换行标记
+
+
+# 译文字号适配的下限：低于原字号的这个比例会小到影响阅读，
+# 此时宁可接受溢出，也不再继续缩。
+MIN_FIT_SCALE = 0.6
+# 行高压缩步长，与历史实现保持一致。
+LINE_HEIGHT_STEP = 0.05
+
+# 一个排版单元的宽度模型：在字号 s 下占宽 scaled * s + fixed，换行后 x 前进
+# scaled * s + fixed - mod（mod 是文字修饰符的固定回退量）。正文的 scaled 非零
+# 且随字号缩放；公式宽度与字号无关，只占 fixed。glue 标记行首空格——它落在
+# 行首时不计宽度，与绘制循环里 `x == x0 and ch == " "` 的消空格逻辑一致。
+Unit = namedtuple("Unit", "scaled fixed mod glue", defaults=(0.0, 0.0, False))
+
+
+def _wrapped_lines(size: float, width: float, units, start: float = 0.0, wrap: bool = True) -> int:
+    """贪心换行后占用的行数，与绘制循环的换行判定保持一致（含 0.1 em 容差）。
+
+    width 是段落可用宽度（右边界减左边界），start 是首行相对左边界的起始偏移
+    （段落初始 x 往往大于 x0，首行可用宽度因此更小）。wrap=False（纯公式段落）
+    时不换行，始终算作 1 行。
+    """
+    if not wrap:
+        return 1
+    x = start
+    lines = 1
+    tol = 0.1 * size
+    for unit in units:
+        adv = unit.scaled * size + unit.fixed
+        if x + adv > width + tol:  # 与绘制循环一致：先判换行
+            x = 0.0
+            lines += 1
+        # 换行后（或段落恰从 x0 起排时）行首空格不计宽，对应绘制循环里
+        # `x == x0 and ch == " "` 的消空格分支。
+        if x == 0.0 and unit.glue and (lines > 1 or start == 0.0):
+            adv = 0.0
+        x += adv - unit.mod
+    return lines
+
+
+def fit_font_size(
+    size: float,
+    width: float,
+    height: float,
+    units,
+    default_line_height: float,
+    start: float = 0.0,
+    min_scale: float = MIN_FIT_SCALE,
+    step: float = LINE_HEIGHT_STEP,
+    lines: int | None = None,
+    wrap: bool = True,
+) -> tuple[float, float]:
+    """为单个段落选择最终字号与行高，返回 (size, line_height)。
+
+    段落本来放得下时原样返回，因此修复前排版正确的段落输出不变。lines 传入
+    实排行数（调用方已按原字号排过一遍）时，行高压缩用这个精确值，保证压行高
+    能放下的段落与修复前逐字节一致；缩字号阶段则用宽度模型重估行数，因为重排
+    后换行位置会变。
+
+    放不下时先沿用历史手段压缩行高（下限 1.0）；只有当行高压到下限仍然溢出时
+    才缩小字号。缩小字号会让每行容纳更多字、行数随之减少，二者同向变化，故
+    lines(s) * s * line_height 关于 s 单调，可以二分求满足约束的最大 s。缩到
+    min_scale 仍放不下时返回下限，由调用方接受溢出，而不是把行高继续压向 1.0
+    （中文默认行高 1.4，压到 1.0 会挤成一团）。
+    """
+    lines = (
+        lines
+        if lines is not None
+        else _wrapped_lines(size, width, units, start, wrap)
+    )
+    line_height = default_line_height
+    while lines * size * line_height > height and line_height >= 1:
+        line_height -= step
+    if lines * size * line_height <= height:
+        return size, line_height
+
+    # 没有可用宽高或没有排版单元时，缩字号也救不回来，保持历史行为。
+    if height <= 0 or width <= 0 or not units:
+        return size, line_height
+
+    def fits(s: float) -> bool:
+        return (
+            _wrapped_lines(s, width, units, start, wrap) * s * default_line_height
+            <= height
+        )
+
+    # 宽度模型若认为原字号在默认行高下放得下，说明实排行数偏大（模型与实排
+    # 有出入）；此时缩字号会失去依据，保留压行高的结果，与原实现一致。
+    if fits(size):
+        return size, line_height
+
+    floor = size * min_scale
+    if not fits(floor):
+        return floor, default_line_height  # 缩到下限仍放不下，接受溢出
+
+    lo, hi = floor, size
+    for _ in range(24):  # 二分到浮点精度足够，取可行侧保证不越界
+        mid = (lo + hi) / 2
+        if fits(mid):
+            lo = mid
+        else:
+            hi = mid
+    return lo, default_line_height
 
 
 # fmt: off
@@ -365,24 +469,31 @@ class TranslateConverter(PDFConverterEx):
         def gen_op_line(x, y, xlen, ylen, linewidth):
             return f"ET q 1 0 0 1 {x:f} {y:f} cm [] 0 d 0 J {linewidth:f} w 0 0 m {xlen:f} {ylen:f} l S Q BT "
 
-        for id, new in enumerate(news):
-            new = add_cjk_latin_spacing(new)
-            x: float = pstk[id].x                       # 段落初始横坐标
-            y: float = pstk[id].y                       # 段落初始纵坐标
-            x0: float = pstk[id].x0                     # 段落左边界
-            x1: float = pstk[id].x1                     # 段落右边界
-            height: float = pstk[id].y1 - pstk[id].y0   # 段落高度
-            size: float = pstk[id].size                 # 段落字体大小
-            brk: bool = pstk[id].brk                    # 段落换行标记
+        def layout_paragraph(pid: int, size: float, wrap: bool):
+            """按给定字号排版第 pid 段，返回 (ops_vals, lidx, units)。
+
+            与字号适配配合：先用原字号排一遍拿到宽度模型 units，算出适配字号后
+            若字号有变再排一遍。units 是 _wrapped_lines 所需的宽度模型，与绘制
+            循环逐单元对应，保证行数估计与实排一致——否则适配字号会与实际不符。
+            wrap 决定该段是否允许换行，见调用处的说明。
+            """
+            new = add_cjk_latin_spacing(news[pid])
+            x: float = pstk[pid].x                      # 段落初始横坐标
+            y: float = pstk[pid].y                      # 段落初始纵坐标
+            x0: float = pstk[pid].x0                    # 段落左边界
+            x1: float = pstk[pid].x1                    # 段落右边界
+            brk: bool = pstk[pid].brk                   # 段落换行标记
             cstk: str = ""                              # 当前文字栈
             fcur: str = None                            # 当前字体 ID
             lidx = 0                                    # 记录换行次数
             tx = x
             fcur_ = fcur
             ptr = 0
-            log.debug(f"< {y} {x} {x0} {x1} {size} {brk} > {sstk[id]} | {new}")
+            log.debug(f"< {y} {x} {x0} {x1} {size} {brk} > {sstk[pid]} | {new}")
 
             ops_vals: list[dict] = []
+            units: list[Unit] = []
+            nonlocal _x, _y
 
             while ptr < len(new):
                 vy_regex = re.match(
@@ -398,6 +509,7 @@ class TranslateConverter(PDFConverterEx):
                         continue  # 翻译器可能会自动补个越界的公式标记
                     if var[vid][-1].get_text() and unicodedata.category(var[vid][-1].get_text()[0]) in ["Lm", "Mn", "Sk"]:  # 文字修饰符
                         mod = var[vid][-1].width
+                    units.append(Unit(0.0, adv, mod))  # 公式宽度不随字号缩放
                 else:  # 加载文字
                     ch = new[ptr]
                     fcur_ = None
@@ -413,6 +525,7 @@ class TranslateConverter(PDFConverterEx):
                     else:
                         adv = self.fontmap[fcur_].char_width(ord(ch)) * size
                     ptr += 1
+                    units.append(Unit(adv / size, 0.0, 0.0, ch == " "))
                 if (                                # 输出文字缓冲区
                     fcur_ != fcur                   # 1. 字体更新
                     or vy_regex                     # 2. 插入公式
@@ -429,7 +542,7 @@ class TranslateConverter(PDFConverterEx):
                             "lidx": lidx
                         })
                         cstk = ""
-                if brk and x + adv > x1 + 0.1 * size:  # 到达右边界且原文段落存在换行
+                if wrap and x + adv > x1 + 0.1 * size:  # 到达右边界即换行；原文无换行的段落也要换，否则译文会一直往右画
                     x = x0
                     lidx += 1
                 if vy_regex:  # 插入公式
@@ -487,17 +600,33 @@ class TranslateConverter(PDFConverterEx):
                     "rtxt": raw_string(fcur, cstk),
                     "lidx": lidx
                 })
+            return ops_vals, lidx, units
 
-            line_height = default_line_height
-
-            while (lidx + 1) * size * line_height > height and line_height >= 1:
-                line_height -= 0.05
+        for id in range(len(news)):
+            height: float = pstk[id].y1 - pstk[id].y0   # 段落高度
+            size: float = pstk[id].size                 # 段落字体大小
+            # 只有含真实文字的段落才换行。纯公式段落（表格行、公式行）里所有
+            # 字符都被折叠成 {vN}，上游按绝对坐标锚定它们，一旦换行就会错位，
+            # 因此沿用旧行为不换行。
+            wrap = bool(re.sub(r"\{\s*v[\d\s]+\}", "", sstk[id]).strip())
+            _lstk_mark = len(lstk)
+            ops_vals, lidx, units = layout_paragraph(id, size, wrap)
+            # 放不下时缩小字号（见 fit_font_size）；缩了就要按新字号重排，
+            # 因为换行位置随之改变。重排前丢弃上一遍的调试线条。
+            fit_size, line_height = fit_font_size(
+                size, pstk[id].x1 - pstk[id].x0, height, units,
+                default_line_height, start=pstk[id].x - pstk[id].x0,
+                lines=lidx + 1, wrap=wrap,
+            )
+            if fit_size != size:
+                del lstk[_lstk_mark:]
+                ops_vals, lidx, units = layout_paragraph(id, fit_size, wrap)
 
             for vals in ops_vals:
                 if vals["type"] == OpType.TEXT:
-                    ops_list.append(gen_op_txt(vals["font"], vals["size"], vals["x"], vals["dy"] + y - vals["lidx"] * size * line_height, vals["rtxt"]))
+                    ops_list.append(gen_op_txt(vals["font"], vals["size"], vals["x"], vals["dy"] + pstk[id].y - vals["lidx"] * fit_size * line_height, vals["rtxt"]))
                 elif vals["type"] == OpType.LINE:
-                    ops_list.append(gen_op_line(vals["x"], vals["dy"] + y - vals["lidx"] * size * line_height, vals["xlen"], vals["ylen"], vals["linewidth"]))
+                    ops_list.append(gen_op_line(vals["x"], vals["dy"] + pstk[id].y - vals["lidx"] * fit_size * line_height, vals["xlen"], vals["ylen"], vals["linewidth"]))
 
         for l in lstk:  # 排版全局线条
             if l.linewidth < 5:  # hack 有的文档会用粗线条当图片背景
