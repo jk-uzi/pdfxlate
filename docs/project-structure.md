@@ -71,17 +71,17 @@ pdfxlate/
 │       ├── config.py        218 行  pydantic 配置模型 + YAML 读写
 │       ├── assets.py        309 行  模型 / 字体 / OCR 数据下载与校验
 │       ├── cache.py         144 行  sqlite3 翻译缓存
-│       ├── api.py           147 行  公开 Python API
+│       ├── api.py           150 行  公开 Python API
 │       ├── cli.py           142 行  命令行入口
 │       ├── sidecar.py       277 行  stdio JSON 行协议（Electron 调用）
 │       ├── models/
 │       │   ├── __init__.py     23 行  导出翻译层公开符号
-│       │   ├── base.py       207 行  ModelAdapter 基类 + 注册表
+│       │   ├── base.py       239 行  ModelAdapter 基类 + 注册表
 │       │   └── openai_compat.py 115 行  OpenAI 兼容适配器
 │       └── pdf/
 │           ├── __init__.py      1 行
 │           ├── pipeline.py   580 行  管线编排：解析→版面→翻译→排版
-│           ├── converter.py  514 行  排版回填（移植上游 converter.py）
+│           ├── converter.py  643 行  排版回填 + 字号适配（移植上游 converter.py）
 │           ├── interp.py     366 行  内容流解释器（上游照搬）
 │           ├── layout.py     187 行  DocLayout-YOLO ONNX 版面检测
 │           ├── ocr.py        161 行  OCR 段落重建与排版
@@ -98,8 +98,9 @@ pdfxlate/
 │       ├── app.ts           418 行  界面逻辑（拖拽、profile、进度、结果）
 │       └── style.css        333 行  样式
 ├── tests/
-│   ├── test_translation.py   149 行  缓存、占位符、推理标签剥离、注册表
-│   └── test_openai_compat.py 137 行  适配器参数透传、校验、提示词渲染
+│   ├── test_translation.py   187 行  缓存、占位符、推理标签剥离、注册表、缓存开关
+│   ├── test_openai_compat.py 137 行  适配器参数透传、校验、提示词渲染
+│   └── test_typesetting.py   172 行  字号适配纯函数（放不下时的缩字逻辑）
 └── scripts/
     ├── copy-static.mjs        20 行  拷贝 HTML/CSS 到 out/renderer/
     └── build.sh               40 行  一键构建：PyInstaller → tsc → electron-builder
@@ -136,12 +137,21 @@ Linux `~/.config` + `~/.cache`。
 线程局部连接（排版从线程池调用），无 import 副作用。
 主键 `(engine, params, original)`，`params` 由 `_cache_params()` 折叠所有影响
 输出的参数，换参数不会命中脏缓存。
+`enabled=False` 在 `get` / `set` / `clear` 全部短路，且**构造时就不开库**——
+所以关掉缓存不会留下空的 `cache.v1.db`，缓存目录只读也不会导致启动失败。
 
 ### 翻译层
 
 **`models/base.py`** — `ModelAdapter` 抽象基类（`translate()` 管缓存与占位符校验，
 子类只实现 `do_translate()`）、`@register` 注册表、`PlaceholderLossError`、
 `strip_reasoning()`、`DEFAULT_PROMPT`、`build_adapter()`。
+
+`build_adapter(..., cache_enabled=)` 是 `CacheSettings.enabled` 的唯一入口：
+它把开关经模块级 contextvar `_CACHE_ENABLED` 传给构造函数，`ModelAdapter.__init__`
+再转交 `TranslationCache`。**为什么用 contextvar 而不是构造后赋值**：`TranslationCache`
+在构造时就会开库建表，构造完再改 `enabled` 太晚，会留下空数据库文件。contextvar 只在
+`build_adapter` 调用构造函数期间生效（`finally` 里 reset），因此对线程池里的调用也安全，
+且**新增模型后端只需加文件 + `@register`，无需碰任何缓存接线**。
 
 **`models/openai_compat.py`** — `OpenAICompatAdapter`，`name = "openai_compat"`。
 覆盖 DeepSeek / Qwen / Kimi / Grok / GLM / 硅基流动 / vLLM / Ollama / OpenRouter 等。
@@ -158,6 +168,15 @@ Linux `~/.config` + `~/.cache`。
 **`pdf/converter.py`** — 排版回填，**项目最难的部分**。`TranslateConverter`、
 `PDFConverterEx`、`Paragraph`、`OpType`。掩码值为 0 表示原样保留，≥2 归为可译段落——
 这是公式、表格、图片得以保真的原因。改动前务必理解掩码语义。
+
+`fit_font_size()` 是**纯函数**（字号、段落宽高、排版单元列表 → 最终字号与行高），
+也是 `test_typesetting.py` 的测试对象——把它独立出来就是为了能脱离 PDF 构造做单元测试。
+适配顺序：先用实排行数压缩行高（历史行为，下限 1.0）；压到下限仍溢出才**二分缩小字号**，
+下限 `MIN_FIT_SCALE = 0.6`，到下限仍放不下才接受溢出。缩小后恢复默认行高，不再挤行。
+两个关键不变量：① 本来放得下的段落走原路径，输出与修复前**逐字节一致**；
+② 纯公式段落（`sstk` 剥掉 `{vN}` 后为空）`wrap=False`，沿用上游绝对坐标锚定、不换行——
+一旦换行公式会错位。`wrap` 取代了原来的 `brk`（`brk` 只标记「原文段落内部有换行」，
+导致原文单行的段落译文永不换行、一直画出边界）。
 
 **`pdf/interp.py`** — `PDFPageInterpreterEx`，用了 pdfminer 大量内部 API，
 所以 `pdfminer-six` 硬钉版本。上游照搬。
@@ -240,14 +259,16 @@ profile 驱动，调用方不碰 provider 内部。`__init__.py` 惰性转出前
 ## 五、测试与检查
 
 ```bash
-python/.venv/bin/python -m pytest tests/ -q          # Python，当前 27 passed
+python/.venv/bin/python -m pytest tests/ -q          # Python，当前 45 passed
 python/.venv/bin/python -m pytest tests/ -q -k cache # 单个方向
 npm run typecheck                                    # 前端类型检查
 ```
 
 `test_translation.py` 用假 adapter（计数器、故意丢占位符）测缓存命中、
-`{vN}` 守卫、`<think>` 剥离、注册表冲突。
+`{vN}` 守卫、`<think>` 剥离、注册表冲突、`cache.enabled` 接线。
 `test_openai_compat.py` 用 mock 客户端测参数透传与校验，不打真实 API。
+`test_typesetting.py` 测 `converter.fit_font_size()` 这个纯函数（放得下/放不下/
+下限/空段落/零高度/公式固定宽），不构造 PDF，跑得很快。
 前端目前只有 `typecheck` 通过，尚无自动化测试。
 
 ## 六、提交前密钥扫描
@@ -284,7 +305,7 @@ gitleaks detect                            # 扫 git 历史
 > 同理，文档里引用这类示例字符串时要改写描述，别写明文。
 
 
-## 六、验证状态
+## 七、验证状态
 
 阶段 1–7 均已实机验证，见 [../requirements/development-log.md](../requirements/development-log.md)。
 
@@ -295,8 +316,13 @@ gitleaks detect                            # 扫 git 历史
   打包产物能完成真实翻译任务。
 - **真实 API 调用已验证**：用本地 mock OpenAI 兼容服务确认 `reasoning_effort`
   与 `extra_body` 确实进入请求体、`Authorization` 头正确。
+- **排版适配已量化验证**（2026-10-16）：双栏 BERT 论文 16 页 / 253 段，用译文长度
+  可调的本地 mock 压测。译文 1.5 倍长时「真叠印」从 232 处降到 6 处、右边界溢出从
+  1 处降到 0；译文≈原文长时输出与修复前**逐页内容流逐字节一致**（16/16 页），
+  证明修复不影响本来排得下的段落。残余 6 处经逐条核对均为单个拉丁/数学残字
+  （`P`、`e`、`¨`）压在中文行上，与原文自带的数学上标重叠同类，非段落相撞。
 
-### 移植过程中修掉的三个问题
+### 移植过程中修掉的问题
 
 1. **`fontTools` 是运行期隐式依赖**。PyMuPDF 的 `Document.subset_fonts()` 需要它，
    但源码里没有直接 import，静态分析查不到；缺了会直接崩。已加入 `pyproject.toml`。
@@ -309,12 +335,16 @@ gitleaks detect                            # 扫 git 历史
 4. **打包后 sidecar 找不到**（`spawn ENOENT`）。`isDev` 参数被反向传递，
    打包模式去找 venv、开发模式去找打包产物。已修正，并在两者都缺失时报出
    两条候选路径而不是裸 ENOENT。
+5. **`cache.enabled` 曾是死配置**（2026-10-16）。`CacheSettings.enabled` 定义了但
+   全仓库无人读取，关掉缓存无效；且接线在构造之后，即使接上也会留下空 db 文件。
+   现经 `build_adapter(cache_enabled=)` + contextvar 传到构造期，禁用时连库都不开。
+6. **译文压到下一段 / 冲出栏边界**（2026-10-16）。见 `pdf/converter.py` 一节的
+   `fit_font_size()`。旧代码只压行高、下限 1.0，压不下就照画；且换行被 `brk` 挡住。
+   已改为缩字号兜底 + 含正文段落均可换行。
 
 ### 已知遗留
 
-- **右边界轻微溢出**：`pdf/converter.py` 的 `receive_layout` 与上游**逐字节一致**
-  （已 diff 验证），换行判定 `x + adv > x1 + 0.1*size` 是上游行为。
-  实测 845 行中 33 行超出右边距，最多 +13pt（页面宽 612pt）。属移植继承的
-  特性而非本次引入；`temperature: 0` 与简洁提示词可减轻。
+- **紧行距**：压测下仍有少量相邻行间距偏小（原版 1935 处 → 修复后 165 处）。
+  这是行高压缩的正常结果，不属叠印，可读性未受损。
 - 前端尚无自动化测试，仅 `typecheck` 通过。
 
