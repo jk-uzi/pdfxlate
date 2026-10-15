@@ -192,15 +192,27 @@ def build_adapter(
     lang_out: str,
     prompt: str | None = None,
     ignore_cache: bool = False,
+    cache_enabled: bool = True,
 ) -> ModelAdapter:
-    """Instantiate the adapter registered for ``provider``."""
-    return get_adapter(provider)(
+    """Instantiate the adapter registered for ``provider``.
+
+    ``cache_enabled`` mirrors ``CacheSettings.enabled``: when false the
+    adapter's cache is switched off entirely, so nothing is read or written.
+    ``ignore_cache`` is unrelated — it only skips the cache for a single
+    :meth:`ModelAdapter.translate` call.
+    """
+    adapter = get_adapter(provider)(
         profile,
         lang_in,
         lang_out,
         prompt=prompt,
         ignore_cache=ignore_cache,
     )
+    # Adapter subclasses predate this flag and do not take it as a constructor
+    # argument, so apply it to the cache object here.  TranslationCache treats
+    # ``enabled=False`` as a full bypass of get/set/clear.
+    adapter.cache.enabled = cache_enabled
+    return adapter
 
 
 # Import adapters so their @register decorators run.

@@ -13,6 +13,7 @@ from pdfxlate import cache as cache_mod  # noqa: E402
 from pdfxlate.models.base import (  # noqa: E402
     ModelAdapter,
     PlaceholderLossError,
+    build_adapter,
     get_adapter,
     register,
     registered,
@@ -94,6 +95,30 @@ def test_cache_key_separates_models(temp_cache):
     b.translate("hi")
     # A different model must not reuse the first model's cached translation.
     assert b.calls == 1
+
+
+def test_build_adapter_cache_enabled_by_default(temp_cache):
+    adapter = build_adapter("counting_test", FakeProfile(), "en", "zh")
+    assert adapter.cache.enabled is True
+
+
+def test_build_adapter_disabled_cache_neither_reads_nor_writes(temp_cache):
+    """cache_enabled=False must bypass both cache reads and writes."""
+    disabled = build_adapter(
+        "counting_test", FakeProfile(), "en", "zh", cache_enabled=False
+    )
+    assert disabled.cache.enabled is False
+
+    # No reads: two identical calls both hit the backend.
+    disabled.translate("hello")
+    disabled.translate("hello")
+    assert disabled.calls == 2
+
+    # No writes: a fresh adapter with the cache on must not see the above
+    # translations, so its first call goes to the backend too.
+    enabled = build_adapter("counting_test", FakeProfile(), "en", "zh")
+    enabled.translate("hello")
+    assert enabled.calls == 1
 
 
 def test_placeholder_preserved_passes(temp_cache):

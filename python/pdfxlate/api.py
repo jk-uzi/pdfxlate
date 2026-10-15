@@ -39,6 +39,7 @@ def build_translator(
         cfg.translation.lang_in,
         cfg.translation.lang_out,
         prompt=prompt or cfg.translation.prompt,
+        cache_enabled=cfg.cache.enabled,
     )
 
 
