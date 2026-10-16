@@ -234,6 +234,12 @@ def method_translate_start(params: dict) -> dict:
             # None means "not specified", so api.translate falls back to the
             # config value; a bool would force it either way.
             skip_subset_fonts=params.get("skip_subset_fonts"),
+            # Same three-state rule for the per-job overrides. Only the settings
+            # panel writes the stored values, so an absent parameter here must
+            # leave them alone rather than reset anything.
+            lang_in=params.get("lang_in"),
+            lang_out=params.get("lang_out"),
+            reasoning_effort=params.get("reasoning_effort"),
         )
     finally:
         with _JOBS_LOCK:

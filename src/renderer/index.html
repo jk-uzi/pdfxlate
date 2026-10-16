@@ -70,13 +70,32 @@
             <summary class="group__head" data-i18n="options.title"></summary>
             <div class="group__body">
               <div class="grid grid--one">
+                <!--
+                  These four change the next job only. The stored defaults live
+                  in Settings, so each one opens on a "follow the default" entry
+                  rather than a concrete value: showing a model name here would
+                  imply this is where the model is chosen for good.
+                -->
+                <label>
+                  <span data-i18n="options.model"></span>
+                  <select id="opt-model"></select>
+                </label>
+                <label>
+                  <span data-i18n="options.reasoning"></span>
+                  <select id="opt-reasoning">
+                    <option value="" data-i18n="options.followDefault"></option>
+                    <option value="low" data-i18n="model.reasoningLow"></option>
+                    <option value="medium" data-i18n="model.reasoningMedium"></option>
+                    <option value="high" data-i18n="model.reasoningHigh"></option>
+                  </select>
+                </label>
                 <label>
                   <span data-i18n="options.langIn"></span>
-                  <input id="field-lang-in" type="text" value="en" />
+                  <select id="opt-lang-in"></select>
                 </label>
                 <label>
                   <span data-i18n="options.langOut"></span>
-                  <input id="field-lang-out" type="text" value="zh" />
+                  <select id="opt-lang-out"></select>
                 </label>
                 <label>
                   <span data-i18n="options.mode"></span>
@@ -165,6 +184,21 @@
           </nav>
         </div>
       </aside>
+
+      <!--
+        Drag to set the sidebar's width. A separate element rather than a CSS
+        handle on the sidebar so it is a sibling in the flex row: an absolutely
+        positioned handle would be clipped when the sidebar slides away, and
+        this one is hidden explicitly instead (see style.css).
+      -->
+      <div
+        class="sidebar__resizer"
+        id="sidebar-resizer"
+        role="separator"
+        aria-orientation="vertical"
+        data-i18n-title="sidebar.resize"
+        data-i18n-aria-label="sidebar.resize"
+      ></div>
 
       <!-- Preview / settings detail -->
       <section class="preview" id="preview-pane">

@@ -278,6 +278,112 @@ try {
 }
 paintSidebarCollapsed();
 
+// --- sidebar width ---------------------------------------------------------
+
+/**
+ * Drag-to-resize for the sidebar.
+ *
+ * Only `--sidebar-width` is written. The width and the slide-out distance for
+ * collapsing are both derived from it, so the collapse keeps working untouched,
+ * and there is exactly one value to remember.
+ */
+const WIDTH_STORAGE_KEY = "pdfxlate.sidebarWidth";
+const MIN_SIDEBAR = 240;
+const MAX_SIDEBAR = 600;
+
+/**
+ * Clamp a width to something that leaves the document usable.
+ *
+ * The upper bound is also a share of the window, since 600px is comfortable at
+ * 1280 but would leave almost nothing for the page on a narrow window. The
+ * window's minimum width is 1000, so half of it still leaves the preview half.
+ */
+function clampSidebarWidth(width: number): number {
+  const byWindow = Math.max(MIN_SIDEBAR, Math.floor(window.innerWidth / 2));
+  return Math.round(Math.min(Math.max(width, MIN_SIDEBAR), Math.min(MAX_SIDEBAR, byWindow)));
+}
+
+function applySidebarWidth(width: number, persist = true): void {
+  const clamped = clampSidebarWidth(width);
+  document.documentElement.style.setProperty("--sidebar-width", `${clamped}px`);
+  if (!persist) return;
+  try {
+    localStorage.setItem(WIDTH_STORAGE_KEY, String(clamped));
+  } catch {
+    // Unavailable storage only costs the memory of the width.
+  }
+}
+
+function restoreSidebarWidth(): void {
+  let stored: number | null = null;
+  try {
+    const raw = localStorage.getItem(WIDTH_STORAGE_KEY);
+    stored = raw === null ? null : Number(raw);
+  } catch {
+    stored = null;
+  }
+  // Re-clamp on restore: the value may have been saved on a wider window, or
+  // been edited by hand, and a bad width must not break the layout.
+  applySidebarWidth(
+    stored !== null && Number.isFinite(stored) ? stored : 340,
+    false,
+  );
+}
+
+/**
+ * Drag the sidebar's edge to set its width.
+ *
+ * The move and release listeners are on `window`, not on the handle. The handle
+ * is only 5px wide, and dragging means leaving it immediately — and once the
+ * pointer is over the preview it is over an `<iframe>`, a separate document
+ * whose events never reach this one. Listening on `window` keeps the gesture
+ * alive across the whole width of the app.
+ *
+ * `setPointerCapture` would be the other way to do this, but it does not take
+ * effect under synthetic (and, in this app's case, real) pointer input here —
+ * measured: moves reached `window` while the handle never saw them. Acting on a
+ * plain flag instead is both simpler and demonstrably working.
+ */
+const resizer = $("sidebar-resizer");
+let resizing = false;
+
+resizer.addEventListener("pointerdown", (e) => {
+  e.preventDefault();
+  resizing = true;
+  document.body.classList.add("is-resizing");
+});
+
+window.addEventListener("pointermove", (e) => {
+  if (!resizing) return;
+  // The sidebar starts at the window's left edge, so the pointer's x is the
+  // width being asked for.
+  applySidebarWidth(e.clientX, false);
+});
+
+function endResize(): void {
+  if (!resizing) return;
+  resizing = false;
+  document.body.classList.remove("is-resizing");
+  // Persist on release rather than on every move, so a drag writes once.
+  const current = parseFloat(
+    getComputedStyle(document.documentElement).getPropertyValue("--sidebar-width"),
+  );
+  if (Number.isFinite(current)) applySidebarWidth(current);
+}
+
+window.addEventListener("pointerup", endResize);
+window.addEventListener("pointercancel", endResize);
+
+// A window resize can make a stored width too wide for the new size.
+window.addEventListener("resize", () => {
+  const current = parseFloat(
+    getComputedStyle(document.documentElement).getPropertyValue("--sidebar-width"),
+  );
+  if (Number.isFinite(current)) applySidebarWidth(current, false);
+});
+
+restoreSidebarWidth();
+
 // --- locale ----------------------------------------------------------------
 
 /**
@@ -323,6 +429,8 @@ onLocaleChange(() => {
   paintProfileMessage();
   renderProviderSelect();
   renderModelSelect();
+  renderOptionModels();
+  paintOptionSelects();
   updatePreviewControls();
   renderPreview();
   paintSettingsMode();
@@ -1076,6 +1184,9 @@ async function refreshProviders(): Promise<void> {
     currentModel = currentProvider ? pickModel(currentProvider) : null;
     renderProviderSelect();
     renderModelSelect();
+    // The options panel lists the same pairs, and it reads from this cached
+    // config, so it has to be rebuilt whenever the config is reloaded.
+    renderOptionModels();
     applyProviderFields();
     applyModelFields();
   } catch (err) {
@@ -1452,6 +1563,159 @@ $("btn-save-model").addEventListener("click", async () => {
 // --- options ---------------------------------------------------------------
 
 /**
+ * Per-job overrides, for the options panel.
+ *
+ * These change the next translation only. The stored defaults live in Settings
+ * and are what the engine falls back to when these are unset, so each is a
+ * three-state value: `""` means "follow the configured default", and anything
+ * else is an override for one run. Kept in localStorage rather than the config
+ * file, because writing them back would turn a one-off choice into a default.
+ */
+const OPTION_KEYS = {
+  model: "pdfxlate.option.model",
+  reasoning: "pdfxlate.option.reasoning",
+  langIn: "pdfxlate.option.langIn",
+  langOut: "pdfxlate.option.langOut",
+} as const;
+
+type OptionName = keyof typeof OPTION_KEYS;
+
+const optionValues: Record<OptionName, string> = {
+  model: "",
+  reasoning: "",
+  langIn: "",
+  langOut: "",
+};
+
+function loadOptionValues(): void {
+  for (const [name, key] of Object.entries(OPTION_KEYS) as [OptionName, string][]) {
+    try {
+      optionValues[name] = localStorage.getItem(key) ?? "";
+    } catch {
+      optionValues[name] = "";
+    }
+  }
+}
+
+function storeOption(name: OptionName, value: string): void {
+  optionValues[name] = value;
+  try {
+    localStorage.setItem(OPTION_KEYS[name], value);
+  } catch {
+    // Unavailable storage only costs the memory of the choice.
+  }
+}
+
+/** Languages offered in the dropdowns, as codes the engine is happy with. */
+const LANGUAGES = [
+  "en", "zh", "zh-tw", "ja", "ko", "fr", "de", "es", "pt", "it", "ru",
+  "ar", "hi", "th", "vi", "id", "tr", "nl", "pl", "uk",
+] as const;
+
+/**
+ * A language's name in the interface language.
+ *
+ * `Intl.DisplayNames` is used rather than twenty hand-written labels per
+ * locale: it is built into the runtime and already knows these names in every
+ * UI language, so there is nothing to keep in step. The code is shown as a
+ * fallback if it is unavailable or does not recognise one.
+ */
+function languageLabel(code: string): string {
+  try {
+    const names = new Intl.DisplayNames([getLocale() === "zh" ? "zh-CN" : "en"], {
+      type: "language",
+    });
+    return names.of(code) ?? code;
+  } catch {
+    return code;
+  }
+}
+
+function fillLanguageSelect(select: HTMLSelectElement, name: OptionName): void {
+  select.innerHTML = "";
+  const follow = document.createElement("option");
+  follow.value = "";
+  follow.textContent = t("options.followDefault");
+  select.append(follow);
+  for (const code of LANGUAGES) {
+    const opt = document.createElement("option");
+    opt.value = code;
+    // Each language named in its own language, so the list is usable whatever
+    // the interface language is.
+    opt.textContent = languageLabel(code);
+    select.append(opt);
+  }
+  select.value = optionValues[name];
+}
+
+function paintOptionSelects(): void {
+  fillLanguageSelect($<HTMLSelectElement>("opt-lang-in"), "langIn");
+  fillLanguageSelect($<HTMLSelectElement>("opt-lang-out"), "langOut");
+  $<HTMLSelectElement>("opt-reasoning").value = optionValues.reasoning;
+}
+
+/**
+ * Rebuild the model dropdown from the loaded config.
+ *
+ * Every provider/model pair, labelled `provider · model`, with the alias as the
+ * value so the job can name it exactly as the engine expects.
+ */
+function renderOptionModels(): void {
+  const select = $<HTMLSelectElement>("opt-model");
+  select.innerHTML = "";
+  const follow = document.createElement("option");
+  follow.value = "";
+  follow.textContent = t("options.followDefault");
+  select.append(follow);
+
+  const providers = cachedConfig?.providers ?? {};
+  let any = false;
+  for (const [providerName, provider] of Object.entries(providers)) {
+    for (const alias of Object.keys(provider.models ?? {})) {
+      const opt = document.createElement("option");
+      // `provider|model`: neither half may contain a pipe, so this round-trips
+      // without needing a nested structure the DOM cannot carry.
+      opt.value = `${providerName}|${alias}`;
+      opt.textContent = `${providerName} · ${alias}`;
+      select.append(opt);
+      any = true;
+    }
+  }
+  if (!any) {
+    select.value = "";
+    select.disabled = true;
+    return;
+  }
+  select.disabled = false;
+  // Drop a remembered choice that no longer exists rather than leaving the
+  // dropdown on a value the engine would reject.
+  if (optionValues.model && !select.querySelector(`option[value="${CSS.escape(optionValues.model)}"]`)) {
+    storeOption("model", "");
+  }
+  select.value = optionValues.model;
+}
+
+/** The provider/model pair for the next job, or null to use the default. */
+function selectedModel(): { provider: string; model: string } | null {
+  if (!optionValues.model) return null;
+  const [provider, model] = optionValues.model.split("|");
+  return provider && model ? { provider, model } : null;
+}
+
+$("opt-model").addEventListener("change", (e) =>
+  storeOption("model", (e.target as HTMLSelectElement).value),
+);
+$("opt-reasoning").addEventListener("change", (e) =>
+  storeOption("reasoning", (e.target as HTMLSelectElement).value),
+);
+$("opt-lang-in").addEventListener("change", (e) =>
+  storeOption("langIn", (e.target as HTMLSelectElement).value),
+);
+$("opt-lang-out").addEventListener("change", (e) =>
+  storeOption("langOut", (e.target as HTMLSelectElement).value),
+);
+
+/**
  * The directory the engine writes to when the user has not chosen one.
  *
  * Held so the output field can show it and a job can pass it explicitly, which
@@ -1534,6 +1798,7 @@ $("btn-translate").addEventListener("click", async () => {
   if (!checkedFiles.size) return;
   const files = [...checkedFiles];
   const mode = $<HTMLSelectElement>("field-mode").value as "fast" | "ultrafast";
+  const picked = selectedModel();
   activeJobId = "pending";
   updateTranslateButton();
   $("btn-cancel").classList.remove("hidden");
@@ -1544,8 +1809,13 @@ $("btn-translate").addEventListener("click", async () => {
       "translate.start",
       {
         files,
-        provider: currentProvider ?? undefined,
-        model: currentModel ?? undefined,
+        // The options panel wins when it names something; `undefined` means
+        // "not specified", so the engine keeps its configured defaults.
+        provider: picked?.provider ?? currentProvider ?? undefined,
+        model: picked?.model ?? currentModel ?? undefined,
+        lang_in: optionValues.langIn || undefined,
+        lang_out: optionValues.langOut || undefined,
+        reasoning_effort: optionValues.reasoning || undefined,
         // Pass the resolved default explicitly rather than leaving it undefined:
         // what the field shows and what the engine writes must be the same
         // thing. The main process still fills it in if this is ever missing.
@@ -1659,6 +1929,8 @@ function appendLog(line: string): void {
 updateTranslateButton();
 renderTabs();
 renderFiles();
+loadOptionValues();
+paintOptionSelects();
 updatePreviewControls();
 renderPreview();
 trackPointerOverPreview();

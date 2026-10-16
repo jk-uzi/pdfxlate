@@ -33,6 +33,7 @@ def build_translator(
     prompt: str | None = None,
     ignore_cache: bool = False,
     profile: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> ModelAdapter:
     """Construct the adapter for a provider and one of its models.
 
@@ -43,11 +44,20 @@ def build_translator(
     ``ignore_cache`` skips the cache for every :meth:`ModelAdapter.translate`
     call made by this adapter.  It is unrelated to ``cache.enabled``, which
     switches the cache off entirely.
+
+    ``reasoning_effort`` overrides the value stored on the model entry for this
+    adapter only.  It is applied to a copy of the resolved entry, so the caller's
+    configuration object is left untouched — a one-off job must not rewrite what
+    the settings panel shows.
     """
     cfg = app_config or config_mod.load()
     if profile and provider is None:
         provider = profile
     resolved = cfg.resolve(provider, model)
+    if reasoning_effort is not None:
+        # A copy, not a mutation: `resolved` is derived from `cfg`, and editing it
+        # in place would be editing (a piece of) the caller's configuration.
+        resolved = resolved.model_copy(update={"reasoning_effort": reasoning_effort})
     return build_adapter(
         resolved.kind,
         resolved,
@@ -76,6 +86,9 @@ def translate(
     skip_subset_fonts: bool | None = None,
     ignore_cache: bool = False,
     profile: str | None = None,
+    lang_in: str | None = None,
+    lang_out: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> list[tuple[str, str]]:
     """Translate PDF files and write ``-mono``/``-dual`` outputs.
 
@@ -83,11 +96,34 @@ def translate(
     ``ignore_cache`` forces every paragraph to be retranslated for this call,
     bypassing cache reads and writes.  ``profile`` is a deprecated alias for
     ``provider``.
+
+    ``lang_in``, ``lang_out`` and ``reasoning_effort`` override the stored
+    settings for this call only.  Note that ``None`` means "use the configured
+    value" and is different from passing an empty string, which would be an
+    override to nothing.
+
+    The overrides are applied to a **deep copy** of the configuration.  The
+    caller may hold the object it passed in — the settings panel does — and a
+    one-off translation must not silently rewrite the user's saved defaults.
     """
     paths.ensure_dirs()
     cfg = config or config_mod.load(app_config_path)
+    overrides: dict[str, str] = {}
+    if lang_in is not None:
+        overrides["lang_in"] = lang_in
+    if lang_out is not None:
+        overrides["lang_out"] = lang_out
+    if overrides:
+        cfg = cfg.model_copy(deep=True)
+        cfg.translation = cfg.translation.model_copy(update=overrides)
+
     translator = build_translator(
-        provider, model, app_config=cfg, ignore_cache=ignore_cache, profile=profile
+        provider,
+        model,
+        app_config=cfg,
+        ignore_cache=ignore_cache,
+        profile=profile,
+        reasoning_effort=reasoning_effort,
     )
 
     resolved_mode = mode or cfg.translation.mode

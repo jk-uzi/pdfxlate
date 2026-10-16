@@ -49,6 +49,8 @@ Python 3.12，venv 在 `python/.venv`，包以 editable 方式安装，改源码
 | 改进度显示 | `src/renderer/app.ts` 的 `paintProgress()`，落点在 `index.html` 侧栏底部的 `.sidebar__status`（与设置图标同一行） |
 | 改默认输出目录 | `src/main/main.ts` 的 `defaultOutputDir()`（**必须走 `app.getPath("documents")`**，别在 Python 里拼路径） |
 | 改「另存为」存哪一份 | `src/renderer/app.ts` 的 `saveAsSource()`；对话框与拷贝在 `src/main/main.ts` 的 `dialog:saveAs` |
+| 改选项面板（模型/推理/语言，只影响本次） | `src/renderer/app.ts` 的 `optionValues` / `selectedModel()`；引擎侧覆盖在 `api.py` 的 `translate()` |
+| 改侧栏宽度 | `src/renderer/app.ts` 的 `applySidebarWidth()` / `clampSidebarWidth()` + `style.css` 的 `--sidebar-width`、`.sidebar__resizer` |
 | 改浮层显隐时机 | `src/renderer/app.ts` 的 `flashViewerOverlay()` + `VIEWER_OVERLAYS`；滚轮那条还需 `src/main/main.ts` 的 `registerWheelForwarding()` |
 | 改右侧 PDF 预览（标签/翻页/缩放） | `src/renderer/app.ts` 的 `renderPreview()` / `viewerUrl()` / `activateTab()` |
 | 改左侧文件列表（文件夹浏览/勾选） | `src/renderer/app.ts` 的 `openFolder()` / `renderFiles()`；目录列举在 `src/main/main.ts` 的 `app:listPdfs` |
@@ -115,11 +117,11 @@ pdfxlate/
 │   ├── preload/
 │   │   └── preload.ts       168 行  contextBridge，向渲染进程暴露 API
 │   └── renderer/
-│       ├── index.html       397 行  界面结构（文案走 data-i18n* 属性；图标在构建时内联）
-│       ├── app.ts          1684 行  界面逻辑（任务/设置双模式、折叠、标签页、文件夹浏览、拖放、缩放、进度、另存为）
-│       ├── i18n.ts          495 行  中英文字符串表 + t()/applyStaticTranslations()
+│       ├── index.html       431 行  界面结构（文案走 data-i18n* 属性；图标在构建时内联）
+│       ├── app.ts          1956 行  界面逻辑（任务/设置双模式、折叠、标签页、文件夹浏览、拖放、缩放、进度、另存为、选项覆盖、侧栏拖拽）
+│       ├── i18n.ts          503 行  中英文字符串表 + t()/applyStaticTranslations()
 │       ├── icon.svg          49 行  应用标记的**唯一来源**（标题栏内联 + 打包图标）
-│       └── style.css        998 行  样式（含标题栏标签、查看器浮层、折叠与侧栏状态行）
+│       └── style.css       1037 行  样式（含标题栏标签、查看器浮层、折叠与侧栏状态行、侧栏拖拽手柄）
 ├── assets/
 │   ├── icon.png               512×512，由 make_icon.py 从 icon.svg 生成后提交
 │   └── icon.ico               16–256 多尺寸，同上（Windows 用）
@@ -131,6 +133,7 @@ pdfxlate/
 │   ├── test_cli_options.py   286 行  CLI 排版选项解析与三态覆盖语义
 │   ├── test_sidecar_providers.py 181 行  providers.list 形状、密钥不外传
 │   ├── test_mcp_server.py    600 行  MCP 工具、stdio 握手、两遍式端到端与确定性护栏
+│   ├── test_per_job_overrides.py 136 行  按次覆盖语言/推理；调用方配置对象不被改动
 │   └── test_assets_fonts.py  113 行  语言→字体映射、status() 兼容性
 └── scripts/
     ├── copy-static.mjs        81 行  拷贝 CSS、**把 icon.svg 内联进 index.html**
@@ -443,6 +446,47 @@ PDF，它是空的，两个按钮就被禁用并提示"请先翻译"：程序**�
 - **页号按标签各自记住**（`pageState: Map<path, {page, pages}>`）；**缩放是全局的**
   ——那是阅读偏好，每份文档不一样反而更糟。
 - 翻译完成后**产出自动开成标签**（mono + dual），替代原来的「结果」分组。
+
+### 选项面板：只影响本次任务
+
+选项面板里的**模型 / 推理强度 / 源语言 / 目标语言**只作用于**下一次翻译**，**不写
+config.yaml**——与同面板的页码、线程数、模式一致。存进 localStorage 是为了记住上次的选择，
+而不是把它变成默认值。
+
+每个下拉的**首项都是「跟随默认」**（值是空串）：真正的默认在设置里，如果这里直接显示某个
+具体模型，会让人以为模型是在这里选定的。
+
+- **模型下拉**列出 `供应商 · 模型` 全部组合，值形如 `provider|model`（两半都不含 `|`，所以
+  能无歧义地还原）。
+- **语言列表是常见的那些，不是全集**。引擎对未知码**有意宽容回退**到 GoNoto
+  （`font_filename` 的注释写明了理由），所以列表里没有 ≠ 不支持。语言名用
+  `Intl.DisplayNames` 现取，不手写二十种译名。
+- **两种语言的作用不对称**：目标语言进提示词、决定字体与行高；**源语言只影响 OCR**
+  （`_ocr_pages` 映射到 tesseract 码）。非扫描件改源语言不会有任何变化，这不是 bug。
+- 两者都在缓存键（`_cache_params`）里，所以覆盖会正确失效缓存。
+
+### 只影响本次任务：引擎侧怎么做到的
+
+`translate.start` 现在透传 `lang_in` / `lang_out` / `reasoning_effort`。**用 `None` 表示
+"不覆盖"**（与 `skip_subset_fonts` 同一个三态约定）：空串是一次"覆盖成空"的显式请求，
+两者不能混为一谈。
+
+覆盖落在**深拷贝**上（`cfg.model_copy(deep=True)`），`reasoning_effort` 则通过 `model_copy`
+改 `ResolvedModel` 的副本。**调用方持有的配置对象绝不会被改**——设置面板正持有它，而
+"只影响这一次"的全部意义就在于不把临时选择变成永久默认。`tests/test_per_job_overrides.py`
+把这个不变量钉死了，包括"传入的 cfg 未被改动"和"不传时沿用配置"两条。
+
+### 侧栏宽度可拖拽
+
+`--sidebar-width` 是**唯一**被写入的值：宽度和折叠位移
+（`margin-left: calc(-1 * var(--sidebar-width) - 1px)`）都由它派生，所以折叠逻辑一行没动。
+范围夹在 **240 – min(600, 窗口宽度一半)**，窗口缩放时重新夹紧，启动时也重新夹紧（存下来的
+值可能来自更宽的窗口，或被手改过）。
+
+**拖动监听挂在 `window` 上，不是手柄上。** 手柄只有 5px，一拖就离开它；再往右就是预览区的
+`<iframe>`——另一个文档，它的事件不会到达本页。曾经想用 `setPointerCapture`，但**实测在此
+环境下不生效**（移动事件到了 `window`，手柄却收不到），所以改用一个普通标志位，既简单又
+确实可用。
 
 ### 控件位置
 

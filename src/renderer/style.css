@@ -331,6 +331,45 @@ body {
 }
 
 /*
+ * The drag handle for the sidebar width.
+ *
+ * A sibling of the sidebar rather than a pseudo-element on it: the sidebar
+ * slides out of view when collapsed, and a handle attached to it would travel
+ * with it. Here the whole element is hidden instead.
+ */
+.sidebar__resizer {
+  flex: 0 0 5px;
+  cursor: col-resize;
+  background: transparent;
+  /* Sits on top of the sidebar border without widening the layout. */
+  margin-left: -3px;
+  margin-right: -2px;
+  z-index: 5;
+}
+
+.sidebar__resizer:hover,
+body.is-resizing .sidebar__resizer {
+  background: var(--accent);
+}
+
+body.sidebar-collapsed .sidebar__resizer {
+  display: none;
+}
+
+/*
+ * While dragging: no text selection anywhere, and no width transition — both
+ * would fight the pointer and make the edge lag behind it.
+ */
+body.is-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+body.is-resizing .sidebar {
+  transition: none;
+}
+
+/*
  * Collapsed sidebar, driven from a class on `<body>` rather than per element:
  * there are two sidebars (task and settings) and both must move together.
  *

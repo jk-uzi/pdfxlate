@@ -102,6 +102,10 @@ const EN: Table = {
   "model.saveFailed": "Save failed: {error}",
 
   "options.title": "Options",
+  "options.followDefault": "Follow the default",
+  "options.model": "Model",
+  "options.reasoning": "Reasoning effort",
+  "sidebar.resize": "Drag to resize the sidebar",
   "options.langIn": "Source language",
   "options.langOut": "Target language",
   "options.mode": "Mode",
@@ -250,6 +254,10 @@ const ZH: Table = {
   "model.saveFailed": "保存失败：{error}",
 
   "options.title": "选项",
+  "options.followDefault": "跟随默认",
+  "options.model": "模型",
+  "options.reasoning": "推理强度",
+  "sidebar.resize": "拖动以调整侧栏宽度",
   "options.langIn": "源语言",
   "options.langOut": "目标语言",
   "options.mode": "模式",
