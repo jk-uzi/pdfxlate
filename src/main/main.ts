@@ -91,10 +91,12 @@ async function startSidecar(): Promise<Sidecar> {
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
-    width: 1100,
-    height: 780,
-    minWidth: 820,
-    minHeight: 600,
+    width: 1280,
+    height: 820,
+    // The settings sidebar takes a fixed 340px, so the preview pane needs the
+    // extra width to stay usable; below this the PDF page is unreadably small.
+    minWidth: 1000,
+    minHeight: 640,
     title: "pdfxlate",
     show: false,
     webPreferences: {
@@ -104,6 +106,11 @@ function createWindow(): void {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      // Required by the PDF preview: Chromium's built-in viewer is a plugin,
+      // and with this off the frame loads as a blank page. It only ever loads
+      // local file:// PDFs the user picked; the renderer's CSP still refuses
+      // remote content and inline script.
+      plugins: true,
     },
   });
 

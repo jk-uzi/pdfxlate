@@ -5,6 +5,7 @@
  */
 
 import { contextBridge, ipcRenderer } from "electron";
+import { pathToFileURL } from "node:url";
 
 export interface OutputPair {
   mono: string;
@@ -78,6 +79,17 @@ const api = {
     ipcRenderer.invoke("dialog:pickOutputDir", locale),
   reveal: (target: string): Promise<void> => ipcRenderer.invoke("shell:reveal", target),
   openPath: (target: string): Promise<void> => ipcRenderer.invoke("shell:openPath", target),
+
+  /**
+   * Absolute filesystem path -> `file://` URL, for the PDF preview iframe.
+   *
+   * A pure conversion, not an IPC round trip: the renderer is sandboxed with
+   * `contextIsolation` and has no access to Node's `url` module, so the
+   * conversion has to be handed to it. Windows paths in particular cannot be
+   * built by hand — `pathToFileURL` handles the drive letter, backslashes and
+   * percent-encoding.
+   */
+  fileUrl: (target: string): string => pathToFileURL(target).href,
 
   platform: process.platform,
 };
