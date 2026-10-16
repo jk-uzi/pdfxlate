@@ -166,13 +166,19 @@ type ViewMode = "original" | "translated" | "compare";
 let viewMode: ViewMode = "original";
 let previewPage = 1;
 /**
- * Zoom level: a percentage, or "page-width" to fit the pane.
+ * Zoom level: an explicit percentage, or one of the two fit modes.
+ *
+ * "fit-width" scales a page so its full width is visible; "fit-height" scales
+ * it so a whole page fits vertically (the better choice for a wide pane). The
+ * two are separate modes rather than one "fit" toggle because which axis is the
+ * binding constraint flips with the pane's aspect ratio.
  *
  * Defaults to fit-width because the preview pane is much narrower than a page
  * at 100% — a fixed 100% would open every document with a horizontal scrollbar.
  * Pressing +/- switches to an explicit percentage, as in other viewers.
  */
-let previewZoom: number | "page-width" = "page-width";
+type ZoomMode = "fit-width" | "fit-height";
+let previewZoom: number | ZoomMode = "fit-width";
 // Page count of the file being previewed; 0 means "not known yet".
 let previewPages = 0;
 
@@ -309,7 +315,9 @@ function paintSettingsMode(): void {
   const inSettings = appMode === "settings";
   $("sidebar-task").classList.toggle("hidden", inSettings);
   $("sidebar-settings").classList.toggle("hidden", !inSettings);
-  $("preview-bar").classList.toggle("hidden", inSettings);
+  // The view controls live in the title bar now, so they hide in settings mode
+  // rather than a bar of their own.
+  $("titlebar-actions").classList.toggle("hidden", inSettings);
   $("preview-host").classList.toggle("hidden", inSettings);
   $("settings-host").classList.toggle("hidden", !inSettings);
 
@@ -505,7 +513,7 @@ function hasResults(): boolean {
 /** Return the preview to its empty state and forget the per-file state. */
 function resetPreview(): void {
   previewPage = 1;
-  previewZoom = "page-width";
+  previewZoom = "fit-width";
   previewPages = 0;
   if (!hasResults() && viewMode !== "original") viewMode = "original";
   updatePreviewControls();
@@ -534,10 +542,21 @@ async function refreshPageCount(): Promise<void> {
  *
  * The fragment is what drives the built-in viewer: `toolbar=0&navpanes=0`
  * hides its own chrome (that is why the app can supply a toolbar of its own),
- * and `page` / `zoom` set the initial view.
+ * and `page` / `zoom` / `view` set the initial view.
+ *
+ * Fit-width maps to `zoom=page-width`, which this viewer honours. Fit-height
+ * does NOT: `zoom=page-height` and `zoom=page-fit` are accepted but ignored in
+ * this Chromium build, whereas `view=FitV` does resize the rendered page. So
+ * the two fit modes use two different fragment parameters.
  */
 function viewerUrl(file: string): string {
-  return `${api.fileUrl(file)}#toolbar=0&navpanes=0&page=${previewPage}&zoom=${previewZoom}`;
+  const fragment =
+    previewZoom === "fit-width"
+      ? "zoom=page-width"
+      : previewZoom === "fit-height"
+        ? "view=FitV"
+        : `zoom=${previewZoom}`;
+  return `${api.fileUrl(file)}#toolbar=0&navpanes=0&page=${previewPage}&${fragment}`;
 }
 /**
  * One pane: the viewer frame for `file`, plus a label when `labelled`.
@@ -571,7 +590,12 @@ function makePane(file: string, labelKey: string, labelled: boolean): HTMLElemen
  */
 function renderPreview(): void {
   const host = $("preview-host");
+  // The overlay (pager / zoom / open) lives inside the host, so clearing the
+  // host would delete it along with the frames. Detach and re-append it: it is
+  // absolutely positioned, so its position in the flow does not matter.
+  const overlay = $("viewer-overlay");
   host.innerHTML = "";
+  host.append(overlay);
   const source = previewSource();
   if (!source) {
     const empty = document.createElement("div");
@@ -625,6 +649,13 @@ function updatePreviewControls(): void {
   translatedButton.title = hasOutput ? "" : t("preview.needResults");
   $<HTMLButtonElement>("view-compare").title = hasOutput ? "" : t("preview.needResults");
 
+  // Fit buttons: the matching one lights up, and neither does while an explicit
+  // percentage is set. Both are unavailable without a file.
+  $<HTMLButtonElement>("fit-width").disabled = !hasFile;
+  $<HTMLButtonElement>("fit-height").disabled = !hasFile;
+  $("fit-width").classList.toggle("is-active", previewZoom === "fit-width");
+  $("fit-height").classList.toggle("is-active", previewZoom === "fit-height");
+
   const known = previewPages > 0;
   $("page-label").textContent = hasFile
     ? known
@@ -635,11 +666,19 @@ function updatePreviewControls(): void {
   $<HTMLButtonElement>("page-next").disabled = !hasFile || (known && previewPage >= previewPages);
 
   $("zoom-label").textContent =
-    previewZoom === "page-width" ? t("preview.zoomFit") : `${previewZoom}%`;
+    previewZoom === "fit-width"
+      ? t("preview.fitWidth")
+      : previewZoom === "fit-height"
+        ? t("preview.fitHeight")
+        : `${previewZoom}%`;
   $<HTMLButtonElement>("zoom-out").disabled = !hasFile || previewZoom === ZOOM_STEPS[0];
   $<HTMLButtonElement>("zoom-in").disabled =
     !hasFile || previewZoom === ZOOM_STEPS.at(-1)!;
   $<HTMLButtonElement>("btn-open-file").disabled = !hasFile;
+
+  // The overlay is meaningless without a document; hide it outright rather than
+  // relying on the auto-hide timer, which only runs after an interaction.
+  $("viewer-overlay").classList.toggle("hidden", !hasFile);
 }
 
 function setViewMode(mode: ViewMode): void {
@@ -657,6 +696,41 @@ for (const [id, mode] of [
   $(id).addEventListener("click", () => setViewMode(mode));
 }
 
+/**
+ * Show the viewer overlay for a moment, then let it fade.
+ *
+ * The overlay stays in the DOM at `opacity: 0` so CSS `:hover` can still reveal
+ * it; this timer is the second, interaction-driven trigger — changing page or
+ * zoom surfaces the controls without the pointer having to find them. Every
+ * call restarts the clock so rapid clicks do not hide it mid-sequence.
+ */
+let overlayFlashTimer: ReturnType<typeof setTimeout> | null = null;
+
+function flashViewerOverlay(): void {
+  const overlay = $("viewer-overlay");
+  overlay.classList.add("is-visible");
+  if (overlayFlashTimer !== null) clearTimeout(overlayFlashTimer);
+  overlayFlashTimer = setTimeout(() => {
+    overlay.classList.remove("is-visible");
+    overlayFlashTimer = null;
+  }, 1600);
+}
+
+/** Switch to a fit mode (or back to fit-width) from the title-bar buttons. */
+function setZoomMode(mode: ZoomMode): void {
+  if (!previewSource()) return;
+  if (previewZoom === mode) return;
+  previewZoom = mode;
+  updatePreviewControls();
+  renderPreview();
+  // The overlay's zoom readout just changed, so surface it (same rule as
+  // stepZoom). setViewMode does not flash: it changes nothing the overlay shows.
+  flashViewerOverlay();
+}
+
+$("fit-width").addEventListener("click", () => setZoomMode("fit-width"));
+$("fit-height").addEventListener("click", () => setZoomMode("fit-height"));
+
 function stepPage(delta: number): void {
   if (!previewSource()) return;
   const next = previewPage + delta;
@@ -665,18 +739,20 @@ function stepPage(delta: number): void {
   previewPage = next;
   updatePreviewControls();
   renderPreview();
+  flashViewerOverlay();
 }
 
 $("page-prev").addEventListener("click", () => stepPage(-1));
 $("page-next").addEventListener("click", () => stepPage(1));
 
 function stepZoom(delta: number): void {
-  // From fit-width, the first press lands on the step nearest to 100% so the
-  // transition is predictable rather than jumping to an extreme.
-  if (previewZoom === "page-width") {
+  // From either fit mode, the first press lands on the step nearest to 100% so
+  // the transition is predictable rather than jumping to an extreme.
+  if (typeof previewZoom === "string") {
     previewZoom = ZOOM_STEPS[delta > 0 ? ZOOM_STEPS.indexOf(125) : ZOOM_STEPS.indexOf(75)];
     updatePreviewControls();
     renderPreview();
+    flashViewerOverlay();
     return;
   }
   const current: number = previewZoom;
@@ -691,6 +767,7 @@ function stepZoom(delta: number): void {
   previewZoom = next;
   updatePreviewControls();
   renderPreview();
+  flashViewerOverlay();
 }
 
 $("zoom-out").addEventListener("click", () => stepZoom(-1));
