@@ -68,8 +68,14 @@ const api = {
   request: <T>(method: string, params: Record<string, unknown> = {}): Promise<T> =>
     ipcRenderer.invoke("sidecar:request", method, params),
 
-  pickPdf: (): Promise<string[]> => ipcRenderer.invoke("dialog:pickPdf"),
-  pickOutputDir: (): Promise<string | null> => ipcRenderer.invoke("dialog:pickOutputDir"),
+  /**
+   * Native "open files" dialog. `locale` is the renderer's active interface
+   * language; the main process falls back to the OS locale when it is omitted.
+   */
+  pickPdf: (locale?: string): Promise<string[]> =>
+    ipcRenderer.invoke("dialog:pickPdf", locale),
+  pickOutputDir: (locale?: string): Promise<string | null> =>
+    ipcRenderer.invoke("dialog:pickOutputDir", locale),
   reveal: (target: string): Promise<void> => ipcRenderer.invoke("shell:reveal", target),
   openPath: (target: string): Promise<void> => ipcRenderer.invoke("shell:openPath", target),
 

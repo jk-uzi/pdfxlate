@@ -25,6 +25,55 @@ type EngineState =
 
 let engineState: EngineState = null;
 
+type Locale = "en" | "zh";
+
+/**
+ * Native dialog strings owned by the main process.
+ *
+ * Deliberately duplicated from the renderer's i18n table rather than imported
+ * from it: this half of the app compiles as CommonJS (tsconfig.node.json)
+ * while the renderer is native ESM, and the renderer module also touches
+ * browser-only globals (`document`, `localStorage`, `navigator`). Importing it
+ * here would drag a browser-only dependency into the main process, so the four
+ * strings this process shows are kept locally. Keys mirror the renderer's
+ * `dialog.*` entries so the two tables stay easy to compare by eye.
+ */
+const DIALOG_STRINGS: Record<
+  Locale,
+  {
+    selectPdf: string;
+    selectOutput: string;
+    engineErrorTitle: string;
+    engineErrorHint: string;
+  }
+> = {
+  en: {
+    selectPdf: "Select PDF files",
+    selectOutput: "Select output directory",
+    engineErrorTitle: "Could not start the translation engine",
+    engineErrorHint: "If running from source, make sure the Python environment is set up:",
+  },
+  zh: {
+    selectPdf: "选择 PDF 文件",
+    selectOutput: "选择输出目录",
+    engineErrorTitle: "无法启动翻译引擎",
+    engineErrorHint: "若从源码运行，请确认 Python 环境已配置：",
+  },
+};
+
+/**
+ * Map an incoming locale tag to a supported locale: anything starting with
+ * "zh" (case-insensitive) is Chinese, everything else English.
+ *
+ * The renderer passes its active locale over IPC. When the tag is missing —
+ * an older caller, or a call made before the renderer knows its locale — fall
+ * back to the OS locale Electron reports.
+ */
+function resolveLocale(tag?: string): Locale {
+  const value = tag || app.getLocale();
+  return value.toLowerCase().startsWith("zh") ? "zh" : "en";
+}
+
 function broadcast(channel: string, payload: unknown): void {
   mainWindow?.webContents.send(channel, payload);
 }
@@ -78,18 +127,18 @@ function registerIpc(): void {
   // depending on having caught the one-shot ready event.
   ipcMain.handle("sidecar:state", async () => engineState);
 
-  ipcMain.handle("dialog:pickPdf", async () => {
+  ipcMain.handle("dialog:pickPdf", async (_event, locale?: string) => {
     const result = await dialog.showOpenDialog(mainWindow!, {
-      title: "Select PDF files",
+      title: DIALOG_STRINGS[resolveLocale(locale)].selectPdf,
       properties: ["openFile", "multiSelections"],
       filters: [{ name: "PDF", extensions: ["pdf"] }],
     });
     return result.canceled ? [] : result.filePaths;
   });
 
-  ipcMain.handle("dialog:pickOutputDir", async () => {
+  ipcMain.handle("dialog:pickOutputDir", async (_event, locale?: string) => {
     const result = await dialog.showOpenDialog(mainWindow!, {
-      title: "Select output directory",
+      title: DIALOG_STRINGS[resolveLocale(locale)].selectOutput,
       properties: ["openDirectory", "createDirectory"],
     });
     return result.canceled ? null : result.filePaths[0];
@@ -116,9 +165,12 @@ app.whenReady().then(async () => {
     const message = err instanceof Error ? err.message : String(err);
     engineState = { ok: false, pending: false, error: message };
     broadcast("sidecar:ready", { ok: false, error: message });
+    // This fires before the renderer can report a locale, so the language can
+    // only come from the OS setting Electron exposes.
+    const startupStrings = DIALOG_STRINGS[resolveLocale()];
     dialog.showErrorBox(
-      "Could not start the translation engine",
-      `${message}\n\nIf running from source, make sure the Python environment is set up:\n` +
+      startupStrings.engineErrorTitle,
+      `${message}\n\n${startupStrings.engineErrorHint}\n` +
         `cd python && python -m venv .venv && .venv/bin/pip install -e .`,
     );
   }
