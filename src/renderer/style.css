@@ -103,6 +103,19 @@ body {
   -webkit-app-region: drag;
 }
 
+/*
+ * View and fit controls, parked beside the native window buttons. A sibling of
+ * the drag strip rather than a child: anything inside a drag region moves the
+ * window instead of receiving the click. The container reserves room for the
+ * native buttons, so this cluster lands just clear of them.
+ */
+.titlebar__actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .subtitle {
   color: var(--muted);
   font-size: 12px;
@@ -174,12 +187,6 @@ body {
 .btn--quiet:hover:not(:disabled) {
   background: #e7ebf0;
   color: var(--text);
-}
-
-.btn--icon {
-  padding: 7px 11px;
-  font-size: 15px;
-  line-height: 1;
 }
 
 /* The right pane while configuring: a normal scrolled page, not the canvas. */
@@ -276,15 +283,30 @@ body.sidebar-collapsed .sidebar {
   gap: 8px;
 }
 
-/* Full-width secondary action, e.g. Settings under Translate. */
-.btn--block {
-  width: 100%;
+/*
+ * Progress shares a row with Settings: the bar takes whatever width is left
+ * over, and the button stays a fixed square. The bar is unlabelled, so the
+ * text line sits under the row rather than beside it.
+ */
+.sidebar__status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
-/* A leading icon inside a text button (kept out of the i18n string so the
-   glyph is not part of the translation). */
-.btn__glyph {
-  margin-right: 6px;
+.sidebar__status .progress {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.sidebar__status-text {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* --- collapsible groups -------------------------------------------------- */
@@ -477,6 +499,30 @@ input[readonly] {
   padding: 7px 10px;
 }
 
+/* Icon-only button: a fixed square so it does not stretch beside the progress
+   bar, with the padding dropped in favour of centring the glyph. */
+.btn--icon {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  width: 30px;
+  height: 30px;
+  color: var(--muted);
+}
+
+.btn--icon:hover:not(:disabled) {
+  color: var(--text);
+}
+
+/* Sized here rather than on the SVG element so the markup stays a bare shape. */
+.icon-gear {
+  display: block;
+  width: 18px;
+  height: 18px;
+}
+
 .icon-btn {
   font: inherit;
   font-size: 14px;
@@ -557,38 +603,6 @@ input[readonly] {
   font-weight: 500;
 }
 
-/* --- status bar (pinned progress) ---------------------------------------- */
-
-/*
- * Full-width and pinned to the window, so progress stays visible while the
- * sidebar is collapsed. Always present — showing and hiding it would make the
- * bottom of the window jump, and a translation can keep running while the user
- * is in settings.
- */
-.statusbar {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 7px 12px;
-  background: var(--card);
-  border-top: 1px solid var(--border);
-}
-
-.statusbar .progress {
-  flex: 0 0 180px;
-}
-
-.statusbar__text {
-  margin: 0;
-  font-size: 12px;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 /* --- progress ------------------------------------------------------------ */
 
 .progress {
@@ -647,20 +661,6 @@ input[readonly] {
   background: #525659;
 }
 
-.preview__bar {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  background: var(--card);
-  border-bottom: 1px solid var(--border);
-}
-
-.preview__spacer {
-  flex: 1;
-}
-
 .segmented {
   display: flex;
   border: 1px solid var(--border);
@@ -668,13 +668,16 @@ input[readonly] {
   overflow: hidden;
 }
 
+/* Transparent rather than white: the group now sits on the title bar, whose
+   own background already is `--card`; a white fill would be redundant at best
+   and show as a seam against the tinted sidebar at worst. */
 .segmented__btn {
   font: inherit;
   font-size: 12px;
   padding: 5px 11px;
   border: none;
   border-right: 1px solid var(--border);
-  background: #fff;
+  background: transparent;
   color: var(--muted);
   cursor: pointer;
 }
@@ -723,6 +726,48 @@ input[readonly] {
 .preview__host--over {
   outline: 2px dashed var(--accent);
   outline-offset: -6px;
+}
+
+/*
+ * Paging / zoom / open, floated in the bottom-right of the document rather
+ * than on a bar of their own: a permanent bar costs a whole row of height on
+ * every page for actions that are occasional.
+ *
+ * Faded out but still laid out and still hit-testable — `display: none` or
+ * `visibility: hidden` would put the box out of reach of `:hover`, so the
+ * overlay could never be brought back by hovering it. `pointer-events: none`
+ * is deliberately not set for the same reason, which does mean this rectangle
+ * intercepts the mouse over that corner; keeping it small is the mitigation.
+ *
+ * Inset from the edges: the viewer's own scrollbar runs down the far right,
+ * and a flush overlay would sit on the end of it and block the drag.
+ */
+.viewer-overlay {
+  position: absolute;
+  right: 18px;
+  bottom: 18px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px;
+  border: 1px solid #2c2f31;
+  border-radius: var(--radius);
+  /* Translucent dark chip: the canvas under it is `#525659`, so a light chip
+     would glare and a fully opaque one would read as a foreign panel. */
+  background: rgba(38, 40, 43, 0.92);
+  opacity: 0;
+  transition: opacity 0.18s ease;
+}
+
+.viewer-overlay:hover,
+.viewer-overlay.is-visible {
+  opacity: 1;
+}
+
+/* `--muted` is tuned for the light chrome; on the dark chip it drops to
+   borderline unreadable, so the labels borrow the canvas-text grey. */
+.viewer-overlay .pager__label {
+  color: #d1d9e0;
 }
 
 .preview__frame {
