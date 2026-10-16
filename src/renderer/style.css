@@ -332,7 +332,12 @@ input[readonly] {
 }
 
 .icon-btn:disabled {
-  opacity: 0.4;
+  /* Faint enough to read as inactive at a glance. The glyphs are solid
+     strokes, so they stay legible at a higher opacity than plain text would. */
+  opacity: 0.25;
+  color: var(--muted);
+  border-color: #e8ebef;
+  background: #fafbfc;
   cursor: not-allowed;
 }
 
