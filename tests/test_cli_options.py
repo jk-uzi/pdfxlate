@@ -58,6 +58,30 @@ def test_ignore_cache_flag():
     assert cli_mod.build_parser().parse_args(["--ignore-cache"]).ignore_cache is True
 
 
+def test_provider_and_model_parsed():
+    args = cli_mod.build_parser().parse_args(["--provider", "deepseek", "--model", "chat"])
+    assert args.provider == "deepseek"
+    assert args.model == "chat"
+
+
+def test_profile_is_a_deprecated_alias_for_provider():
+    """Old command lines pass --profile; it must land in the provider slot."""
+    args = cli_mod.build_parser().parse_args(["--profile", "legacy"])
+    assert args.provider == "legacy"
+
+
+def test_provider_defaults_to_none():
+    args = cli_mod.build_parser().parse_args([])
+    assert args.provider is None
+    assert args.model is None
+
+
+def test_list_models_flag_parsed():
+    assert cli_mod.build_parser().parse_args(["--list-models"]).list_models is True
+    # --list-profiles predates providers and maps to the same dest.
+    assert cli_mod.build_parser().parse_args(["--list-profiles"]).list_models is True
+
+
 # --- main() wiring ---------------------------------------------------------
 
 
@@ -146,6 +170,79 @@ def test_ignore_cache_defaults_to_false(run_main):
     rec, _ = run_main
     assert _main(["a.pdf"]) == 0
     assert rec.kwargs["ignore_cache"] is False
+
+
+def test_provider_and_model_forwarded_to_api(run_main):
+    rec, _ = run_main
+    assert _main(["a.pdf", "--provider", "prov", "--model", "chat"]) == 0
+    assert rec.kwargs["provider"] == "prov"
+    assert rec.kwargs["model"] == "chat"
+
+
+def test_profile_flag_lands_in_provider_slot(run_main):
+    """--profile is the deprecated spelling; it must forward as provider."""
+    rec, _ = run_main
+    assert _main(["a.pdf", "--profile", "prov"]) == 0
+    assert rec.kwargs["provider"] == "prov"
+    assert rec.kwargs["model"] is None
+
+
+def test_omitted_provider_and_model_stay_none(run_main):
+    """Not passing them lets api.translate fall back to the config defaults."""
+    rec, _ = run_main
+    assert _main(["a.pdf"]) == 0
+    assert rec.kwargs["provider"] is None
+    assert rec.kwargs["model"] is None
+
+
+# --- --list-models / --list-profiles ---------------------------------------
+
+
+@pytest.fixture
+def list_main(monkeypatch):
+    """Load a two-provider config; the caller captures stdout via capsys."""
+    cfg = config_mod.AppConfig(
+        default_provider="deepseek",
+        default_model="chat",
+        providers={
+            "deepseek": {
+                "base_url": "https://api.deepseek.com/v1",
+                "models": {"chat": {"model": "deepseek-chat"}, "reason": {}},
+            },
+            "local": {"models": {"qwen": {"model": "Qwen3"}}},
+        },
+    )
+    monkeypatch.setattr(cli_mod.paths, "ensure_dirs", lambda: None)
+    monkeypatch.setattr(cli_mod.config_mod, "load", lambda path=None: cfg)
+    return cfg
+
+
+def test_list_models_shows_provider_tree_and_default(list_main, capsys):
+    assert _main(["--list-models"]) == 0
+    out = capsys.readouterr().out
+    assert "deepseek" in out
+    assert "local" in out
+    assert "chat (default): deepseek-chat" in out
+    # A model relying on its alias keeps the alias as its name.
+    assert "reason: reason" in out
+    assert "qwen: Qwen3" in out
+
+
+def test_list_profiles_is_a_compatible_alias(list_main, capsys):
+    """The pre-provider flag prints the same tree, so old docs still work."""
+    assert _main(["--list-models"]) == 0
+    models_out = capsys.readouterr().out
+    assert _main(["--list-profiles"]) == 0
+    assert capsys.readouterr().out == models_out
+
+
+def test_list_models_without_config_returns_1(monkeypatch, capsys):
+    monkeypatch.setattr(cli_mod.paths, "ensure_dirs", lambda: None)
+    monkeypatch.setattr(
+        cli_mod.config_mod, "load", lambda path=None: config_mod.AppConfig()
+    )
+    assert _main(["--list-models"]) == 1
+    assert "No models configured" in capsys.readouterr().out
 
 
 # --- api wiring ------------------------------------------------------------

@@ -12,6 +12,13 @@ Response (stdout): ``{"id": 1, "ok": true, "result": {...}}``
 Event    (stdout): ``{"event": "progress", "job_id": "...", "stage": "...",
                      "current": 3, "total": 10, "message": "..."}``
 
+Methods: ``ping``, ``config.get``, ``config.save``, ``providers.list``,
+``assets.status``, ``assets.download``, ``translate.start``,
+``translate.cancel``.  ``providers.list`` reports the provider → models tree
+(``default_provider``/``default_model`` plus each provider's ``kind``,
+``base_url``, ``has_api_key`` and ``models``); it deliberately never returns
+an ``api_key``.
+
 All non-protocol output (logs, library chatter) goes to **stderr** so stdout
 carries only JSON.
 """
@@ -88,21 +95,28 @@ def method_config_save(params: dict) -> dict:
     return {"path": str(path)}
 
 
-def method_profiles_list(_params: dict) -> dict:
+def method_providers_list(_params: dict) -> dict:
     cfg = config_mod.load()
     return {
-        "default": cfg.default_profile,
-        "profiles": {
+        "default_provider": cfg.default_provider,
+        "default_model": cfg.default_model,
+        "providers": {
             name: {
-                "provider": p.provider,
-                "model": p.model,
+                "kind": p.kind,
                 "base_url": p.base_url,
-                "reasoning_effort": p.reasoning_effort,
                 # Never send the key back to the renderer; report only whether
                 # one is present.
                 "has_api_key": bool(p.api_key),
+                "models": {
+                    alias: {
+                        "model": entry.model,
+                        "reasoning_effort": entry.reasoning_effort,
+                        "temperature": entry.temperature,
+                    }
+                    for alias, entry in p.models.items()
+                },
             }
-            for name, p in cfg.profiles.items()
+            for name, p in cfg.providers.items()
         },
     }
 
@@ -171,7 +185,8 @@ def method_translate_start(params: dict) -> dict:
     try:
         results = translate(
             params["files"],
-            profile=params.get("profile"),
+            provider=params.get("provider"),
+            model=params.get("model"),
             output=params.get("output"),
             pages=params.get("pages"),
             mode=params.get("mode"),
@@ -180,6 +195,10 @@ def method_translate_start(params: dict) -> dict:
             cancellation_event=_as_asyncio_event(cancel_event),
             vfont=params.get("vfont") or "",
             vchar=params.get("vchar") or "",
+            ignore_cache=bool(params.get("ignore_cache")),
+            # None means "not specified", so api.translate falls back to the
+            # config value; a bool would force it either way.
+            skip_subset_fonts=params.get("skip_subset_fonts"),
         )
     finally:
         with _JOBS_LOCK:
@@ -217,7 +236,10 @@ METHODS = {
     "ping": method_ping,
     "config.get": method_config_get,
     "config.save": method_config_save,
-    "profiles.list": method_profiles_list,
+    # Renamed from profiles.list when the schema gained providers.  The old
+    # name is *not* kept as an alias: its result shape changed too, so an old
+    # caller would break either way and a silent alias would only hide that.
+    "providers.list": method_providers_list,
     "assets.status": method_assets_status,
     "assets.download": method_assets_download,
     "translate.start": method_translate_start,

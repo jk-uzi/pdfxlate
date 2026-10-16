@@ -1,8 +1,8 @@
 """Command-line interface.
 
-    pdfxlate paper.pdf --profile deepseek -o out/
+    pdfxlate paper.pdf --provider deepseek --model chat -o out/
     pdfxlate paper.pdf --mode ultrafast
-    pdfxlate --list-profiles
+    pdfxlate --list-models
 """
 
 from __future__ import annotations
@@ -24,7 +24,25 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("files", nargs="*", help="PDF files to translate")
     parser.add_argument("--version", "-v", action="version", version=f"pdfxlate {__version__}")
 
-    parser.add_argument("--profile", "-p", help="Model profile from config.yaml")
+    parser.add_argument(
+        "--provider",
+        "-p",
+        help="Provider from config.yaml (default: default_provider)",
+    )
+    parser.add_argument(
+        "--model",
+        "-m",
+        help="Model alias under the provider (default: default_model, else the "
+        "provider's first model)",
+    )
+    # ``--profile`` predates the provider/model split: a profile named one flat
+    # endpoint+model.  config.resolve() still accepts such a name in the
+    # provider position, so keep the flag as a deprecated alias of --provider.
+    parser.add_argument(
+        "--profile",
+        dest="provider",
+        help="Deprecated alias for --provider",
+    )
     parser.add_argument("--output", "-o", default="", help="Output directory")
     parser.add_argument(
         "--pages",
@@ -73,7 +91,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override the config/cache/assets directory (used by the desktop app)",
     )
     parser.add_argument("--config", help="Path to a config.yaml file")
-    parser.add_argument("--list-profiles", action="store_true", help="List profiles and exit")
+    parser.add_argument(
+        "--list-models",
+        action="store_true",
+        help="List every provider/model pair and exit",
+    )
+    # ``--list-profiles`` predates providers and is kept so old command lines
+    # and docs keep working.  A profile is now just a model alias, so the flag
+    # is a hidden alias of --list-models and prints exactly the same tree.
+    parser.add_argument(
+        "--list-profiles",
+        dest="list_models",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--debug", "-d", action="store_true", help="Verbose logging")
 
     return parser
@@ -108,14 +139,22 @@ def main(argv: list[str] | None = None) -> int:
     config_path = Path(args.config) if args.config else None
     cfg = config_mod.load(config_path)
 
-    if args.list_profiles:
-        if not cfg.profiles:
-            print("No profiles configured. Edit", paths.config_file())
+    if args.list_models:
+        pairs = cfg.all_models()
+        if not pairs:
+            print("No models configured. Edit", paths.config_file())
             return 1
         print(f"config: {paths.config_file()}")
-        for name, profile in cfg.profiles.items():
-            marker = " (default)" if name == cfg.default_profile else ""
-            print(f"  {name}{marker}: {profile.model} @ {profile.base_url}")
+        default = (cfg.default_provider, cfg.default_model)
+        # Group by provider so the provider → models nesting is visible.
+        current: str | None = None
+        for provider, alias in pairs:
+            if provider != current:
+                current = provider
+                base_url = cfg.providers[provider].base_url or "(no base_url)"
+                print(f"  {provider} @ {base_url}:")
+            marker = " (default)" if (provider, alias) == default else ""
+            print(f"    {alias}{marker}: {cfg.resolve(provider, alias).model}")
         return 0
 
     if not args.files:
@@ -149,7 +188,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         results = translate(
             args.files,
-            profile=args.profile,
+            provider=args.provider,
+            model=args.model,
             output=args.output or str(Path.cwd()),
             pages=parse_pages(args.pages),
             mode=args.mode,
