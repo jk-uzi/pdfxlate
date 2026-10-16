@@ -19,11 +19,17 @@
     <!--
       The app's own title bar. The OS title bar and menu are hidden (see
       main.ts); the native window buttons are painted by the OS in the
-      top-right, so `.titlebar__drag` is a drag region with nothing under them.
+      top-right, so the controls here stop short of that reserved strip.
 
       The mark doubles as the sidebar toggle. It sits beside the drag strip
       rather than inside it: a drag region swallows clicks silently, so an
       interactive element placed within one would look present and do nothing.
+      The view controls after the strip are siblings of it for the same reason.
+
+      These controls used to be a bar of their own above the preview. Moving
+      them here reclaims that whole bar's height for the document, and costs
+      nothing in width: the space beside the native buttons was reserved and
+      unused.
     -->
     <header class="titlebar">
       <button
@@ -36,6 +42,19 @@
         <!-- icon-inline -->
       </button>
       <div class="titlebar__drag"></div>
+
+      <div class="titlebar__actions" id="titlebar-actions">
+        <div class="segmented" role="group">
+          <button id="view-original" class="segmented__btn is-active" data-i18n="preview.viewOriginal"></button>
+          <button id="view-translated" class="segmented__btn" data-i18n="preview.viewTranslated"></button>
+          <button id="view-compare" class="segmented__btn" data-i18n="preview.viewCompare"></button>
+        </div>
+
+        <div class="segmented" role="group">
+          <button id="fit-width" class="segmented__btn is-active" data-i18n="preview.fitWidth"></button>
+          <button id="fit-height" class="segmented__btn" data-i18n="preview.fitHeight"></button>
+        </div>
+      </div>
     </header>
 
     <div class="workspace">
@@ -115,10 +134,46 @@
             <button id="btn-translate" class="btn btn--primary grow" disabled data-i18n="options.translate"></button>
             <button id="btn-cancel" class="btn btn--danger hidden" data-i18n="options.cancel"></button>
           </div>
-          <button id="btn-open-settings" class="btn btn--block">
-            <span class="btn__glyph" aria-hidden="true">⚙</span>
-            <span data-i18n="settings.open"></span>
-          </button>
+
+          <!--
+            Progress shares this row with the settings button: the bar takes the
+            width it needs and Settings collapses to a single icon. The bar
+            itself has no visible label, so the text line sits under the row.
+          -->
+          <div class="sidebar__status">
+            <div class="progress">
+              <div id="progress-bar" class="progress__bar"></div>
+            </div>
+            <button
+              id="btn-open-settings"
+              class="btn btn--icon"
+              data-i18n-title="settings.open"
+              data-i18n-aria-label="settings.open"
+            >
+              <svg class="icon-gear" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <!--
+                  A gear: a thick-stroked circle (which yields both the body and
+                  the centre hole from one element) plus eight short teeth.
+                  Drawn with `currentColor` so it follows the theme — an inline
+                  SVG is part of the document and inherits `color`, which an
+                  <img> reference could not. The teeth are deliberately stubby:
+                  thin strokes turn to mush at the 18px this renders at.
+                -->
+                <circle cx="12" cy="12" r="5.2" fill="none" stroke="currentColor" stroke-width="4" />
+                <g fill="currentColor">
+                  <rect x="10.9" y="0.6" width="2.2" height="4.6" rx="1.1" />
+                  <rect x="10.9" y="0.6" width="2.2" height="4.6" rx="1.1" transform="rotate(45 12 12)" />
+                  <rect x="10.9" y="0.6" width="2.2" height="4.6" rx="1.1" transform="rotate(90 12 12)" />
+                  <rect x="10.9" y="0.6" width="2.2" height="4.6" rx="1.1" transform="rotate(135 12 12)" />
+                  <rect x="10.9" y="0.6" width="2.2" height="4.6" rx="1.1" transform="rotate(180 12 12)" />
+                  <rect x="10.9" y="0.6" width="2.2" height="4.6" rx="1.1" transform="rotate(225 12 12)" />
+                  <rect x="10.9" y="0.6" width="2.2" height="4.6" rx="1.1" transform="rotate(270 12 12)" />
+                  <rect x="10.9" y="0.6" width="2.2" height="4.6" rx="1.1" transform="rotate(315 12 12)" />
+                </g>
+              </svg>
+            </button>
+          </div>
+          <p id="progress-text" class="sidebar__status-text" data-i18n="progress.idle"></p>
         </div>
       </aside>
 
@@ -136,34 +191,40 @@
 
       <!-- Preview / settings detail -->
       <section class="preview" id="preview-pane">
-        <div class="preview__bar" id="preview-bar">
-          <div class="segmented" role="group">
-            <button id="view-original" class="segmented__btn is-active" data-i18n="preview.viewOriginal"></button>
-            <button id="view-translated" class="segmented__btn" data-i18n="preview.viewTranslated"></button>
-            <button id="view-compare" class="segmented__btn" data-i18n="preview.viewCompare"></button>
-          </div>
-
-          <span class="preview__spacer"></span>
-
-          <div class="pager">
-            <button id="page-prev" class="icon-btn" data-i18n-title="preview.prevPage" disabled>‹</button>
-            <span id="page-label" class="pager__label">–</span>
-            <button id="page-next" class="icon-btn" data-i18n-title="preview.nextPage" disabled>›</button>
-          </div>
-
-          <div class="pager">
-            <button id="zoom-out" class="icon-btn" data-i18n-title="preview.zoomOut" disabled>−</button>
-            <span id="zoom-label" class="pager__label">100%</span>
-            <button id="zoom-in" class="icon-btn" data-i18n-title="preview.zoomIn" disabled>+</button>
-          </div>
-
-          <button id="btn-open-file" class="icon-btn" data-i18n-title="preview.openFile" disabled>↗</button>
-        </div>
-
         <div id="preview-host" class="preview__host">
           <div id="preview-empty" class="preview__empty">
             <p class="preview__empty-title" data-i18n="preview.emptyTitle"></p>
             <p class="preview__empty-hint" data-i18n="preview.emptyHint"></p>
+          </div>
+
+          <!--
+            Paging, zoom and "open" hover in the bottom-right corner of the
+            document instead of occupying a bar: they are occasional actions,
+            and a permanent bar costs height on every page.
+
+            It fades out but keeps its box, so `:hover` still reaches it — an
+            element at `opacity: 0` still receives pointer events, which avoids
+            needing a separate invisible hot zone. `flashViewerOverlay()` in
+            app.ts also reveals it whenever the page changes.
+
+            Inset from the edges rather than flush: the viewer's own scrollbar
+            runs down the far right, and covering its lower end would make it
+            hard to grab.
+          -->
+          <div class="viewer-overlay" id="viewer-overlay">
+            <div class="pager">
+              <button id="page-prev" class="icon-btn" data-i18n-title="preview.prevPage" disabled>‹</button>
+              <span id="page-label" class="pager__label">–</span>
+              <button id="page-next" class="icon-btn" data-i18n-title="preview.nextPage" disabled>›</button>
+            </div>
+
+            <div class="pager">
+              <button id="zoom-out" class="icon-btn" data-i18n-title="preview.zoomOut" disabled>−</button>
+              <span id="zoom-label" class="pager__label">–</span>
+              <button id="zoom-in" class="icon-btn" data-i18n-title="preview.zoomIn" disabled>+</button>
+            </div>
+
+            <button id="btn-open-file" class="icon-btn" data-i18n-title="preview.openFile" disabled>↗</button>
           </div>
         </div>
 
@@ -297,18 +358,6 @@
         </div>
       </section>
     </div>
-
-    <!--
-      Progress is pinned to the window rather than kept in the sidebar: the
-      sidebar can be collapsed, and the progress of a running job is the one
-      thing that must stay visible when it is.
-    -->
-    <footer class="statusbar">
-      <div class="progress">
-        <div id="progress-bar" class="progress__bar"></div>
-      </div>
-      <p id="progress-text" class="statusbar__text" data-i18n="progress.idle"></p>
-    </footer>
 
     <script type="module" src="app.js"></script>
   </body>
