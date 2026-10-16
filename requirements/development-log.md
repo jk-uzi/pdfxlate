@@ -392,5 +392,138 @@ GoNoto 语言」与「未知语言码」，**不是「支持/不支持」的分�
   也没有 DOM 级回归测试（本次的渲染验证是临时脚本，验证完已删除）。
 - 上一轮报告的 5 个实测缺陷仍未修（UI 保存 profile 会写出明文密钥、cancel 不可达、
   `font_ready_for` 在 UI 层够不着、语言输入框是死的、`_CJK_TARGETS` 重复表）。
+  其中**第 1 条本轮已修**（见下），其余 4 条仍未动。
 
+---
+
+## 2026-10-16（续四）：供应商→多模型 + MCP 接入
+
+任务：让别的 agent 能通过 MCP 连上本项目、用 agent 自己的模型来翻译；并把界面上
+的模型配置做成「一个供应商可挂多个模型」。
+
+### 拆分与执行方式
+
+按 `parallel-branch-delegation` 走：**主代理先冻结契约，再并行三路**。
+
+**契约先行（主代理自己写、单独提交）**：配置 schema 从扁平 `profiles:` 改成
+`providers: → models:` 嵌套，并新增 `AppConfig.resolve(provider, model) ->
+ResolvedModel`。这一步必须串行做在前——三路都要对着它写，且 MCP 的
+`list_providers` / `translate_pdf` 天然按「供应商 + 模型」寻址，schema 后改会把
+MCP 工具层整个重写。
+
+冻结契约时留下的关键设计：**`ResolvedModel` 把两层拍平成一个字段与旧 `Profile`
+完全一致的只读对象**。这是控制爆炸半径的核心——`models/base.py`、
+`openai_compat.py`、整个 `pdf/` 都只做 `getattr(profile, "x")`，因此加这层嵌套时
+它们**一行都没改**。另外旧 `profiles:` 配置**自动迁移**（内存里做，下次保存写回
+新结构），`resolve()` 也接受旧 profile 名，所以老配置与老命令都不破。
+
+**三路并行**（write_scope 互斥，零文件重叠，所以三次合并都零冲突）：
+
+| 分支 | write_scope | 结果 |
+|---|---|---|
+| `python-consumers` | `cli.py`、`sidecar.py`、两个测试 | CLI 加 `--provider`/`--model`/`--list-models`；`profiles.list` → `providers.list` |
+| `mcp-server` | `mcp_server.py`、`pdf/two_phase.py`、`pyproject.toml`、`spec`、测试 | 四个 MCP 工具 + 两遍式引擎 |
+| `renderer-ui` | `src/renderer/*` | 供应商/模型两级界面 |
+
+**跨进程共享的接口先冻结成文字契约**（`providers.list` 的 JSON 形状、
+`translate.start` 的参数），派活时原样写进两边的 prompt——两路并行时都对着同一份
+文字写，合并时才对得上。实测：渲染进程声明的 `ProvidersResponse` 与 sidecar 实际
+返回的字段逐一对上。
+
+### MCP：一个必须记录的发现
+
+**`mcp` 2.x 是破坏性重命名**：v1 的 `FastMCP` 已**删除**，`mcp/server/fastmcp.py`
+现在是个直接抛 `ModuleNotFoundError` 的桩。真实 API 是
+`from mcp.server.mcpserver import MCPServer, Context`，sampling 走
+`await ctx.session.create_message(messages=[SamplingMessage(...)], max_tokens=...)`。
+上游参考实现 `references/PDFMathTranslate/pdf2zh/mcp_server.py` 用的是 v1 API，
+**只能当结构参考、不能照抄**——直接抄会 import 失败。
+
+### MCP：为什么是两遍式
+
+`pdf/converter.py` 的 `receive_layout()` 在同一遍扫描里既切段落又立刻排版，翻译是
+同步的线程池调用；而 MCP sampling 是 `async` 的。硬桥接（反向阻塞事件循环）会
+死锁，且要动项目里最微妙那个文件。改用**两遍式**：
+
+1. **收集**：`CollectingTranslator` 记录每段原文并原样返回（原样返回才能让基类的
+   `{vN}` 占位符校验通过），产出的 PDF 丢弃。
+2. **排版**：`DictTranslator` 查表回填，查不到就报错（**绝不静默透传**——静默透传
+   会产出一份悄悄没翻的 PDF）。
+
+管线是确定的（同一 PDF + 同一 `pages`/`mode` + 同一版面模型 → 同一 `sstk` 序列），
+所以两遍切出的段落一致；再用 `sequence_fingerprint()` 存哈希、第二遍比对，
+不一致就中止。**`converter.py` 一行都没改**，async 只发生在两遍之间。
+
+三个不变量（都已实测确认）：
+
+1. **两遍都用单线程** `TWO_PHASE_THREAD=1`。线程池的**调用**顺序不确定，并发记录
+   会让段落编号与指纹不确定；两遍式本来就把真正的翻译挪出管线（一遍只记录、一遍
+   只查表），单线程零成本。
+2. **所有错误继承 `BaseException` 而非 `Exception`**。原因：`converter.py` 的 worker
+   包在 `@retry(wait=wait_fixed(1))` 里，用的是 tenacity 默认谓词（只匹配
+   `Exception` 且 `stop_never`）——普通 `Exception` 会被**无限重试**。已用实验确认：
+   `Exception` 子类重试 3 次仍在重试，`BaseException` 子类第 1 次就穿透。
+3. **相同源文只能对应一个译文**。`_build_text_map` 对重复段落给了不同译文时报错；
+   实测在 346 段的真实文献上确实触发了（图注等重复文本）。
+
+### 修掉的一个真实缺陷
+
+**旧布局配置在 UI 往返时会写出明文密钥。** 上一轮遗留清单里的第 1 条（UI 保存
+profile 会写出明文密钥）本轮修复时暴露出一个更隐蔽的变体：`save()` 在配置对象
+丢失 `_env_refs` 时会回读磁盘上的引用，但**迁移过的文件里引用在 `profiles.*`
+而迁移后的文档在 `providers.*`**，路径对不上就漏，明文密钥被写进文件。
+
+由 `python-consumers` 那路在验证时发现并如实上报（不是它自己 scope 的问题，它没
+擅自改，只报告——这正是委派该有的行为）。修法：回读引用的 `_read_env_refs()` 也先
+做迁移，并加回归测试锁住。实测：旧布局文件走 UI 往返后仍是 `${MY_SECRET}`，文件中
+不含明文。
+
+### 验证（不是只跑静态检查）
+
+- **Python 152 passed**（从 84 增至 152）。新增 `test_config_providers.py` 26 个、
+  `test_sidecar_providers.py` 13 个、`test_mcp_server.py` 19 个。
+- `npm run typecheck`（两个 tsconfig）、`npm run check:i18n`（93 keys，en/zh 同
+  步）、`npm run build` 全绿。
+- **MCP 协议实测**（不是只跑单测）：独立脚本以 stdio 喂 JSON-RPC，走
+  `initialize` → `tools/list` → `tools/call`，确认握手、四个工具清单、以及
+  `list_providers` 的返回结构；并断言未泄漏密钥。**注**：第一次的断言写错了
+  （`"api_key" not in json` 会被 `has_api_key` 误命中），是断言的问题不是代码的问题，
+  已改正后通过。
+- **两遍式离线端到端**（不需要任何模型 API，因此可离线验证排版正确性）：
+  - 上游样例：1 段落 → mono + dual ✅
+  - 真实 346 段文献（8.9 MB）：收集两次指纹与顺序**完全一致**；回填产出 mono
+    8.9 MB + dual 17.9 MB ✅
+  - 确定性护栏：改动段落集合后按预期被拒 ✅
+  - 缺失译文：按预期被拒，未静默产出 ✅
+- **UI 往返实测**（跑真实 sidecar 进程）：`providers.list` 形状与渲染进程声明的
+  接口逐字段一致；`config.get` → 加一个模型 → `config.save` 后，新模型写入、
+  `${DEEPSEEK_API_KEY}` 保留、文件无明文密钥 ✅
+- 合并后主树复跑 pytest 152 passed（每次合并后都跑，不是只在最后跑一次）。
+
+### 过程中的坑
+
+1. **worktree 里跑测试会 import 到主仓库的代码**。venv 是 editable 安装、`.pth`
+   钉死在主仓库的 `python/`，而测试文件插的是仓库根不是 `python/`。所以每次都要
+   `PYTHONPATH=<worktree>/python` 显式覆盖，并先 `python -c "import pdfxlate; print(__file__)"`
+   确认解析到 worktree。三个子代理的 prompt 里都写了这一条与自检命令。
+2. **`node_modules` 不在 worktree 里**（设计如此）。渲染那路用绝对路径调主仓库的
+   `tsc`，实测可行。
+3. **Git Bash 的 `/tmp` 与 Python 的 `/tmp` 不是同一个目录**，导致我一次验证读错了
+   文件、误判「加的模型没保存」。改用仓库内一个固定路径后一致通过。教训：跨
+   bash/Python 校验时用绝对且两边都认的路径。
+4. `.zcode/`（本 skill 的 worktree 与计划）加入 `.gitignore`，同 `.mimosa/` 的理由。
+
+### 遗留（本轮新增）
+
+- **MCP sampling 未对真实客户端验证**：子进程测试里没有客户端会声明 sampling
+  能力，所以只用一个假 session 覆盖了分批、token 预算、进度与逐段回退。真实
+  Claude Desktop / ZCode 的 sampling 往返仍属未验证。
+- **`translator="provider"` 未打真实 API**：需要 key 与网络；只测了它的错误路径。
+  开发记录里验证真实 API 的做法（本地 mock OpenAI 服务）可以复用，本轮没做。
+- **PyInstaller 打包未实机验证**：`pdfxlate.spec` 里 mcp 的 hiddenimports 已按
+  「装了才收」写成可选，但没真打过包。
+- 上一轮遗留的另外 4 条仍未修（cancel 不可达、`font_ready_for` 在 UI 层够不着、
+  语言输入框是死的、`_CJK_TARGETS` 重复表）。
+- `providers.list` **故意不留旧名别名**（结果形状也变了，留别名只会把调用方的错藏
+  起来）；`translate.start` 的 `profile` 参数同样换成 `provider` + `model`。
 

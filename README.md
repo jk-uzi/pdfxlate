@@ -19,6 +19,10 @@ for the PDF layout and typesetting pipeline.
   DocLayout-YOLO ONNX model, so protected regions are left untouched.
 - Supports any OpenAI-compatible API: OpenAI, DeepSeek, Qwen, Moonshot, GLM,
   Groq, xAI, OpenRouter, SiliconFlow, and local vLLM / Ollama / LM Studio.
+  A provider holds the endpoint and key once, with any number of models under
+  it.
+- Can be driven by other agents over MCP, using either a configured model or
+  the agent's own model. See [Using it from another agent](#using-it-from-another-agent-mcp).
 - Ships with an English / Simplified Chinese interface. The first run picks the
   language from the OS locale; the switcher in the title bar overrides it and
   the choice is remembered.
@@ -33,6 +37,10 @@ Electron (TypeScript)            Python sidecar
         │                                │
         └──── newline-delimited JSON ────┘
               over stdin/stdout
+
+External agent (MCP client)      Python MCP server
+        │                                │
+        └────────── MCP over stdio ──────┘  same core, same config.yaml
 ```
 
 The PDF engine is Python, packaged with PyInstaller and shipped inside the
@@ -41,6 +49,7 @@ app. The UI never touches Node directly — it goes through a narrow
 
 `stdin`/`stdout` was chosen over a local HTTP server because it binds no port
 (no firewall prompt), needs no auth token, and dies with its parent process.
+The MCP server makes the same choice for the same reasons.
 
 ## Requirements
 
@@ -83,7 +92,8 @@ npm run dev
 
 # Command line
 cd python
-.venv/bin/pdfxlate paper.pdf --profile deepseek -o out/
+.venv/bin/pdfxlate paper.pdf --provider deepseek --model chat -o out/
+.venv/bin/pdfxlate --list-models          # provider -> model tree
 ```
 
 The first translation downloads the layout model (75 MB) and a CJK font. Both
@@ -102,26 +112,34 @@ back to `hf-mirror.com` automatically.
 | Windows | `%APPDATA%\pdfxlate\config.yaml` |
 
 ```yaml
-default_profile: deepseek
+default_provider: deepseek
+default_model: chat
 
-profiles:
+# A provider holds the endpoint and credentials once; list any number of
+# models under it. Adding a second model from the same service needs no
+# repetition of the URL or key.
+providers:
   deepseek:
-    provider: openai_compat
+    kind: openai_compat
     base_url: https://api.deepseek.com/v1
     api_key: ${DEEPSEEK_API_KEY}   # expanded from the environment
-    model: deepseek-chat
-    temperature: 0                 # 0 keeps the {vN} formula markers intact
-    reasoning_effort: high         # optional, forwarded verbatim
-    extra_body: {}                 # arbitrary provider-specific fields
+    models:
+      chat:
+        model: deepseek-chat
+        temperature: 0             # 0 keeps the {vN} formula markers intact
+      reason:
+        model: deepseek-reasoner
+        reasoning_effort: high     # optional, forwarded verbatim
 
   local_vllm:
-    provider: openai_compat
     base_url: http://127.0.0.1:8000/v1
     api_key: dummy
-    model: Qwen/Qwen3-32B
-    extra_body:
-      chat_template_kwargs:
-        enable_thinking: true
+    models:
+      qwen:
+        model: Qwen/Qwen3-32B
+        extra_body:                # arbitrary provider-specific fields
+          chat_template_kwargs:
+            enable_thinking: true
 
 translation:
   lang_in: en
@@ -140,6 +158,64 @@ cache:
 is reported as "not configured" rather than being sent as a literal string.
 Saving the config never writes an expanded secret back to the file.
 
+A `profile` used to be a single endpoint+model; a config written that way (a
+flat `profiles:` block) is migrated automatically on load, and a profile name
+still resolves as a model alias, so existing files and `--profile` command
+lines keep working.
+
+## Using it from another agent (MCP)
+
+Other agents can drive pdfxlate over the [Model Context
+Protocol](https://modelcontextprotocol.io), either with a model you configured
+in the app or with **the agent's own model**.
+
+```bash
+cd python && .venv/bin/pip install -e ".[mcp]"
+```
+
+That installs the `mcp` SDK (an optional extra, so the desktop bundle does not
+carry it) and the `pdfxlate-mcp` entry point. Point your MCP client at it:
+
+```json
+{
+  "mcpServers": {
+    "pdfxlate": {
+      "command": "/path/to/python/.venv/bin/pdfxlate-mcp",
+      "args": ["--config-dir", "/path/to/your/userData"]
+    }
+  }
+}
+```
+
+`--config-dir` makes the server read the *same* `config.yaml` as the desktop
+app, so the providers and models you configured in the UI are the ones it uses.
+On Windows the executable is `.venv\Scripts\pdfxlate-mcp.exe`.
+
+Tools exposed:
+
+| Tool | What it does |
+|---|---|
+| `list_providers` | Lists configured providers and their models (never the API key) |
+| `extract_segments` | Collects the translatable paragraphs and returns a `job_id` |
+| `typeset_translations` | Typesets a job with translations you supply |
+| `translate_pdf` | Does the whole job in one call |
+
+`translate_pdf` takes `translator="provider"` (the default — uses a model from
+`config.yaml`) or `translator="client"`, which asks **your** model to do the
+translating via MCP sampling and requires the client to support the `sampling`
+capability. The two-phase `extract_segments` + `typeset_translations` pair is
+the same engine made explicit, and works with any client: collect the
+paragraphs, translate them however you like, hand them back.
+
+Configuration is **read-only** over MCP: there is deliberately no tool that
+adds a provider, edits a model or writes an API key, so pointing an agent at
+this server cannot change your setup.
+
+The server is a separate stdio process, so it shares your config, cache and
+downloaded assets, but not the desktop app's in-memory state: it does not reuse
+an already-loaded layout model, and its jobs do not appear in the app's
+progress pane.
+
 ## Adding a model backend
 
 Adapters are plugins. A new backend is one decorated class:
@@ -156,8 +232,8 @@ class MyBackend(ModelAdapter):
         ...                        # return the translation, keep {vN} intact
 ```
 
-Import it from `pdfxlate/models/__init__.py` and set `provider: my_backend`
-in a profile. The PDF pipeline needs no changes — it only requires
+Import it from `pdfxlate/models/__init__.py` and set `kind: my_backend` on a
+provider. The PDF pipeline needs no changes — it only requires
 `translate(text) -> str` and a `lang_out` attribute.
 
 ## Layout modes

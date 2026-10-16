@@ -25,6 +25,10 @@ htmlcov/
 # tooling output, not source.
 .mimosa/
 
+# ZCode agent scratch space: plans and the git worktrees used to hand parallel
+# work to subagents. Local tooling output, not source.
+.zcode/
+
 # PyInstaller (optional dev dependency)
 *.manifest
 

@@ -38,15 +38,20 @@
 # models/base.py
 class ModelAdapter(abc.ABC):
     name: str                                   # 注册名 = 缓存引擎键（<20 字符）
+    # ``profile`` 是拍平后的 ResolvedModel（供应商 + 模型），不是配置里的供应商本身
     def __init__(self, profile, lang_in, lang_out, prompt=None): ...
     @abc.abstractmethod
-    def translate(self, text: str) -> str: ...   # 必须原样保留 {vN}
+    def do_translate(self, text: str) -> str: ...  # 必须原样保留 {vN}
+    def translate(self, text: str) -> str: ...     # 基类实现：缓存 + 占位符校验
     def build_messages(self, text) -> list[dict]: ...
 
 _REGISTRY: dict[str, type[ModelAdapter]] = {}
 def register(cls): ...      # 装饰器
 def get_adapter(provider): ...
 ```
+
+配置里供应商的 `kind` 字段就是这个注册表的键，因此「一个供应商挂多个模型」不影响
+注册表——注册表按**适配器类型**索引，模型是数据。
 
 新增任何后端 = 加一个文件 + `@register`，**PDF 管线一行不动**（原项目必须同时改 3 处分发表）。
 
@@ -73,31 +78,47 @@ if self.extra_body:                    # 任意厂商私有参数透传
 
 ### 配置文件
 
-Electron 通过 `--config-dir` 把 `app.getPath('userData')` 传给 Python，配置落在该目录：
+Electron 通过 `--config-dir` 把 `app.getPath('userData')` 传给 Python，配置落在该目录。
+
+**一个供应商挂多个模型**：凭据与地址在供应商层配一次，模型列在它下面。多个模型
+共用一个 endpoint 时不必重复填 URL 与 key：
 
 ```yaml
-default_profile: deepseek
-profiles:
+default_provider: deepseek
+default_model: chat
+
+providers:
   deepseek:
-    provider: openai_compat
+    kind: openai_compat
     base_url: https://api.deepseek.com/v1
     api_key: ${DEEPSEEK_API_KEY}      # 支持环境变量展开
-    model: deepseek-chat
-    reasoning_effort: high
-    temperature: 0                    # 默认 0：原项目注释「随机采样会打断公式标记」
-    stream: false
-    extra_body: {}
+    models:
+      chat:
+        model: deepseek-chat
+        temperature: 0                # 默认 0：原项目注释「随机采样会打断公式标记」
+        stream: false
+      reason:
+        model: deepseek-reasoner
+        reasoning_effort: high        # 推理强度（一等支持）
   local_vllm:
-    provider: openai_compat
     base_url: http://127.0.0.1:8000/v1
-    model: Qwen/Qwen3-32B
-    extra_body: {chat_template_kwargs: {enable_thinking: true}}
+    models:
+      qwen:
+        model: Qwen/Qwen3-32B
+        extra_body: {chat_template_kwargs: {enable_thinking: true}}
 translation: {lang_in: en, lang_out: zh, thread: 4, mode: fast}
 layout: {backend: auto}               # auto | cpu | cuda | dml
 cache: {enabled: true}
 ```
 
-pydantic 校验，启动即报错而非跑到一半失败。
+pydantic 校验，启动即报错而非跑到一半失败。`AppConfig.resolve(provider, model)`
+把两层拍平成适配器直接消费的 `ResolvedModel`，因此新增模型后端仍然只需一个文件 +
+`@register`，翻译层与 PDF 管线都不知道「供应商」这层存在。
+
+> 历史上配置是扁平的 `profiles:`（一个 profile = 一个完整 endpoint+model）。
+> 旧的 `profiles:` 文件会在加载时**自动迁移**成上面的结构（按 endpoint+key 分组，
+> 旧 profile 名成为模型别名），所以老配置不会启动失败，`--profile deepseek`
+> 这类老命令也仍然可用。
 
 ## 四、PDF 管线移植
 
@@ -136,7 +157,7 @@ pydantic 校验，启动即报错而非跑到一半失败。
 ## 五、sidecar 协议（换行分隔 JSON）
 
 **请求** `{id, method, params}`，实际实现的方法（见 `sidecar.py` 的 `METHODS`）：
-`ping` / `config.get` / `config.save` / `profiles.list` / `assets.status` /
+`ping` / `config.get` / `config.save` / `providers.list` / `assets.status` /
 `assets.download` / `translate.start` / `translate.cancel`
 
 > 打开输出目录、文件对话框这类操作由 Electron 主进程直接处理（`shell:reveal`、
@@ -155,6 +176,30 @@ pydantic 校验，启动即报错而非跑到一半失败。
 
 取消：`translate.cancel` 置 `asyncio.Event`（管线已内建 `cancellation_event` 支持，直接用）。
 
+### 外部 agent 接入（MCP）
+
+`mcp_server.py` 把同一个 Python 核心以 **MCP 服务**暴露出去，让别的 agent 用自己的
+模型、通过它来翻译。走 **stdio**（与 sidecar 同样的理由：不占端口、无防火墙弹窗、
+无鉴权面、随父进程回收），因此 agent 是**启动一个子进程**，而不是连到运行中的应用。
+
+三个决策值得记：
+
+1. **为什么 stdio 而不是常驻 HTTP**。让运行中的应用监听 `127.0.0.1` 会带来「界面能实时
+   显示进度、共用已加载模型、可复用取消」的好处，但与项目既有的「用 stdio 不用本地
+   HTTP」取舍相反，且要额外处理端口与鉴权。本阶段先做 stdio：配置、缓存、下载资源
+   三者本就在进程外共享，所以 MCP 服务看到的就是界面上配好的东西，独立进程的代价
+   只有「不共享内存里的版面模型」与「界面看不到它的进度」。
+2. **配置只读**。服务只提供 `list_providers` 这类读取工具，**故意没有**任何增删
+   供应商/模型或写 API key 的工具——把 agent 指向这个服务就不可能改坏用户配置。
+3. **两遍式翻译**。为了支持「用 agent 自己的模型」（MCP sampling），需要先拿到段落再
+   排版，而 `converter.py` 的翻译是同步的线程池调用、改不动。利用管线的确定性做成
+   收集→翻译→回填两遍，`converter.py` 一行未改，详见
+   [project-structure.md](project-structure.md) 的 `pdf/two_phase.py` 一节。
+
+**「不移植上游 MCP」这条决策已推翻**：上游的 `mcp_server.py` 用 v1 的 `FastMCP`
+（v2 已删除该类，直接 import 会报 `ModuleNotFoundError`），且只做「用服务端配置的模型」
+一条路。本项目自研，并额外支持 sampling——即**真正用 agent 自己的模型翻译**。
+
 ## 六、Electron 外壳
 
 **主进程**：创建窗口（`contextIsolation: true`、`nodeIntegration: false`）、spawn sidecar、退出时 kill 子进程、原生文件对话框、`shell.showItemInFolder` 打开输出目录。
@@ -162,7 +207,8 @@ pydantic 校验，启动即报错而非跑到一半失败。
 **界面**（原生 HTML/CSS/TS，无前端框架）：
 
 1. 拖拽 / 选择 PDF
-2. profile 下拉 + 可编辑 base_url / api_key / model / 推理强度 / extra_body
+2. **供应商下拉 + 模型下拉**（两级），各自可增删；供应商级可编辑 kind / base_url /
+   api_key（共享），模型级可编辑 model / 推理强度 / 温度 / extra_body
 3. 模式开关：fast（ONNX 版面检测）/ ultrafast
 4. 首次运行引导下载模型和字体（带进度条）
 5. 实时进度：解析 → 版面检测 → 翻译（第 N/M 段）→ 排版 → 保存

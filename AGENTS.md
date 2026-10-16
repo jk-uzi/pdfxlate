@@ -28,12 +28,17 @@ python/pdfxlate/          Python 核心
   api.py                  公开 Python API
   cli.py                  命令行入口
   sidecar.py              stdio JSON 行协议，供 Electron 调用
+  mcp_server.py           MCP 服务（stdio），供外部 agent 调用
   models/                 翻译层：ModelAdapter 基类 + 注册表 + OpenAI 兼容适配器
   pdf/                    PDF 管线：pipeline / interp / layout / ocr / converter 等
+                          （two_phase.py 是 MCP 用的两遍式收集/回填引擎）
 src/{main,preload,renderer}/   Electron 前端（主进程 / preload / 渲染进程）
 tests/                    pytest 测试
 scripts/                  copy-static.mjs（拷静态资源）、build.sh（一键构建）
 ```
+
+配置是**供应商 → 模型**两层：一个供应商配一次 endpoint 与密钥，下面挂任意多个
+模型。见 [docs/project-structure.md](docs/project-structure.md) 的 `config.py` 一节。
 
 各模块职责、关键符号、以及「改某个功能该动哪个文件」见
 [docs/project-structure.md](docs/project-structure.md)。

@@ -20,7 +20,8 @@ Python 3.12，venv 在 `python/.venv`，包以 editable 方式安装，改源码
 | 接入新的模型后端 | `python/pdfxlate/models/` 新建文件 + `@register` 装饰器 |
 | 调整发给模型的请求参数 | `models/openai_compat.py`（`reasoning_effort` / `extra_body` / `stream`） |
 | 改翻译提示词 | `models/base.py` 的 `DEFAULT_PROMPT`，或配置里的 `translation.prompt` 指向模板文件 |
-| 改配置项 / 加新配置字段 | `config.py`（`Profile`、`TranslationSettings` 等 pydantic 模型） |
+| 改配置项 / 加新配置字段 | `config.py`（`Provider`、`ModelEntry`、`TranslationSettings` 等 pydantic 模型） |
+| 改「一个供应商挂多个模型」的结构 | `config.py` 的 `Provider` / `ModelEntry` / `AppConfig.resolve()` |
 | 改配置/缓存的存放位置 | `paths.py` |
 | 换模型或字体的下载地址 | `assets.py`（`_LAYOUT_REPO`、`_GO_NOTO_URL`、`_SOURCE_HAN_URL`、`_hf_endpoints`） |
 | 改「哪种语言用哪款字体」 | `assets.py` 的 `font_filename()`——语言→字体的**唯一来源**；`_CJK_FONTS` 与 `_NOTO_LANGS` 只是它的两张表 |
@@ -35,10 +36,13 @@ Python 3.12，venv 在 `python/.venv`，包以 editable 方式安装，改源码
 | 改命令行参数 | `cli.py`（`build_parser`） |
 | 加新的 sidecar 方法 | `sidecar.py` 的 `METHODS` 字典 + 一个 `method_*` 函数 |
 | 改 Python 公开 API | `api.py`（`translate` / `translate_stream` / `build_translator`） |
+| 改外部 agent 能调用的能力（MCP 工具） | `mcp_server.py` 的 `build_server()` 里的 `@mcp.tool()` 函数 |
+| 改「两遍式」段落收集/回填引擎 | `pdf/two_phase.py`（`CollectingTranslator` / `DictTranslator` / `collect()` / `typeset()`） |
 | 改窗口 / 应用生命周期 / IPC | `src/main/main.ts` |
 | 改子进程管理与 JSON 协议 | `src/main/sidecar.ts`（`Sidecar` 类） |
 | 改渲染进程可用的 API | `src/preload/preload.ts`（`contextBridge`） |
 | 改 Electron 界面 | `src/renderer/app.ts` + `index.html` + `style.css` |
+| 改供应商/模型的界面编辑 | `src/renderer/app.ts`（供应商与模型两级下拉 + 字段） |
 | 改界面文案 / 加一门语言 | `src/renderer/i18n.ts`（`en`/`zh` 两张表），静态文案用 `data-i18n*` 属性标注 |
 | 改原生对话框文案 | `src/main/main.ts` 的 `DIALOG_STRINGS`（主进程另有一份小表，原因见该处注释） |
 | 改前端构建配置 | `package.json`、`tsconfig.node.json`、`tsconfig.renderer.json` |
@@ -66,20 +70,21 @@ pdfxlate/
 ├── requirements/
 │   └── development-log.md           短期开发记录
 ├── python/
-│   ├── pyproject.toml               依赖、入口点、extras（ultrafast / cuda / dev）
+│   ├── pyproject.toml               依赖、入口点、extras（ultrafast / cuda / mcp / dev）
 │   ├── pdfxlate.spec                PyInstaller 打包配置（onedir）
 │   └── pdfxlate/
 │       ├── __init__.py              惰性暴露 translate / translate_stream
 │       ├── paths.py          93 行  跨平台 config / cache / assets 路径
-│       ├── config.py        218 行  pydantic 配置模型 + YAML 读写
+│       ├── config.py        491 行  pydantic 配置模型（供应商→模型）+ YAML 读写
 │       ├── assets.py        349 行  模型 / 字体 / OCR 数据下载与校验
 │       ├── cache.py         144 行  sqlite3 翻译缓存
-│       ├── api.py           161 行  公开 Python API
-│       ├── cli.py           176 行  命令行入口
-│       ├── sidecar.py       277 行  stdio JSON 行协议（Electron 调用）
+│       ├── api.py           192 行  公开 Python API
+│       ├── cli.py           216 行  命令行入口
+│       ├── sidecar.py       299 行  stdio JSON 行协议（Electron 调用）
+│       ├── mcp_server.py    509 行  MCP 服务（外部 agent 调用，stdio）
 │       ├── models/
 │       │   ├── __init__.py     23 行  导出翻译层公开符号
-│       │   ├── base.py       239 行  ModelAdapter 基类 + 注册表
+│       │   ├── base.py       243 行  ModelAdapter 基类 + 注册表
 │       │   └── openai_compat.py 115 行  OpenAI 兼容适配器
 │       └── pdf/
 │           ├── __init__.py      1 行
@@ -88,6 +93,7 @@ pdfxlate/
 │           ├── interp.py     366 行  内容流解释器（上游照搬）
 │           ├── layout.py     187 行  DocLayout-YOLO ONNX 版面检测
 │           ├── ocr.py        161 行  OCR 段落重建与排版
+│           ├── two_phase.py  489 行  两遍式段落收集/回填（MCP 用）
 │           ├── ultrafast.py  101 行  免模型快速路径
 │           └── text_spacing.py 44 行  中英混排间距（上游照搬）
 ├── src/
@@ -97,15 +103,18 @@ pdfxlate/
 │   ├── preload/
 │   │   └── preload.ts        93 行  contextBridge，向渲染进程暴露 API
 │   └── renderer/
-│       ├── index.html       163 行  界面结构（文案走 data-i18n* 属性）
-│       ├── app.ts           563 行  界面逻辑（拖拽、profile、进度、结果、语言切换）
-│       ├── i18n.ts          389 行  中英文字符串表 + t()/applyStaticTranslations()
-│       └── style.css        340 行  样式
+│       ├── index.html       203 行  界面结构（文案走 data-i18n* 属性）
+│       ├── app.ts           896 行  界面逻辑（拖拽、供应商/模型编辑、进度、结果、语言切换）
+│       ├── i18n.ts          421 行  中英文字符串表 + t()/applyStaticTranslations()
+│       └── style.css        361 行  样式
 ├── tests/
 │   ├── test_translation.py   187 行  缓存、占位符、推理标签剥离、注册表、缓存开关
 │   ├── test_openai_compat.py 137 行  适配器参数透传、校验、提示词渲染
+│   ├── test_config_providers.py 336 行  供应商→模型 schema、resolve、迁移、env 引用
 │   ├── test_typesetting.py   172 行  字号适配纯函数（放不下时的缩字逻辑）
-│   ├── test_cli_options.py   180 行  CLI 排版选项解析与三态覆盖语义
+│   ├── test_cli_options.py   286 行  CLI 排版选项解析与三态覆盖语义
+│   ├── test_sidecar_providers.py 181 行  providers.list 形状、密钥不外传
+│   ├── test_mcp_server.py    600 行  MCP 工具、stdio 握手、两遍式端到端与确定性护栏
 │   └── test_assets_fonts.py  113 行  语言→字体映射、status() 兼容性
 └── scripts/
     ├── copy-static.mjs        20 行  拷贝 HTML/CSS 到 out/renderer/
@@ -125,11 +134,35 @@ pdfxlate/
 平台默认：Windows `%APPDATA%`、macOS `~/Library/Application Support`、
 Linux `~/.config` + `~/.cache`。
 
-**`config.py`** — `AppConfig`（`default_profile` / `profiles` / `translation` /
-`layout` / `cache` / `ocr`）、`Profile`、`TranslationSettings`、`LayoutSettings`、
-`CacheSettings`、`OcrSettings`、`load()`、`save()`。全部 `extra: "forbid"`，
-配置写错启动即报错。`${VAR}` 引用在加载时从环境展开，保存时写回字面形式，
-所以密钥不会被固化进文件。
+**`config.py`** — `AppConfig`（`default_provider` / `default_model` / `providers` /
+`translation` / `layout` / `cache` / `ocr`）、`Provider`、`ModelEntry`、
+`ResolvedModel`、`TranslationSettings`、`LayoutSettings`、`CacheSettings`、
+`OcrSettings`、`load()`、`save()`。全部 `extra: "forbid"`，配置写错启动即报错。
+`${VAR}` 引用在加载时从环境展开，保存时写回字面形式，所以密钥不会被固化进文件。
+
+**供应商 → 模型是两层，不是扁平的。** `Provider` 持有 `kind`（适配器注册名）、
+`base_url`、`api_key` 和 `models: dict[str, ModelEntry]`——一个供应商配一次凭据
+和地址，下面挂任意多个模型（`models` 的键是别名，UI 与 `--model` 用它寻址）。
+`ModelEntry.model` 省略时由别名回填（`_fill_model_names`），因为「快速加一个模型」
+是最常见的操作。
+
+`AppConfig.resolve(provider, model) -> ResolvedModel` 是**唯一的解析入口**：
+填默认值、报错点名可用项，并把两层**拍平**成一个 `ResolvedModel`。拍平这一步是
+控制爆炸半径的关键——`ModelAdapter` 子类、`openai_compat.py`、`pdf/` 全都只做
+`getattr(profile, "x")`，所以加这层嵌套时它们一行都没改。
+
+**旧 `profiles:` 配置会自动迁移**（`_migrate_profiles`）：按 `(kind, base_url,
+api_key)` 分组，旧 profile 名成为模型别名，`default_profile` 映射成
+`default_provider`/`default_model`，并打一条 warning。`resolve()` 也接受旧 profile
+名（`_find_provider_with_alias`），所以 `--profile deepseek` 这类老命令仍然可用。
+迁移在**内存里**做，下次保存写回新结构。
+
+**`save()` 会在配置对象丢失 `_env_refs` 时回读磁盘上的引用**：UI 的
+`config.get` → `config.save` 往返必然拿到展开后的值，若不回读，只存在于环境里的
+密钥就会被明文写进 config.yaml。回读必须走 `_read_env_refs()`（它同样先做迁移），
+因为迁移过的文件里引用在 `profiles.*` 而文档在 `providers.*`，路径对不上就漏——
+这个坑已修并有回归测试锁住。
+
 `ocr.language` / `ocr.tessdata_prefix` 是 OCR 的配置入口——不要再用环境变量
 （早期版本从上游照搬了 `PDF2ZH_OCR_LANGUAGE`，前缀与本项目不一致，已移除）。
 
@@ -210,13 +243,19 @@ GoNoto 语言」与「未知语言码」，不是「支持/不支持」的分界
 
 ### 入口
 
-**`api.py`** — `translate()` / `translate_stream()` / `build_translator()`，
-profile 驱动，调用方不碰 provider 内部。`__init__.py` 惰性转出前两个。
+**`api.py`** — `translate()` / `translate_stream()` / `build_translator()` /
+`load_layout_model()`，供应商+模型驱动，调用方不碰 provider 内部。
+`__init__.py` 惰性转出前两个。
+`translate(provider=, model=)` 是现在的写法；`profile=` 保留为**废弃别名**（映射到
+`provider`），所以旧调用还能跑。`load_layout_model()` 是公开的，供**自带 translator
+对象**的调用方（MCP 的两遍式引擎）在 fast 模式下拿到那个缓存的单例版面模型。
 `ignore_cache=True` 让本次调用的每个段落都重译（跳过缓存读写）；它与
 `cache.enabled`（写进配置的全局开关）**语义不同**，别混用。
 
 **`cli.py`** — `build_parser()` / `parse_pages()` / `main()`，调试与批处理用。
-除 profile / 语言 / 页码 / 模式外，还暴露了 4 个**排版**选项，都会覆盖 config.yaml
+寻址用 `--provider` / `--model`（`--profile` 是 `--provider` 的废弃别名）；
+`--list-models` 打印「供应商 → 模型」树并标出默认项，`--list-profiles` 是它的隐藏别名。
+除语言 / 页码 / 模式外，还暴露了 4 个**排版**选项，都会覆盖 config.yaml
 里的同名字段：`--backend {auto,cpu,cuda,dml}`（ONNX 执行后端，覆盖 `layout.backend`）、
 `--onnx PATH`（自定义版面模型，覆盖 `layout.model_path`）、
 `--skip-subset-fonts` / `--no-skip-subset-fonts`（字体子集化，覆盖
@@ -234,13 +273,62 @@ profile 驱动，调用方不碰 provider 内部。`__init__.py` 惰性转出前
 |---|---|
 | `ping` | 存活探测 |
 | `config.get` / `config.save` | 读写配置 |
-| `profiles.list` | 列出可用 profile |
+| `providers.list` | 列出供应商及其模型（只回 `has_api_key`，绝不回密钥） |
 | `assets.status` / `assets.download` | 资源状态 / 触发下载 |
 | `translate.start` / `translate.cancel` | 启停翻译任务 |
 
 请求 `{id, method, params}`，响应 `{id, ok, result|error}`，
 事件 `{event: "progress"|"done"|"log", ...}`。
 进程启动后先发一次 `{event: "ready", version}`，Electron 侧以此确认链路可用。
+
+`providers.list` 的结果形状是**与渲染进程的冻结合同**，改它必须同时改
+`src/renderer/app.ts` 里的 `ProvidersResponse`：
+`{default_provider, default_model, providers: {名: {kind, base_url, has_api_key,
+models: {别名: {model, reasoning_effort, temperature}}}}}`。
+它由 `profiles.list` 改名而来（`translate.start` 的 `profile` 参数同时换成
+`provider` + `model`）；**旧名不再作为别名保留**——结果形状也变了，留个别名只会把
+调用方的错藏起来。`translate.start` 现在也转发 `ignore_cache` 与
+`skip_subset_fonts`（后者原样透传，`None` 仍表示「用配置」）。
+
+**`mcp_server.py`** — 供**外部 agent**（Claude Code / ZCode / 任何 MCP 客户端）
+调用的 MCP 服务，同样走 stdio：不占端口（无防火墙弹窗）、无鉴权面、随父进程回收。
+`build_server()` 注册四个工具，`main()` 收 `--config-dir` / `--debug`：
+
+| 工具 | 作用 |
+|---|---|
+| `list_providers` | 列出供应商与模型（只回 `has_api_key`） |
+| `extract_segments` | 第一遍：收集待译段落，返回 `job_id` + `[{id, text}]` |
+| `typeset_translations` | 第二遍：用回传的译文排版落盘 |
+| `translate_pdf` | 一次完成。`translator="provider"` 用应用里配的模型；`"client"` 用**连接方自己的模型**（MCP sampling） |
+
+**配置是只读的**：故意没有任何增删供应商/模型或写 API key 的工具，所以把 agent
+指向这个服务**不可能改动用户的配置**。
+
+两条翻译路线的差别：`provider` 就是普通的一遍式管线（带翻译缓存）；
+`client` 走 MCP sampling，需要客户端声明 `sampling` 能力——**先查
+`ctx.client_capabilities.sampling` 再动手**，不支持就报一条可执行的错误而不是中途炸掉。
+
+**`pdf/two_phase.py`** — `client` 路线（以及「先取段落、人工/外部翻完再回填」这种
+用法）的引擎。**为什么需要它**：`pdf/converter.py` 的 `receive_layout()` 在**同一遍
+扫描里**既切段落又立刻排版，翻译是同步的线程池调用，而 MCP sampling 是 `async` 的。
+硬桥接（反向阻塞事件循环）会死锁，且要动项目里最微妙的那个文件。管线是**确定的**
+（同一 PDF + 同一 `pages`/`mode` + 同一版面模型 → 同一 `sstk` 序列），于是改成两遍：
+
+1. **收集**：`CollectingTranslator` 记录每段原文并**原样返回**（原样返回才能让基类的
+   `{vN}` 占位符校验通过），产出的 PDF 丢弃。
+2. **排版**：`DictTranslator` 查表回填；**查不到就报错**，绝不静默透传——静默透传会
+   产出一份悄悄没翻的 PDF，这是唯一值得直接放弃的失败模式。
+
+`converter.py` **一行都没改**。两遍之间用 `sequence_fingerprint()` 存下段落序列的
+哈希，第二遍重算比对，不一致就 `DeterminismError` 中止，而不是排出一份错位的 PDF。
+
+三个不变量值得记住：① 两遍都用 `TWO_PHASE_THREAD = 1`——线程池的**调用**顺序不确定，
+并发记录会让段落编号和指纹不确定；两遍式本来就把真正的翻译挪出管线（一遍只记录、
+一遍只查表），单线程零成本。② 所有错误继承 `TwoPhaseError`，它是 **`BaseException`
+而非 `Exception`**：`converter.py` 的 worker 包在 `@retry(wait=wait_fixed(1))` 里，用的
+是 tenacity 默认谓词（只匹配 `Exception` 且 `stop_never`），所以普通 `Exception`
+会被**无限重试**，而 `BaseException` 立刻穿透。③ 相同源文只能对应一个译文——
+`_build_text_map` 对重复段落给了不同译文时报错（管线按 `text → translation` 建表）。
 
 ### Electron 前端
 
@@ -263,9 +351,16 @@ profile 驱动，调用方不碰 provider 内部。`__init__.py` 惰性转出前
 `reveal()` / `openPath()`（打开输出）。
 
 **`src/renderer/app.ts`** — 界面逻辑，无前端框架，直接操作 DOM。
-拖拽与文件选择、profile 下拉与参数编辑、页码范围解析、进度渲染
-（解析→版面→翻译→排版→保存）、结果列表、日志面板、语言切换。
+拖拽与文件选择、**供应商/模型两级编辑**（供应商下拉 + 模型下拉，各自带增删，
+供应商级字段 kind/base_url/api_key 共享、模型级字段 model/推理强度/温度/extra_body）、
+页码范围解析、进度渲染（解析→版面→翻译→排版→保存）、结果列表、日志面板、语言切换。
 用户可见文案一律走 `t()`，不写字面量。
+
+供应商与模型编辑以 **`config.get` 返回的文档为结构的唯一真相**（名字、别名、默认项、
+明细字段），`providers.list` 只提供 `has_api_key` 与下拉列表——所以界面需要首屏
+同时取这两者。删除条目前会 `confirm()`，删除后从**已改动的文档**重新选一次，
+因此选中项不可能指向已删除的条目。API key 的掩码语义保留：输入框永远从空开始，
+只有用户真的敲了才覆盖已存的密钥。
 
 **`src/renderer/i18n.ts`** — 界面双语（English / 简体中文）。两张扁平 key 表
 `EN` / `ZH` 加一层解析运行时：`t(key, params?, fallback?)` 用于代码里拼的字符串，
@@ -307,10 +402,16 @@ key 名与渲染进程的 `dialog.*` 保持一致，便于人工对照。
 | 字体 `.ttf` | `assets_dir()/fonts/` |
 | OCR 数据 `.traineddata` | `assets_dir()/tessdata/` |
 
+三者（桌面端 / CLI / MCP 服务）共享同一份 config、cache 与 assets——MCP 服务
+通过 `--config-dir` 指到桌面端同一个 userData 目录，所以它看到的就是界面上配好的
+供应商与模型。缓存是 sqlite 且开了 WAL + `busy_timeout`，多进程并发读写安全。
+唯一的代价：MCP 服务是**独立进程**，因此它不共享桌面端已加载的版面模型，界面也
+看不到它发起的任务进度。
+
 ## 五、测试与检查
 
 ```bash
-python/.venv/bin/python -m pytest tests/ -q          # Python，当前 84 passed
+python/.venv/bin/python -m pytest tests/ -q          # Python，当前 152 passed
 python/.venv/bin/python -m pytest tests/ -q -k cache # 单个方向
 npm run typecheck                                    # 前端类型检查
 npm run check:i18n                                   # 中英文字符串表一致性
@@ -319,9 +420,16 @@ npm run check:i18n                                   # 中英文字符串表一�
 `test_translation.py` 用假 adapter（计数器、故意丢占位符）测缓存命中、
 `{vN}` 守卫、`<think>` 剥离、注册表冲突、`cache.enabled` 接线。
 `test_openai_compat.py` 用 mock 客户端测参数透传与校验，不打真实 API。
+`test_config_providers.py` 测供应商→模型的 `resolve()`、默认值校验、旧
+`profiles:` 迁移，以及 `${VAR}` 在保存往返后不被写成明文（含 UI 重建配置那条路径）。
 `test_typesetting.py` 测 `converter.fit_font_size()` 这个纯函数（放得下/放不下/
 下限/空段落/零高度/公式固定宽），不构造 PDF，跑得很快。
-`test_cli_options.py` 测 CLI 排版选项的解析与三态覆盖语义（不传时不动配置）。
+`test_cli_options.py` 测 CLI 排版选项的解析与三态覆盖语义（不传时不动配置），
+以及 `--provider` / `--model` / `--list-models` 的接线。
+`test_sidecar_providers.py` 钉住 `providers.list` 的结果形状与「密钥不外传」。
+`test_mcp_server.py` 覆盖 MCP 工具的 stdio 握手、两遍式端到端、确定性护栏与
+「缺失译文必须被拒」；其中的端到端用例不需要任何模型 API（收集/字典翻译器都不打
+网络），因此排版正确性可以离线验证。缺 `mcp` extra 或样例 PDF 时会带原因 skip。
 `test_assets_fonts.py` 测语言→字体映射与 `status()` 的向后兼容（旧键不能丢）。
 前端目前只有 `typecheck` 与 `check:i18n` 两个静态检查，尚无自动化测试。
 `check:i18n.mjs` 会真的加载 `i18n.ts` 并逐 key 比对，因此它能挡住"某门语言漏了一
@@ -384,7 +492,11 @@ gitleaks detect                            # 扫 git 历史
   双栏装配）。当时发现并补齐的只有两类接线缺口：CLI 未暴露 4 个排版选项、
   字体语言映射未落地（见下）。**有意不移植**：PDF/A 输出（需新增 `pikepdf`
   依赖）、`--babeldoc`/`--mode precise`（需另一 submodule + 独立 venv）、
-  `gui.py`/`backend.py`/`mcp_server.py`/`translator.py`（非 PDF 排版）。
+  `gui.py`/`backend.py`/`translator.py`（非 PDF 排版）。
+  上游的 `mcp_server.py` 当时一并列为「不移植」，**后来改成了自己做**
+  （`mcp_server.py` + `pdf/two_phase.py`）——理由与做法见 development-plan.md，
+  关键差别是上游用 v1 的 `FastMCP` 且只做「用配置里的模型翻」这一条路，本项目
+  还支持用**连接方自己的模型**（MCP sampling）。
 
 ### 移植过程中修掉的问题
 
