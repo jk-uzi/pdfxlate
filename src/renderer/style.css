@@ -1,6 +1,9 @@
 :root {
   --bg: #f6f7f9;
   --card: #ffffff;
+  /* Sidebar reads as chrome, not as a page: slightly tinted so the white
+     preview page and the white inputs inside it both stand out. */
+  --sidebar: #f2f4f7;
   --border: #dfe3e8;
   --text: #1f2328;
   --muted: #656d76;
@@ -9,10 +12,17 @@
   --danger: #cf222e;
   --ok: #1a7f37;
   --radius: 8px;
+  --sidebar-width: 340px;
+  --titlebar-height: 50px;
 }
 
 * {
   box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
 }
 
 body {
@@ -23,17 +33,22 @@ body {
   color: var(--text);
   font-size: 14px;
   line-height: 1.5;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
+
+/* --- titlebar ------------------------------------------------------------ */
 
 .titlebar {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 12px;
-  padding: 14px 22px;
+  padding: 0 18px;
+  height: var(--titlebar-height);
+  flex: 0 0 auto;
   background: var(--card);
   border-bottom: 1px solid var(--border);
-  position: sticky;
-  top: 0;
   z-index: 10;
 }
 
@@ -76,94 +91,119 @@ body {
   color: var(--muted);
 }
 
-main {
-  max-width: 880px;
-  margin: 0 auto;
-  padding: 20px 22px 60px;
+/* --- workspace: sidebar + preview ---------------------------------------- */
+
+.workspace {
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
+}
+
+.sidebar {
+  flex: 0 0 var(--sidebar-width);
+  width: var(--sidebar-width);
+  background: var(--sidebar);
+  border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  min-height: 0;
 }
 
-.card {
-  background: var(--card);
+.sidebar__scroll {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 12px 12px 4px;
+}
+
+/* Pinned so the primary action never scrolls out of reach. */
+.sidebar__actions {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--sidebar);
+}
+
+/* --- collapsible groups -------------------------------------------------- */
+
+.group {
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 16px 18px;
+  background: var(--card);
+  margin-bottom: 10px;
+  overflow: hidden;
 }
 
-.card h2 {
-  font-size: 13px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--muted);
-  margin: 0 0 12px;
-}
-
-/* Second-level heading inside a card, e.g. "Provider" / "Model". */
-.subhead {
+.group__head {
+  cursor: pointer;
+  list-style: none;
+  padding: 10px 12px;
   font-size: 12px;
+  font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--muted);
-  margin: 18px 0 10px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border);
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
-.card > .subhead:first-of-type {
-  margin-top: 0;
-  padding-top: 0;
-  border-top: none;
+.group__head::-webkit-details-marker {
+  display: none;
 }
 
-.grow {
-  flex: 1;
+/* Disclosure caret, rotated when the group is open. */
+.group__head::before {
+  content: "▸";
+  font-size: 10px;
+  transition: transform 0.12s ease;
+}
+
+.group[open] > .group__head::before {
+  transform: rotate(90deg);
+}
+
+.group__head:hover {
+  color: var(--text);
+}
+
+.group__body {
+  padding: 0 12px 12px;
+}
+
+/* --- setup banner -------------------------------------------------------- */
+
+.banner {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  background: #fff8c5;
+  border: 1px solid #e6d27a;
+  border-radius: var(--radius);
+  padding: 12px;
+  margin-bottom: 10px;
+  font-size: 12.5px;
 }
 
 .hidden {
   display: none !important;
 }
 
-/* --- setup banner --- */
-.banner {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  background: #fff8c5;
-  border: 1px solid #e6d27a;
-  border-radius: var(--radius);
-  padding: 12px 16px;
-}
+/* --- forms --------------------------------------------------------------- */
 
-.banner__text {
-  flex: 1;
-}
-
-/* --- dropzone --- */
-.dropzone {
-  border: 2px dashed var(--border);
-  border-radius: var(--radius);
-  padding: 26px;
-  text-align: center;
-  color: var(--muted);
-  transition: border-color 0.15s, background 0.15s;
-}
-
-.dropzone--over {
-  border-color: var(--accent);
-  background: #f0f6ff;
-}
-
-.dropzone p {
-  margin: 0 0 10px;
-}
-
-/* --- forms --- */
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 12px;
+}
+
+/* The sidebar is too narrow for two columns. */
+.grid--one {
+  grid-template-columns: 1fr;
+  gap: 10px;
 }
 
 label {
@@ -206,15 +246,33 @@ input[readonly] {
   margin-top: 12px;
 }
 
-.row--actions {
-  margin-top: 16px;
+.row--tight {
+  margin-top: 0;
 }
 
-.row label {
+/* Second-level heading inside a group, e.g. "Provider" / "Model". */
+.subhead {
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin: 16px 0 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.group__body > .subhead:first-of-type {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+
+.grow {
   flex: 1;
 }
 
-/* --- buttons --- */
+/* --- buttons ------------------------------------------------------------- */
+
 .btn {
   font: inherit;
   font-size: 13px;
@@ -257,24 +315,50 @@ input[readonly] {
   padding: 7px 10px;
 }
 
-/* --- file / result lists --- */
+.icon-btn {
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.icon-btn:hover:not(:disabled) {
+  background: #f3f4f6;
+}
+
+.icon-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* --- file / result lists ------------------------------------------------- */
+
 .file-list {
   list-style: none;
-  margin: 12px 0 0;
+  margin: 10px 0 0;
   padding: 0;
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 
+.file-list:empty {
+  margin: 0;
+}
+
 .file-list li {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 7px 10px;
-  background: #f6f8fa;
+  gap: 8px;
+  padding: 6px 8px;
+  background: var(--sidebar);
   border-radius: 6px;
-  font-size: 13px;
+  font-size: 12.5px;
 }
 
 .file-list .name {
@@ -306,7 +390,8 @@ input[readonly] {
   font-weight: 500;
 }
 
-/* --- progress --- */
+/* --- progress ------------------------------------------------------------ */
+
 .progress {
   height: 7px;
   background: #eaeef2;
@@ -338,24 +423,155 @@ input[readonly] {
   color: var(--danger);
 }
 
-/* --- log --- */
-.log-card summary {
-  cursor: pointer;
-  font-size: 13px;
-  color: var(--muted);
-  font-weight: 500;
-}
+/* --- log ----------------------------------------------------------------- */
 
-.log-card pre {
-  margin: 12px 0 0;
+#log-pane {
+  margin: 0;
   padding: 10px;
   background: #1f2328;
   color: #d1d9e0;
   border-radius: 6px;
   font-size: 11.5px;
   line-height: 1.45;
-  max-height: 260px;
+  max-height: 240px;
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* --- preview pane -------------------------------------------------------- */
+
+.preview {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  /* Matches the Chromium PDF viewer's own canvas so the frame edges blend in. */
+  background: #525659;
+}
+
+.preview__bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+}
+
+.preview__spacer {
+  flex: 1;
+}
+
+.segmented {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.segmented__btn {
+  font: inherit;
+  font-size: 12px;
+  padding: 5px 11px;
+  border: none;
+  border-right: 1px solid var(--border);
+  background: #fff;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.segmented__btn:last-child {
+  border-right: none;
+}
+
+.segmented__btn:hover:not(:disabled) {
+  background: #f3f4f6;
+  color: var(--text);
+}
+
+.segmented__btn.is-active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.segmented__btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.pager {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pager__label {
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  min-width: 54px;
+  text-align: center;
+}
+
+/* Host for the viewer iframes. */
+.preview__host {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  position: relative;
+}
+
+.preview__host--over {
+  outline: 2px dashed var(--accent);
+  outline-offset: -6px;
+}
+
+.preview__frame {
+  flex: 1 1 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  display: block;
+}
+
+/* Compare mode: one labelled pane per side. */
+.preview__pane {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.preview__pane + .preview__pane {
+  border-left: 1px solid #2c2f31;
+}
+
+.preview__pane-label {
+  flex: 0 0 auto;
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: #d1d9e0;
+  background: #3c3f41;
+  padding: 4px 8px;
+}
+
+.preview__empty {
+  margin: auto;
+  text-align: center;
+  color: #d1d9e0;
+  padding: 24px;
+}
+
+.preview__empty-title {
+  font-size: 15px;
+  margin: 0 0 6px;
+}
+
+.preview__empty-hint {
+  font-size: 12.5px;
+  margin: 0;
+  opacity: 0.75;
 }

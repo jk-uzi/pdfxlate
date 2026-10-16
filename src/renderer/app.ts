@@ -95,6 +95,8 @@ interface PdfxlateApi {
   pickOutputDir(locale?: string): Promise<string | null>;
   reveal(target: string): Promise<void>;
   openPath(target: string): Promise<void>;
+  /** Absolute path -> `file://` URL. Synchronous: it is a pure conversion. */
+  fileUrl(target: string): string;
   platform: string;
 }
 
@@ -157,6 +159,26 @@ let configLoaded = false;
 let currentProvider: string | null = null;
 let currentModel: string | null = null;
 
+// --- preview state ---------------------------------------------------------
+
+type ViewMode = "original" | "translated" | "compare";
+
+let viewMode: ViewMode = "original";
+let previewPage = 1;
+/**
+ * Zoom level: a percentage, or "page-width" to fit the pane.
+ *
+ * Defaults to fit-width because the preview pane is much narrower than a page
+ * at 100% — a fixed 100% would open every document with a horizontal scrollbar.
+ * Pressing +/- switches to an explicit percentage, as in other viewers.
+ */
+let previewZoom: number | "page-width" = "page-width";
+// Page count of the file being previewed; 0 means "not known yet".
+let previewPages = 0;
+
+/** Zoom steps the +/- buttons cycle through. */
+const ZOOM_STEPS = [50, 75, 100, 125, 150, 200, 300];
+
 // --- locale ----------------------------------------------------------------
 
 function renderLocaleSelect(): void {
@@ -191,6 +213,8 @@ onLocaleChange(() => {
   paintProfileMessage();
   renderProviderSelect();
   renderModelSelect();
+  updatePreviewControls();
+  renderPreview();
 });
 
 // --- engine status ---------------------------------------------------------
@@ -286,33 +310,270 @@ function renderFiles(): void {
     remove.textContent = "×";
     remove.title = t("docs.remove");
     remove.addEventListener("click", () => {
+      const before = previewSource();
       selectedFiles = selectedFiles.filter((f) => f !== file);
+      // The preview follows the first file, so removing one can change what is
+      // shown — including falling back to the empty state.
+      if (previewSource() !== before) {
+        resetPreview();
+        void refreshPageCount();
+      }
       renderFiles();
+      renderPreview();
     });
     li.append(name, remove);
     list.append(li);
   }
   updateTranslateButton();
+  updatePreviewControls();
 }
 
 function addFiles(paths: string[]): void {
+  const before = previewSource();
   for (const p of paths) {
     if (p.toLowerCase().endsWith(".pdf") && !selectedFiles.includes(p)) selectedFiles.push(p);
   }
   renderFiles();
+  if (previewSource() !== before) {
+    resetPreview();
+    void refreshPageCount();
+  }
+  renderPreview();
+  expandGroup("group-docs");
 }
 
 $("btn-pick").addEventListener("click", async () => addFiles(await api.pickPdf(getLocale())));
 
-const dropzone = $("dropzone");
-dropzone.addEventListener("dragover", (e) => {
-  e.preventDefault();
-  dropzone.classList.add("dropzone--over");
+// --- preview pane ----------------------------------------------------------
+
+/** The file the preview shows: the first selected one, or null. */
+function previewSource(): string | null {
+  return selectedFiles[0] ?? null;
+}
+
+/** The translated file for the current source, or null before a translation. */
+function previewTranslated(): string | null {
+  const pair = lastResults[0];
+  return pair ? pair.mono : null;
+}
+
+/** True once there is a translated output to show. */
+function hasResults(): boolean {
+  return previewTranslated() !== null;
+}
+
+/** Return the preview to its empty state and forget the per-file state. */
+function resetPreview(): void {
+  previewPage = 1;
+  previewZoom = "page-width";
+  previewPages = 0;
+  if (!hasResults() && viewMode !== "original") viewMode = "original";
+  updatePreviewControls();
+}
+
+/** Ask the engine how many pages the current file has. */
+async function refreshPageCount(): Promise<void> {
+  const file = previewSource();
+  if (!file) return;
+  try {
+    // `pdf.info` may be missing on an older engine; an unknown count is fine —
+    // the toolbar then shows the page number alone.
+    const info = await api.request<{ pages: number }>("pdf.info", { path: file });
+    // The selection may have changed while this was in flight.
+    if (previewSource() !== file) return;
+    previewPages = info.pages ?? 0;
+  } catch (err) {
+    previewPages = 0;
+    appendLog(t("log.pageCountFailed", { error: String(err) }));
+  }
+  updatePreviewControls();
+}
+
+/**
+ * Build the viewer URL for one file.
+ *
+ * The fragment is what drives the built-in viewer: `toolbar=0&navpanes=0`
+ * hides its own chrome (that is why the app can supply a toolbar of its own),
+ * and `page` / `zoom` set the initial view.
+ */
+function viewerUrl(file: string): string {
+  return `${api.fileUrl(file)}#toolbar=0&navpanes=0&page=${previewPage}&zoom=${previewZoom}`;
+}
+/**
+ * One pane: the viewer frame for `file`, plus a label when `labelled`.
+ *
+ * The label only earns its space in compare mode, where two panes sit side by
+ * side and it is otherwise ambiguous which is which; in single-pane mode the
+ * toolbar's active view button already says it, so repeating it is noise.
+ */
+function makePane(file: string, labelKey: string, labelled: boolean): HTMLElement {
+  const pane = document.createElement("div");
+  pane.className = "preview__pane";
+  if (labelled) {
+    const label = document.createElement("div");
+    label.className = "preview__pane-label";
+    label.textContent = t(labelKey);
+    pane.append(label);
+  }
+  const frame = document.createElement("iframe");
+  frame.className = "preview__frame";
+  frame.src = viewerUrl(file);
+  pane.append(frame);
+  return pane;
+}
+
+/**
+ * Repaint the preview for the current file, view mode, page and zoom.
+ *
+ * Every frame is built fresh rather than having its `src` updated: changing the
+ * fragment of an already-loaded viewer frame does NOT navigate, so replacing
+ * the element is the only way to move to another page or zoom level.
+ */
+function renderPreview(): void {
+  const host = $("preview-host");
+  host.innerHTML = "";
+  const source = previewSource();
+  if (!source) {
+    const empty = document.createElement("div");
+    empty.className = "preview__empty";
+    const title = document.createElement("p");
+    title.className = "preview__empty-title";
+    title.textContent = t("preview.emptyTitle");
+    const hint = document.createElement("p");
+    hint.className = "preview__empty-hint";
+    hint.textContent = t("preview.emptyHint");
+    empty.append(title, hint);
+    host.append(empty);
+    return;
+  }
+
+  const translated = previewTranslated();
+  if (viewMode === "compare" && translated) {
+    host.append(
+      makePane(source, "preview.labelOriginal", true),
+      makePane(translated, "preview.labelTranslated", true),
+    );
+  } else if (viewMode === "translated" && translated) {
+    host.append(makePane(translated, "preview.labelTranslated", false));
+  } else {
+    host.append(makePane(source, "preview.labelOriginal", false));
+  }
+}
+
+/** Enable/disable the toolbar and paint the page and zoom labels. */
+function updatePreviewControls(): void {
+  const hasFile = previewSource() !== null;
+  const hasOutput = hasResults();
+
+  $<HTMLButtonElement>("view-original").disabled = !hasFile;
+  $<HTMLButtonElement>("view-translated").disabled = !hasOutput;
+  $<HTMLButtonElement>("view-compare").disabled = !hasOutput;
+  for (const [id, mode] of [
+    ["view-original", "original"],
+    ["view-translated", "translated"],
+    ["view-compare", "compare"],
+  ] as const) {
+    $(id).classList.toggle("is-active", viewMode === mode);
+  }
+  // A mode that needs output can become unavailable when results are cleared.
+  if ((viewMode === "translated" || viewMode === "compare") && !hasOutput) {
+    viewMode = "original";
+    $(`view-${viewMode}`).classList.add("is-active");
+  }
+
+  const translatedButton = $<HTMLButtonElement>("view-translated");
+  translatedButton.title = hasOutput ? "" : t("preview.needResults");
+  $<HTMLButtonElement>("view-compare").title = hasOutput ? "" : t("preview.needResults");
+
+  const known = previewPages > 0;
+  $("page-label").textContent = hasFile
+    ? known
+      ? `${previewPage} / ${previewPages}`
+      : String(previewPage)
+    : "–";
+  $<HTMLButtonElement>("page-prev").disabled = !hasFile || previewPage <= 1;
+  $<HTMLButtonElement>("page-next").disabled = !hasFile || (known && previewPage >= previewPages);
+
+  $("zoom-label").textContent =
+    previewZoom === "page-width" ? t("preview.zoomFit") : `${previewZoom}%`;
+  $<HTMLButtonElement>("zoom-out").disabled = !hasFile || previewZoom === ZOOM_STEPS[0];
+  $<HTMLButtonElement>("zoom-in").disabled =
+    !hasFile || previewZoom === ZOOM_STEPS.at(-1)!;
+  $<HTMLButtonElement>("btn-open-file").disabled = !hasFile;
+}
+
+function setViewMode(mode: ViewMode): void {
+  if (mode !== "original" && !hasResults()) return;
+  viewMode = mode;
+  updatePreviewControls();
+  renderPreview();
+}
+
+for (const [id, mode] of [
+  ["view-original", "original"],
+  ["view-translated", "translated"],
+  ["view-compare", "compare"],
+] as const) {
+  $(id).addEventListener("click", () => setViewMode(mode));
+}
+
+function stepPage(delta: number): void {
+  if (!previewSource()) return;
+  const next = previewPage + delta;
+  if (next < 1) return;
+  if (previewPages > 0 && next > previewPages) return;
+  previewPage = next;
+  updatePreviewControls();
+  renderPreview();
+}
+
+$("page-prev").addEventListener("click", () => stepPage(-1));
+$("page-next").addEventListener("click", () => stepPage(1));
+
+function stepZoom(delta: number): void {
+  // From fit-width, the first press lands on the step nearest to 100% so the
+  // transition is predictable rather than jumping to an extreme.
+  if (previewZoom === "page-width") {
+    previewZoom = ZOOM_STEPS[delta > 0 ? ZOOM_STEPS.indexOf(125) : ZOOM_STEPS.indexOf(75)];
+    updatePreviewControls();
+    renderPreview();
+    return;
+  }
+  const current: number = previewZoom;
+  const index = ZOOM_STEPS.indexOf(current);
+  // An off-step value can only come from outside the buttons; snap to the
+  // nearest step at or above it so the direction of travel is preserved.
+  const from = index >= 0 ? index : ZOOM_STEPS.findIndex((v) => v >= current);
+  const next = ZOOM_STEPS[
+    Math.min(ZOOM_STEPS.length - 1, Math.max(0, (from < 0 ? 0 : from) + delta))
+  ];
+  if (next === current) return;
+  previewZoom = next;
+  updatePreviewControls();
+  renderPreview();
+}
+
+$("zoom-out").addEventListener("click", () => stepZoom(-1));
+$("zoom-in").addEventListener("click", () => stepZoom(1));
+
+$("btn-open-file").addEventListener("click", () => {
+  const file = previewSource();
+  if (file) void api.openPath(file);
 });
-dropzone.addEventListener("dragleave", () => dropzone.classList.remove("dropzone--over"));
-dropzone.addEventListener("drop", (e) => {
+
+// --- canvas drop target ----------------------------------------------------
+
+// The whole preview canvas accepts drops, so a PDF can be dropped anywhere on
+// the right-hand side rather than onto a small box in the sidebar.
+const previewHost = $("preview-host");
+previewHost.addEventListener("dragover", (e) => {
   e.preventDefault();
-  dropzone.classList.remove("dropzone--over");
+  previewHost.classList.add("preview__host--over");
+});
+previewHost.addEventListener("dragleave", () => previewHost.classList.remove("preview__host--over"));
+previewHost.addEventListener("drop", (e) => {
+  e.preventDefault();
+  previewHost.classList.remove("preview__host--over");
   // Electron exposes absolute paths on dropped files via webUtils in newer
   // versions; fall back to the File path property where available.
   const files = Array.from(e.dataTransfer?.files ?? []);
@@ -320,8 +581,23 @@ dropzone.addEventListener("drop", (e) => {
     .map((f) => (f as File & { path?: string }).path)
     .filter((p): p is string => Boolean(p));
   if (paths.length) addFiles(paths);
-  else appendLog(t("docs.dropUnreadable"));
+  else appendLog(t("preview.dropUnreadable"));
 });
+
+// --- collapsible groups ----------------------------------------------------
+
+/**
+ * Open one group and close the others.
+ *
+ * The sidebar is narrow and the groups are long, so keeping exactly one open
+ * keeps the relevant controls in view without manual scrolling. `null` closes
+ * nothing (used when a group should merely be revealed).
+ */
+function expandGroup(id: string): void {
+  const target = document.getElementById(id) as HTMLDetailsElement | null;
+  if (!target) return;
+  target.open = true;
+}
 
 // --- providers & models ----------------------------------------------------
 
@@ -763,7 +1039,12 @@ $("btn-translate").addEventListener("click", async () => {
   activeJobId = "pending";
   updateTranslateButton();
   $("btn-cancel").classList.remove("hidden");
-  $("result-card").classList.add("hidden");
+  // The previous run's outputs are about to be replaced, so the translated and
+  // compare views must stop offering them.
+  lastResults = [];
+  paintResults();
+  updatePreviewControls();
+  if (viewMode !== "original") setViewMode("original");
   showProgress();
   setProgress("starting", 0, 1, { key: "progress.starting" });
 
@@ -801,7 +1082,7 @@ $("btn-cancel").addEventListener("click", async () => {
 // --- progress + results ----------------------------------------------------
 
 function showProgress(): void {
-  $("progress-card").classList.remove("hidden");
+  expandGroup("group-progress");
 }
 
 function messageText(message: ProgressMessage): string {
@@ -850,7 +1131,14 @@ function handleDone(event: DoneEvent): void {
 function renderResults(outputs: Array<{ mono: string; dual: string }>): void {
   lastResults = outputs;
   paintResults();
-  $("result-card").classList.remove("hidden");
+  // Fresh output makes the translated and compare views available; surface the
+  // group so the new files are visible rather than silently expanding a
+  // collapsed section.
+  updatePreviewControls();
+  expandGroup("group-results");
+  if (outputs.length) {
+    setViewMode("translated");
+  }
 }
 
 /** Rebuild the result rows from `lastResults`; visibility is left untouched. */
@@ -894,3 +1182,5 @@ function appendLog(line: string): void {
 }
 
 updateTranslateButton();
+updatePreviewControls();
+renderPreview();

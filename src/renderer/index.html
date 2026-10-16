@@ -2,9 +2,15 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
+    <!--
+      `frame-src file:` is required by the PDF preview: the built-in viewer
+      loads the document from a file:// URL. With `default-src 'none'` the
+      frame falls back to 'none' and is blocked outright. Only local files are
+      permitted — no remote origins, and script-src stays 'self'.
+    -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:;"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; frame-src file:;"
     />
     <title>pdfxlate</title>
     <link rel="stylesheet" href="style.css" />
@@ -17,186 +23,230 @@
       <select id="locale-select" class="locale-select" data-i18n-aria-label="status.localeLabel"></select>
     </header>
 
-    <main>
-      <!-- First-run asset setup -->
-      <section id="setup-banner" class="banner hidden">
-        <div class="banner__text" data-i18n-html="setup.text"></div>
-        <button id="btn-download-assets" class="btn btn--primary" data-i18n="setup.download"></button>
-      </section>
+    <div class="workspace">
+      <!-- Settings sidebar: collapsible groups, translate pinned at the bottom -->
+      <aside class="sidebar">
+        <div class="sidebar__scroll">
+          <!-- First-run asset setup -->
+          <section id="setup-banner" class="banner hidden">
+            <div class="banner__text" data-i18n-html="setup.text"></div>
+            <button id="btn-download-assets" class="btn btn--primary" data-i18n="setup.download"></button>
+          </section>
 
-      <!-- File selection -->
-      <section class="card">
-        <h2 data-i18n="docs.title"></h2>
-        <div id="dropzone" class="dropzone">
-          <p data-i18n="docs.drop"></p>
-          <button id="btn-pick" class="btn" data-i18n="docs.choose"></button>
-        </div>
-        <ul id="file-list" class="file-list"></ul>
-      </section>
-
-      <!-- Model configuration: a provider (endpoint + credentials) holding
-           any number of models. -->
-      <section class="card">
-        <h2 data-i18n="model.title"></h2>
-
-        <h3 class="subhead" data-i18n="model.providerSection"></h3>
-        <div class="grid">
-          <label>
-            <span data-i18n="model.providerName"></span>
-            <select id="provider-select"></select>
-          </label>
-          <label>
-            <span data-i18n="model.kind"></span>
-            <input id="field-kind" type="text" placeholder="openai_compat" />
-          </label>
-          <label>
-            <span data-i18n="model.baseUrl"></span>
-            <input id="field-base-url" type="text" placeholder="https://api.example.com/v1" />
-          </label>
-          <label>
-            <span data-i18n="model.apiKey"></span>
-            <input
-              id="field-api-key"
-              type="password"
-              data-i18n-placeholder="model.apiKeyPlaceholder"
-            />
-          </label>
-        </div>
-        <div class="row">
-          <input
-            id="new-provider-name"
-            type="text"
-            class="grow"
-            data-i18n-placeholder="model.newProviderPlaceholder"
-          />
-          <button id="btn-add-provider" class="btn btn--small" data-i18n="model.add"></button>
-          <button
-            id="btn-remove-provider"
-            class="btn btn--small btn--danger"
-            data-i18n="model.remove"
-          ></button>
-        </div>
-
-        <h3 class="subhead" data-i18n="model.modelSection"></h3>
-        <div class="grid">
-          <label>
-            <span data-i18n="model.modelName"></span>
-            <select id="model-select"></select>
-          </label>
-          <label>
-            <span data-i18n="model.modelId"></span>
-            <input id="field-model-id" type="text" placeholder="model-name" />
-          </label>
-          <label>
-            <span data-i18n="model.reasoning"></span>
-            <select id="field-reasoning">
-              <option value="" data-i18n="model.reasoningDefault"></option>
-              <option value="low" data-i18n="model.reasoningLow"></option>
-              <option value="medium" data-i18n="model.reasoningMedium"></option>
-              <option value="high" data-i18n="model.reasoningHigh"></option>
-            </select>
-          </label>
-          <label>
-            <span data-i18n="model.temperature"></span>
-            <input id="field-temperature" type="number" step="0.1" min="0" max="2" value="0" />
-          </label>
-          <label>
-            <span data-i18n="model.extraBody"></span>
-            <input
-              id="field-extra-body"
-              type="text"
-              placeholder='{"chat_template_kwargs":{"enable_thinking":true}}'
-            />
-          </label>
-        </div>
-        <div class="row">
-          <input
-            id="new-model-name"
-            type="text"
-            class="grow"
-            data-i18n-placeholder="model.newModelPlaceholder"
-          />
-          <button id="btn-add-model" class="btn btn--small" data-i18n="model.add"></button>
-          <button
-            id="btn-remove-model"
-            class="btn btn--small btn--danger"
-            data-i18n="model.remove"
-          ></button>
-        </div>
-
-        <div class="row">
-          <button id="btn-save-model" class="btn" data-i18n="model.save"></button>
-          <span id="model-msg" class="msg"></span>
-        </div>
-      </section>
-
-      <!-- Translation options -->
-      <section class="card">
-        <h2 data-i18n="options.title"></h2>
-        <div class="grid">
-          <label>
-            <span data-i18n="options.langIn"></span>
-            <input id="field-lang-in" type="text" value="en" />
-          </label>
-          <label>
-            <span data-i18n="options.langOut"></span>
-            <input id="field-lang-out" type="text" value="zh" />
-          </label>
-          <label>
-            <span data-i18n="options.mode"></span>
-            <select id="field-mode">
-              <option value="fast" data-i18n="options.modeFast"></option>
-              <option value="ultrafast" data-i18n="options.modeUltrafast"></option>
-            </select>
-          </label>
-          <label>
-            <span data-i18n="options.threads"></span>
-            <input id="field-thread" type="number" min="1" max="64" value="4" />
-          </label>
-          <label>
-            <span data-i18n="options.pages"></span>
-            <input id="field-pages" type="text" placeholder="1,3-5" />
-          </label>
-          <label>
-            <span data-i18n="options.output"></span>
-            <div class="row">
-              <input
-                id="field-output"
-                type="text"
-                readonly
-                data-i18n-placeholder="options.outputPlaceholder"
-              />
-              <button id="btn-pick-output" class="btn btn--small">…</button>
+          <details class="group" id="group-docs" open>
+            <summary class="group__head" data-i18n="docs.title"></summary>
+            <div class="group__body">
+              <div class="row">
+                <button id="btn-pick" class="btn grow" data-i18n="docs.choose"></button>
+              </div>
+              <ul id="file-list" class="file-list"></ul>
             </div>
-          </label>
+          </details>
+
+          <details class="group" id="group-model">
+            <summary class="group__head" data-i18n="model.title"></summary>
+            <div class="group__body">
+              <h3 class="subhead" data-i18n="model.providerSection"></h3>
+              <div class="grid grid--one">
+                <label>
+                  <span data-i18n="model.providerName"></span>
+                  <select id="provider-select"></select>
+                </label>
+                <label>
+                  <span data-i18n="model.kind"></span>
+                  <input id="field-kind" type="text" placeholder="openai_compat" />
+                </label>
+                <label>
+                  <span data-i18n="model.baseUrl"></span>
+                  <input id="field-base-url" type="text" placeholder="https://api.example.com/v1" />
+                </label>
+                <label>
+                  <span data-i18n="model.apiKey"></span>
+                  <input
+                    id="field-api-key"
+                    type="password"
+                    data-i18n-placeholder="model.apiKeyPlaceholder"
+                  />
+                </label>
+              </div>
+              <div class="row">
+                <input
+                  id="new-provider-name"
+                  type="text"
+                  class="grow"
+                  data-i18n-placeholder="model.newProviderPlaceholder"
+                />
+                <button id="btn-add-provider" class="btn btn--small" data-i18n="model.add"></button>
+                <button
+                  id="btn-remove-provider"
+                  class="btn btn--small btn--danger"
+                  data-i18n="model.remove"
+                ></button>
+              </div>
+
+              <h3 class="subhead" data-i18n="model.modelSection"></h3>
+              <div class="grid grid--one">
+                <label>
+                  <span data-i18n="model.modelName"></span>
+                  <select id="model-select"></select>
+                </label>
+                <label>
+                  <span data-i18n="model.modelId"></span>
+                  <input id="field-model-id" type="text" placeholder="model-name" />
+                </label>
+                <label>
+                  <span data-i18n="model.reasoning"></span>
+                  <select id="field-reasoning">
+                    <option value="" data-i18n="model.reasoningDefault"></option>
+                    <option value="low" data-i18n="model.reasoningLow"></option>
+                    <option value="medium" data-i18n="model.reasoningMedium"></option>
+                    <option value="high" data-i18n="model.reasoningHigh"></option>
+                  </select>
+                </label>
+                <label>
+                  <span data-i18n="model.temperature"></span>
+                  <input id="field-temperature" type="number" step="0.1" min="0" max="2" value="0" />
+                </label>
+                <label>
+                  <span data-i18n="model.extraBody"></span>
+                  <input
+                    id="field-extra-body"
+                    type="text"
+                    placeholder='{"chat_template_kwargs":{"enable_thinking":true}}'
+                  />
+                </label>
+              </div>
+              <div class="row">
+                <input
+                  id="new-model-name"
+                  type="text"
+                  class="grow"
+                  data-i18n-placeholder="model.newModelPlaceholder"
+                />
+                <button id="btn-add-model" class="btn btn--small" data-i18n="model.add"></button>
+                <button
+                  id="btn-remove-model"
+                  class="btn btn--small btn--danger"
+                  data-i18n="model.remove"
+                ></button>
+              </div>
+
+              <div class="row">
+                <button id="btn-save-model" class="btn" data-i18n="model.save"></button>
+                <span id="model-msg" class="msg"></span>
+              </div>
+            </div>
+          </details>
+
+          <details class="group" id="group-options">
+            <summary class="group__head" data-i18n="options.title"></summary>
+            <div class="group__body">
+              <div class="grid grid--one">
+                <label>
+                  <span data-i18n="options.langIn"></span>
+                  <input id="field-lang-in" type="text" value="en" />
+                </label>
+                <label>
+                  <span data-i18n="options.langOut"></span>
+                  <input id="field-lang-out" type="text" value="zh" />
+                </label>
+                <label>
+                  <span data-i18n="options.mode"></span>
+                  <select id="field-mode">
+                    <option value="fast" data-i18n="options.modeFast"></option>
+                    <option value="ultrafast" data-i18n="options.modeUltrafast"></option>
+                  </select>
+                </label>
+                <label>
+                  <span data-i18n="options.threads"></span>
+                  <input id="field-thread" type="number" min="1" max="64" value="4" />
+                </label>
+                <label>
+                  <span data-i18n="options.pages"></span>
+                  <input id="field-pages" type="text" placeholder="1,3-5" />
+                </label>
+                <label>
+                  <span data-i18n="options.output"></span>
+                  <div class="row row--tight">
+                    <input
+                      id="field-output"
+                      type="text"
+                      readonly
+                      data-i18n-placeholder="options.outputPlaceholder"
+                    />
+                    <button id="btn-pick-output" class="btn btn--small">…</button>
+                  </div>
+                </label>
+              </div>
+            </div>
+          </details>
+
+          <details class="group" id="group-progress">
+            <summary class="group__head" data-i18n="progress.title"></summary>
+            <div class="group__body">
+              <div class="progress">
+                <div id="progress-bar" class="progress__bar"></div>
+              </div>
+              <p id="progress-text" class="progress__text" data-i18n="progress.waiting"></p>
+            </div>
+          </details>
+
+          <details class="group" id="group-results">
+            <summary class="group__head" data-i18n="results.title"></summary>
+            <div class="group__body">
+              <ul id="result-list" class="file-list"></ul>
+            </div>
+          </details>
+
+          <details class="group" id="group-log">
+            <summary class="group__head" data-i18n="log.title"></summary>
+            <div class="group__body">
+              <pre id="log-pane"></pre>
+            </div>
+          </details>
         </div>
-        <div class="row row--actions">
-          <button id="btn-translate" class="btn btn--primary" disabled data-i18n="options.translate"></button>
+
+        <!-- Pinned: stays reachable however long the groups get. -->
+        <div class="sidebar__actions">
+          <button id="btn-translate" class="btn btn--primary grow" disabled data-i18n="options.translate"></button>
           <button id="btn-cancel" class="btn btn--danger hidden" data-i18n="options.cancel"></button>
         </div>
-      </section>
+      </aside>
 
-      <!-- Progress -->
-      <section id="progress-card" class="card hidden">
-        <h2 data-i18n="progress.title"></h2>
-        <div class="progress">
-          <div id="progress-bar" class="progress__bar"></div>
+      <!-- Preview pane -->
+      <section class="preview">
+        <div class="preview__bar">
+          <div class="segmented" role="group">
+            <button id="view-original" class="segmented__btn is-active" data-i18n="preview.viewOriginal"></button>
+            <button id="view-translated" class="segmented__btn" data-i18n="preview.viewTranslated"></button>
+            <button id="view-compare" class="segmented__btn" data-i18n="preview.viewCompare"></button>
+          </div>
+
+          <span class="preview__spacer"></span>
+
+          <div class="pager">
+            <button id="page-prev" class="icon-btn" data-i18n-title="preview.prevPage" disabled>‹</button>
+            <span id="page-label" class="pager__label">–</span>
+            <button id="page-next" class="icon-btn" data-i18n-title="preview.nextPage" disabled>›</button>
+          </div>
+
+          <div class="pager">
+            <button id="zoom-out" class="icon-btn" data-i18n-title="preview.zoomOut" disabled>−</button>
+            <span id="zoom-label" class="pager__label">100%</span>
+            <button id="zoom-in" class="icon-btn" data-i18n-title="preview.zoomIn" disabled>+</button>
+          </div>
+
+          <button id="btn-open-file" class="icon-btn" data-i18n-title="preview.openFile" disabled>↗</button>
         </div>
-        <p id="progress-text" class="progress__text" data-i18n="progress.waiting"></p>
-      </section>
 
-      <!-- Results -->
-      <section id="result-card" class="card hidden">
-        <h2 data-i18n="results.title"></h2>
-        <ul id="result-list" class="file-list"></ul>
+        <div id="preview-host" class="preview__host">
+          <div id="preview-empty" class="preview__empty">
+            <p class="preview__empty-title" data-i18n="preview.emptyTitle"></p>
+            <p class="preview__empty-hint" data-i18n="preview.emptyHint"></p>
+          </div>
+        </div>
       </section>
-
-      <!-- Log -->
-      <details class="card log-card">
-        <summary data-i18n="log.title"></summary>
-        <pre id="log-pane"></pre>
-      </details>
-    </main>
+    </div>
 
     <script type="module" src="app.js"></script>
   </body>
