@@ -179,7 +179,35 @@ let previewPages = 0;
 /** Zoom steps the +/- buttons cycle through. */
 const ZOOM_STEPS = [50, 75, 100, 125, 150, 200, 300];
 
+// --- settings state --------------------------------------------------------
+
+/**
+ * The sidebar either drives a translation job or edits settings.
+ *
+ * In settings mode the sidebar shows a menu and the right pane shows the
+ * matching panel, so the two never share the pane and the task controls are
+ * hidden while configuring.
+ */
+type AppMode = "task" | "settings";
+type SettingsSection = "model" | "appearance" | "general";
+
+let appMode: AppMode = "task";
+let settingsSection: SettingsSection = "model";
+// Cached from `ping`, for the General panel.
+let engineVersion: string | null = null;
+let engineConfigDir: string | null = null;
+
 // --- locale ----------------------------------------------------------------
+
+/**
+ * Tag the platform on `<body>` so CSS can reserve the right space for the
+ * native window buttons.
+ *
+ * `titleBarOverlay` paints the minimise/maximise/close buttons in the top-right
+ * (top-left on macOS, where they are traffic lights), and nothing in the DOM
+ * knows where they are — the reserved padding has to be per platform.
+ */
+document.body.classList.add(`platform-${api.platform}`);
 
 function renderLocaleSelect(): void {
   const select = $<HTMLSelectElement>("locale-select");
@@ -215,7 +243,67 @@ onLocaleChange(() => {
   renderModelSelect();
   updatePreviewControls();
   renderPreview();
+  paintSettingsMode();
+  paintEngineFacts();
 });
+
+// --- settings mode ---------------------------------------------------------
+
+/** Switch between running a job and editing settings. */
+function setAppMode(mode: AppMode): void {
+  appMode = mode;
+  paintSettingsMode();
+}
+
+function setSettingsSection(section: SettingsSection): void {
+  settingsSection = section;
+  paintSettingsMode();
+}
+
+/**
+ * Repaint the whole shell for the current mode.
+ *
+ * Only one of the two sidebars and one of the two right-hand panes is ever
+ * visible, so the mode is expressed entirely through these four toggles.
+ */
+function paintSettingsMode(): void {
+  const inSettings = appMode === "settings";
+  $("sidebar-task").classList.toggle("hidden", inSettings);
+  $("sidebar-settings").classList.toggle("hidden", !inSettings);
+  $("preview-bar").classList.toggle("hidden", inSettings);
+  $("preview-host").classList.toggle("hidden", inSettings);
+  $("settings-host").classList.toggle("hidden", !inSettings);
+
+  for (const button of document.querySelectorAll<HTMLElement>(".settings-menu__item")) {
+    button.classList.toggle("is-active", button.dataset.section === settingsSection);
+  }
+  for (const panel of document.querySelectorAll<HTMLElement>(".settings-panel")) {
+    panel.classList.toggle("hidden", panel.dataset.panel !== settingsSection);
+  }
+  // The model editor is live in the settings panel; make sure it reflects the
+  // cached config whenever the panel is (re)opened.
+  if (inSettings && settingsSection === "model") {
+    renderProviderSelect();
+    renderModelSelect();
+    applyProviderFields();
+    applyModelFields();
+  }
+  if (inSettings && settingsSection === "general") paintEngineFacts();
+}
+
+/** Fill the General panel's read-only diagnostics. */
+function paintEngineFacts(): void {
+  $("engine-version").textContent = engineVersion ?? t("settings.unknown");
+  $("engine-config-dir").textContent = engineConfigDir ?? t("settings.unknown");
+}
+
+$("btn-open-settings").addEventListener("click", () => setAppMode("settings"));
+$("btn-close-settings").addEventListener("click", () => setAppMode("task"));
+for (const button of document.querySelectorAll<HTMLElement>(".settings-menu__item")) {
+  button.addEventListener("click", () =>
+    setSettingsSection(button.dataset.section as SettingsSection),
+  );
+}
 
 // --- engine status ---------------------------------------------------------
 
@@ -225,10 +313,23 @@ function applyEngineState(payload: { ok: boolean; error?: string }): void {
   if (payload.ok) {
     void refreshProviders();
     void refreshAssets();
+    void refreshEngineFacts();
   } else {
     appendLog(t("log.engineFailed", { error: payload.error ?? t("log.unknownError") }));
   }
   updateTranslateButton();
+}
+
+/** Read the engine's version and config location for the General panel. */
+async function refreshEngineFacts(): Promise<void> {
+  try {
+    const info = await api.request<{ version: string; config_dir: string }>("ping");
+    engineVersion = info.version;
+    engineConfigDir = info.config_dir;
+  } catch (err) {
+    appendLog(t("log.engineFactsFailed", { error: String(err) }));
+  }
+  paintEngineFacts();
 }
 
 function paintEngineStatus(): void {

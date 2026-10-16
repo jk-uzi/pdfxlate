@@ -40,11 +40,18 @@ body {
 
 /* --- titlebar ------------------------------------------------------------ */
 
+/*
+ * The app's own title bar. The OS title bar and menu are hidden (main.ts);
+ * `titleBarOverlay` keeps the native minimise/maximise/close buttons, which the
+ * OS paints in the top-right corner.
+ *
+ * `-webkit-app-region: drag` makes the strip move the window. Nothing
+ * interactive may live under the buttons, so the drag region simply reserves
+ * that space rather than centring anything in it.
+ */
 .titlebar {
   display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 0 18px;
+  align-items: stretch;
   height: var(--titlebar-height);
   flex: 0 0 auto;
   background: var(--card);
@@ -52,10 +59,18 @@ body {
   z-index: 10;
 }
 
-.titlebar h1 {
-  font-size: 17px;
-  margin: 0;
-  letter-spacing: -0.01em;
+.titlebar__drag {
+  flex: 1;
+  -webkit-app-region: drag;
+}
+
+/* Space for the native window buttons, which sit over the top-right. */
+.platform-win32 .titlebar__drag {
+  padding-right: 140px;
+}
+.platform-darwin .titlebar__drag {
+  /* macOS puts traffic lights top-left. */
+  padding-left: 78px;
 }
 
 .subtitle {
@@ -64,7 +79,6 @@ body {
 }
 
 .status {
-  margin-left: auto;
   font-size: 12px;
   padding: 3px 9px;
   border-radius: 20px;
@@ -86,9 +100,91 @@ body {
 
 .locale-select {
   width: auto;
-  font-size: 12px;
-  padding: 2px 6px;
+}
+
+/* --- settings ------------------------------------------------------------ */
+
+.settings-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 10px;
+}
+
+.settings-menu__item {
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  padding: 9px 12px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.settings-menu__item:hover {
+  background: #e7ebf0;
+}
+
+.settings-menu__item.is-active {
+  background: var(--card);
+  border-color: var(--border);
+  font-weight: 600;
+}
+
+/* Quiet button: "back" should not compete with the section items. */
+.btn--quiet {
+  border-color: transparent;
+  background: none;
   color: var(--muted);
+  padding-left: 4px;
+}
+
+.btn--quiet:hover:not(:disabled) {
+  background: #e7ebf0;
+  color: var(--text);
+}
+
+.btn--icon {
+  padding: 7px 11px;
+  font-size: 15px;
+  line-height: 1;
+}
+
+/* The right pane while configuring: a normal scrolled page, not the canvas. */
+.settings-host {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  background: var(--bg);
+  padding: 20px 24px 40px;
+}
+
+.settings-panel {
+  max-width: 520px;
+}
+
+.settings-panel__title {
+  font-size: 15px;
+  margin: 0 0 16px;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 8px 16px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.facts dt {
+  color: var(--muted);
+}
+
+.facts dd {
+  margin: 0;
+  word-break: break-all;
 }
 
 /* --- workspace: sidebar + preview ---------------------------------------- */
@@ -119,10 +215,27 @@ body {
 .sidebar__actions {
   flex: 0 0 auto;
   display: flex;
+  flex-direction: column;
   gap: 8px;
   padding: 10px 12px;
   border-top: 1px solid var(--border);
   background: var(--sidebar);
+}
+
+.sidebar__actions-row {
+  display: flex;
+  gap: 8px;
+}
+
+/* Full-width secondary action, e.g. Settings under Translate. */
+.btn--block {
+  width: 100%;
+}
+
+/* A leading icon inside a text button (kept out of the i18n string so the
+   glyph is not part of the translation). */
+.btn__glyph {
+  margin-right: 6px;
 }
 
 /* --- collapsible groups -------------------------------------------------- */

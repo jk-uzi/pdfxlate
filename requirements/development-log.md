@@ -637,3 +637,71 @@ app.ts**——那份代码根本无法运行），属于被取代的中间产物
   语言输入框是死的、`_CJK_TARGETS` 重复表）——其中**语言输入框是死的**这条现在更
   明显了：`options.langIn/langOut` 两个输入框仍未接线。
 
+
+---
+
+## 2026-10-16（续六）：自建标题栏 + 设置区（模型 / 外观 / 常规）
+
+任务：标题栏自建，**只保留系统那三个按钮**；品牌、副标题、引擎状态、语言切换全部
+移出；左栏「开始翻译」下面加一个 ⚙ 设置按钮，点开后左栏变成设置菜单、右侧显示对应
+设置项表单。
+
+### 关键取舍：三个窗口按钮不自绘
+
+`titleBarStyle: "hidden"` 去掉系统标题栏与菜单条，但**最小化/最大化/关闭仍交给系统**
+（`titleBarOverlay`）。自绘这三个按钮要自己实现窗口控制 IPC、hover 态、双击最大化、
+Aero Snap、多显示器 DPI、无障碍标签——做残的概率远大于收益。overlay 的颜色目前是
+固定浅色值，**深色主题需要改成运行时 `setTitleBarOverlay()`**，本轮不做。
+
+`TITLEBAR_HEIGHT = 50` **必须与 `style.css` 的 `--titlebar-height` 一致**：overlay
+的位置由 OS 按这个值摆放，不一致时三键会在栏内垂直偏心。
+
+`Menu.setApplicationMenu(null)` 的副作用是**菜单快捷键一起没了**，所以用
+`before-input-event` 在 `--dev` 下补回 `F12` / `Ctrl+Shift+I` / `Ctrl+R`；打包版不注册。
+
+### 结构：任务模式 / 设置模式
+
+| | 左栏 | 右栏 | 底部动作区 |
+|---|---|---|---|
+| 任务模式 | 文档 / 选项 / 进度 / 结果 / 日志 | PDF 预览 | 「开始翻译」+「⚙ 设置」竖排，钉底 |
+| 设置模式 | ← 返回 + 模型 / 外观 / 常规 | 该设置项表单 | **整体隐藏** |
+
+- **模型编辑器从任务侧栏搬进设置**，不是复制——两处编辑器会各自持有状态并互相打架。
+- **没有「引擎」这一项**：引擎状态、版本、配置目录放进**常规**（只读诊断）。标题栏
+  清空后引擎状态必须有地方显示。
+- 平台差异走 `<body>` 类名（`platform-win32` / `platform-darwin`）：Windows 三键在
+  右上，拖拽条留 `padding-right`；macOS 交通灯在左上，改留 `padding-left`。
+
+### 验证（真跑 Electron）
+
+前端仍无自动化测试，做法与上轮相同：`--remote-debugging-port` + CDP 读 DOM/量尺寸，
+配合 PowerShell 抓**整屏**（`capturePage` 截不到系统绘制的三键，必须抓屏幕再读图，
+且需要 DPI 感知否则图像错位）。
+
+- `pytest` **166 passed**（未动 Python）；`npm run typecheck`（两个 tsconfig）、
+  `npm run check:i18n`（**122 keys** 同步）、`npm run build` 全绿。
+- **整屏截图**确认：原生菜单条消失、右上角三键（— □ ✕）在位且不重叠、标题栏为空、
+  ⚙ 在「开始翻译」**下面**。
+- **CDP 结构断言**：`titlebarText: ""`、`titlebarChildren: 1`、
+  `dragPaddingRight: "140px"`、引擎状态与语言切换**都不在标题栏内**、
+  `settingsSections: ["模型","外观","常规"]`、设置模式下 `bottomActionsVisible: false`。
+- **拖拽区实测**（截图证明不了这件事）：`getComputedStyle` 里 `.titlebar` 是 `none`、
+  拖拽条是 `drag`、各按钮都是 `none`；再经 CDP 发**真实** `mousePressed`/`mouseReleased`
+  走完 ⚙ → 外观 → ← 返回，确认点击没有被拖拽区吞掉。
+- **回归**：任务模式下拖入 → 预览 → 设置往返后预览仍在。
+
+### 遗留（本轮新增）
+
+- **标题栏 overlay 颜色是固定值**，深色主题需改成运行时 `setTitleBarOverlay()`。
+- 本轮只搭架子：选项 / 结果 / 日志**不迁移**到设置里（计划里就说了）。
+- 前端仍无自动化测试；拖拽区这种「静默吞点击」的问题其实很值得沉淀成仓库内的回归
+  检查，本轮仍是临时脚本跑完即删。
+- 上一轮遗留 4 条仍未修（cancel 不可达、`font_ready_for` 在 UI 层够不着、语言输入框
+  是死的、`_CJK_TARGETS` 重复表）。
+
+### 未跟踪的 PDF（待确认，未删）
+
+`python/` 下有 **4 个**未跟踪 PDF：`open_pit_*` 两个（13:28，会话开始前就在）与
+`respirable_*` 两个（18:08）。四个都含中文译文，说明**都是翻译产物而非输入**；但
+`respirable` 那两个我无法归到自己可见的工作里，**故一个都没删**，只在此标注。
+`respirable` 的输入原文在仓库里找不到（全库只有那两个输出）。

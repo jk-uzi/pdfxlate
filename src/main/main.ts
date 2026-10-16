@@ -1,6 +1,6 @@
 /** Application entry point: window lifecycle, IPC wiring, sidecar control. */
 
-import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from "electron";
 import path from "node:path";
 
 import { Sidecar, type SidecarEvent } from "./sidecar";
@@ -10,6 +10,15 @@ const isDev = process.argv.includes("--dev");
 // Compiled as CommonJS, so __dirname is the out/main directory.
 const currentDir = __dirname;
 const repoRoot = path.resolve(currentDir, "..", "..");
+
+/**
+ * Height of the app's own title bar, in pixels.
+ *
+ * Must match `--titlebar-height` in style.css: the window-controls overlay is
+ * placed by the OS from this value, so a mismatch leaves the system buttons
+ * vertically off-centre from the bar they sit in.
+ */
+const TITLEBAR_HEIGHT = 50;
 
 let mainWindow: BrowserWindow | null = null;
 let sidecar: Sidecar | null = null;
@@ -99,6 +108,17 @@ function createWindow(): void {
     minHeight: 640,
     title: "pdfxlate",
     show: false,
+    // The app draws its own title bar. `hidden` removes the OS title bar and
+    // menu strip; the overlay keeps the native minimise/maximise/close buttons,
+    // which the OS still paints in the top-right. Drawing those ourselves would
+    // mean reimplementing window controls, hover states, double-click-to-
+    // maximise, Aero Snap, per-monitor DPI and their accessibility labels.
+    titleBarStyle: "hidden",
+    titleBarOverlay: {
+      color: "#ffffff",
+      symbolColor: "#1f2328",
+      height: TITLEBAR_HEIGHT,
+    },
     webPreferences: {
       preload: path.join(currentDir, "..", "preload", "preload.js"),
       // Renderer runs untrusted page code: keep Node out of it and expose
@@ -121,7 +141,33 @@ function createWindow(): void {
 
   void mainWindow.loadFile(path.join(currentDir, "..", "renderer", "index.html"));
 
-  if (isDev) mainWindow.webContents.openDevTools({ mode: "detach" });
+  if (isDev) {
+    mainWindow.webContents.openDevTools({ mode: "detach" });
+    registerDevShortcuts(mainWindow);
+  }
+}
+
+/**
+ * Restore the shortcuts that came with Electron's default menu.
+ *
+ * Dropping the menu (see `app.whenReady`) takes its accelerators with it, which
+ * is only a problem while developing: reload and DevTools are how a UI change
+ * gets inspected. Text editing shortcuts are Chromium behaviour and unaffected.
+ */
+function registerDevShortcuts(window: BrowserWindow): void {
+  window.webContents.on("before-input-event", (event, input) => {
+    if (input.type !== "keyDown") return;
+    const key = input.key.toLowerCase();
+    const toggleDevTools =
+      key === "f12" || (input.control && input.shift && key === "i");
+    if (toggleDevTools) {
+      event.preventDefault();
+      window.webContents.toggleDevTools();
+    } else if (input.control && key === "r") {
+      event.preventDefault();
+      window.webContents.reload();
+    }
+  });
 }
 
 function registerIpc(): void {
@@ -161,6 +207,11 @@ function registerIpc(): void {
 }
 
 app.whenReady().then(async () => {
+  // The app supplies its own title bar, and the default menu's items (File,
+  // Edit, View, …) have no counterpart in this UI. Removing it also removes
+  // its accelerators; registerDevShortcuts puts the dev ones back.
+  Menu.setApplicationMenu(null);
+
   registerIpc();
   createWindow();
   engineState = { ok: false, pending: true };

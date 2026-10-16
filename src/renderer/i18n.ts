@@ -35,6 +35,19 @@ const EN: Table = {
   "status.failed": "engine failed",
   "status.localeLabel": "Interface language",
 
+  // --- settings ---
+  "settings.title": "Settings",
+  "settings.open": "Settings",
+  "settings.back": "Back",
+  "settings.sectionModel": "Model",
+  "settings.sectionAppearance": "Appearance",
+  "settings.sectionGeneral": "General",
+  "settings.language": "Interface language",
+  "settings.engineStatus": "Engine",
+  "settings.version": "Version",
+  "settings.configDir": "Config directory",
+  "settings.unknown": "unknown",
+
   "setup.text":
     "<strong>First run:</strong> the layout model (75&nbsp;MB) and fonts must be downloaded before translating. This happens once.",
   "setup.download": "Download now",
@@ -133,6 +146,7 @@ const EN: Table = {
   "log.engineFailed": "engine failed to start: {error}",
   "log.assetCheckFailed": "asset check failed: {error}",
   "log.providersFailed": "could not load providers: {error}",
+  "log.engineFactsFailed": "could not read engine details: {error}",
   "log.pageCountFailed": "could not read the page count: {error}",
   "log.cancelFailed": "cancel failed: {error}",
   "log.unknownError": "unknown error",
@@ -163,6 +177,18 @@ const ZH: Table = {
   "status.ready": "引擎就绪",
   "status.failed": "引擎启动失败",
   "status.localeLabel": "界面语言",
+
+  "settings.title": "设置",
+  "settings.open": "设置",
+  "settings.back": "返回",
+  "settings.sectionModel": "模型",
+  "settings.sectionAppearance": "外观",
+  "settings.sectionGeneral": "常规",
+  "settings.language": "界面语言",
+  "settings.engineStatus": "引擎",
+  "settings.version": "版本",
+  "settings.configDir": "配置目录",
+  "settings.unknown": "未知",
 
   "setup.text":
     "<strong>首次运行：</strong>翻译前需要先下载版面模型（75&nbsp;MB）与字体，此操作只需一次。",
@@ -261,6 +287,7 @@ const ZH: Table = {
   "log.engineFailed": "引擎启动失败：{error}",
   "log.assetCheckFailed": "资源检查失败：{error}",
   "log.providersFailed": "无法加载服务商：{error}",
+  "log.engineFactsFailed": "无法读取引擎信息：{error}",
   "log.pageCountFailed": "无法读取页数：{error}",
   "log.cancelFailed": "取消失败：{error}",
   "log.unknownError": "未知错误",

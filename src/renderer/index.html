@@ -16,16 +16,18 @@
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
+    <!--
+      The app's own title bar. The OS title bar and menu are hidden (see
+      main.ts); the native window buttons are painted by the OS in the
+      top-right, so `.titlebar__drag` is a drag region with nothing under them.
+    -->
     <header class="titlebar">
-      <h1>pdfxlate</h1>
-      <span class="subtitle" data-i18n="app.subtitle"></span>
-      <span id="engine-status" class="status status--pending" data-i18n="status.starting"></span>
-      <select id="locale-select" class="locale-select" data-i18n-aria-label="status.localeLabel"></select>
+      <div class="titlebar__drag"></div>
     </header>
 
     <div class="workspace">
-      <!-- Settings sidebar: collapsible groups, translate pinned at the bottom -->
-      <aside class="sidebar">
+      <!-- Task sidebar: collapsible groups, actions pinned at the bottom -->
+      <aside class="sidebar" id="sidebar-task">
         <div class="sidebar__scroll">
           <!-- First-run asset setup -->
           <section id="setup-banner" class="banner hidden">
@@ -40,101 +42,6 @@
                 <button id="btn-pick" class="btn grow" data-i18n="docs.choose"></button>
               </div>
               <ul id="file-list" class="file-list"></ul>
-            </div>
-          </details>
-
-          <details class="group" id="group-model">
-            <summary class="group__head" data-i18n="model.title"></summary>
-            <div class="group__body">
-              <h3 class="subhead" data-i18n="model.providerSection"></h3>
-              <div class="grid grid--one">
-                <label>
-                  <span data-i18n="model.providerName"></span>
-                  <select id="provider-select"></select>
-                </label>
-                <label>
-                  <span data-i18n="model.kind"></span>
-                  <input id="field-kind" type="text" placeholder="openai_compat" />
-                </label>
-                <label>
-                  <span data-i18n="model.baseUrl"></span>
-                  <input id="field-base-url" type="text" placeholder="https://api.example.com/v1" />
-                </label>
-                <label>
-                  <span data-i18n="model.apiKey"></span>
-                  <input
-                    id="field-api-key"
-                    type="password"
-                    data-i18n-placeholder="model.apiKeyPlaceholder"
-                  />
-                </label>
-              </div>
-              <div class="row">
-                <input
-                  id="new-provider-name"
-                  type="text"
-                  class="grow"
-                  data-i18n-placeholder="model.newProviderPlaceholder"
-                />
-                <button id="btn-add-provider" class="btn btn--small" data-i18n="model.add"></button>
-                <button
-                  id="btn-remove-provider"
-                  class="btn btn--small btn--danger"
-                  data-i18n="model.remove"
-                ></button>
-              </div>
-
-              <h3 class="subhead" data-i18n="model.modelSection"></h3>
-              <div class="grid grid--one">
-                <label>
-                  <span data-i18n="model.modelName"></span>
-                  <select id="model-select"></select>
-                </label>
-                <label>
-                  <span data-i18n="model.modelId"></span>
-                  <input id="field-model-id" type="text" placeholder="model-name" />
-                </label>
-                <label>
-                  <span data-i18n="model.reasoning"></span>
-                  <select id="field-reasoning">
-                    <option value="" data-i18n="model.reasoningDefault"></option>
-                    <option value="low" data-i18n="model.reasoningLow"></option>
-                    <option value="medium" data-i18n="model.reasoningMedium"></option>
-                    <option value="high" data-i18n="model.reasoningHigh"></option>
-                  </select>
-                </label>
-                <label>
-                  <span data-i18n="model.temperature"></span>
-                  <input id="field-temperature" type="number" step="0.1" min="0" max="2" value="0" />
-                </label>
-                <label>
-                  <span data-i18n="model.extraBody"></span>
-                  <input
-                    id="field-extra-body"
-                    type="text"
-                    placeholder='{"chat_template_kwargs":{"enable_thinking":true}}'
-                  />
-                </label>
-              </div>
-              <div class="row">
-                <input
-                  id="new-model-name"
-                  type="text"
-                  class="grow"
-                  data-i18n-placeholder="model.newModelPlaceholder"
-                />
-                <button id="btn-add-model" class="btn btn--small" data-i18n="model.add"></button>
-                <button
-                  id="btn-remove-model"
-                  class="btn btn--small btn--danger"
-                  data-i18n="model.remove"
-                ></button>
-              </div>
-
-              <div class="row">
-                <button id="btn-save-model" class="btn" data-i18n="model.save"></button>
-                <span id="model-msg" class="msg"></span>
-              </div>
             </div>
           </details>
 
@@ -208,14 +115,32 @@
 
         <!-- Pinned: stays reachable however long the groups get. -->
         <div class="sidebar__actions">
-          <button id="btn-translate" class="btn btn--primary grow" disabled data-i18n="options.translate"></button>
-          <button id="btn-cancel" class="btn btn--danger hidden" data-i18n="options.cancel"></button>
+          <div class="sidebar__actions-row">
+            <button id="btn-translate" class="btn btn--primary grow" disabled data-i18n="options.translate"></button>
+            <button id="btn-cancel" class="btn btn--danger hidden" data-i18n="options.cancel"></button>
+          </div>
+          <button id="btn-open-settings" class="btn btn--block">
+            <span class="btn__glyph" aria-hidden="true">⚙</span>
+            <span data-i18n="settings.open"></span>
+          </button>
         </div>
       </aside>
 
-      <!-- Preview pane -->
-      <section class="preview">
-        <div class="preview__bar">
+      <!-- Settings sidebar: a menu; the matching panel renders on the right -->
+      <aside class="sidebar hidden" id="sidebar-settings">
+        <div class="sidebar__scroll">
+          <button id="btn-close-settings" class="btn btn--quiet" data-i18n="settings.back"></button>
+          <nav class="settings-menu">
+            <button class="settings-menu__item is-active" data-section="model" data-i18n="settings.sectionModel"></button>
+            <button class="settings-menu__item" data-section="appearance" data-i18n="settings.sectionAppearance"></button>
+            <button class="settings-menu__item" data-section="general" data-i18n="settings.sectionGeneral"></button>
+          </nav>
+        </div>
+      </aside>
+
+      <!-- Preview / settings detail -->
+      <section class="preview" id="preview-pane">
+        <div class="preview__bar" id="preview-bar">
           <div class="segmented" role="group">
             <button id="view-original" class="segmented__btn is-active" data-i18n="preview.viewOriginal"></button>
             <button id="view-translated" class="segmented__btn" data-i18n="preview.viewTranslated"></button>
@@ -244,6 +169,125 @@
             <p class="preview__empty-title" data-i18n="preview.emptyTitle"></p>
             <p class="preview__empty-hint" data-i18n="preview.emptyHint"></p>
           </div>
+        </div>
+
+        <!-- Settings detail: shown instead of the preview while in settings -->
+        <div id="settings-host" class="settings-host hidden">
+          <section class="settings-panel" data-panel="model">
+            <h2 class="settings-panel__title" data-i18n="settings.sectionModel"></h2>
+
+            <h3 class="subhead" data-i18n="model.providerSection"></h3>
+            <div class="grid grid--one">
+              <label>
+                <span data-i18n="model.providerName"></span>
+                <select id="provider-select"></select>
+              </label>
+              <label>
+                <span data-i18n="model.kind"></span>
+                <input id="field-kind" type="text" placeholder="openai_compat" />
+              </label>
+              <label>
+                <span data-i18n="model.baseUrl"></span>
+                <input id="field-base-url" type="text" placeholder="https://api.example.com/v1" />
+              </label>
+              <label>
+                <span data-i18n="model.apiKey"></span>
+                <input
+                  id="field-api-key"
+                  type="password"
+                  data-i18n-placeholder="model.apiKeyPlaceholder"
+                />
+              </label>
+            </div>
+            <div class="row">
+              <input
+                id="new-provider-name"
+                type="text"
+                class="grow"
+                data-i18n-placeholder="model.newProviderPlaceholder"
+              />
+              <button id="btn-add-provider" class="btn btn--small" data-i18n="model.add"></button>
+              <button
+                id="btn-remove-provider"
+                class="btn btn--small btn--danger"
+                data-i18n="model.remove"
+              ></button>
+            </div>
+
+            <h3 class="subhead" data-i18n="model.modelSection"></h3>
+            <div class="grid grid--one">
+              <label>
+                <span data-i18n="model.modelName"></span>
+                <select id="model-select"></select>
+              </label>
+              <label>
+                <span data-i18n="model.modelId"></span>
+                <input id="field-model-id" type="text" placeholder="model-name" />
+              </label>
+              <label>
+                <span data-i18n="model.reasoning"></span>
+                <select id="field-reasoning">
+                  <option value="" data-i18n="model.reasoningDefault"></option>
+                  <option value="low" data-i18n="model.reasoningLow"></option>
+                  <option value="medium" data-i18n="model.reasoningMedium"></option>
+                  <option value="high" data-i18n="model.reasoningHigh"></option>
+                </select>
+              </label>
+              <label>
+                <span data-i18n="model.temperature"></span>
+                <input id="field-temperature" type="number" step="0.1" min="0" max="2" value="0" />
+              </label>
+              <label>
+                <span data-i18n="model.extraBody"></span>
+                <input
+                  id="field-extra-body"
+                  type="text"
+                  placeholder='{"chat_template_kwargs":{"enable_thinking":true}}'
+                />
+              </label>
+            </div>
+            <div class="row">
+              <input
+                id="new-model-name"
+                type="text"
+                class="grow"
+                data-i18n-placeholder="model.newModelPlaceholder"
+              />
+              <button id="btn-add-model" class="btn btn--small" data-i18n="model.add"></button>
+              <button
+                id="btn-remove-model"
+                class="btn btn--small btn--danger"
+                data-i18n="model.remove"
+              ></button>
+            </div>
+
+            <div class="row">
+              <button id="btn-save-model" class="btn" data-i18n="model.save"></button>
+              <span id="model-msg" class="msg"></span>
+            </div>
+          </section>
+
+          <section class="settings-panel hidden" data-panel="appearance">
+            <h2 class="settings-panel__title" data-i18n="settings.sectionAppearance"></h2>
+            <div class="grid grid--one">
+              <label>
+                <span data-i18n="settings.language"></span>
+                <select id="locale-select" data-i18n-aria-label="status.localeLabel"></select>
+              </label>
+            </div>
+          </section>
+
+          <section class="settings-panel hidden" data-panel="general">
+            <h2 class="settings-panel__title" data-i18n="settings.sectionGeneral"></h2>
+            <dl class="facts">
+              <dt data-i18n="settings.engineStatus"></dt>
+              <dd><span id="engine-status" class="status status--pending" data-i18n="status.starting"></span></dd>
+              <dt data-i18n="settings.version"></dt>
+              <dd id="engine-version">–</dd>
+              <dt data-i18n="settings.configDir"></dt>
+              <dd id="engine-config-dir">–</dd>
+            </dl>
+          </section>
         </div>
       </section>
     </div>

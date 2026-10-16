@@ -42,6 +42,8 @@ Python 3.12，venv 在 `python/.venv`，包以 editable 方式安装，改源码
 | 改子进程管理与 JSON 协议 | `src/main/sidecar.ts`（`Sidecar` 类） |
 | 改渲染进程可用的 API | `src/preload/preload.ts`（`contextBridge`） |
 | 改 Electron 界面 | `src/renderer/app.ts` + `index.html` + `style.css` |
+| 改标题栏 / 窗口按钮 | `src/main/main.ts`（`titleBarOverlay` / `TITLEBAR_HEIGHT`）+ `style.css` 的 `--titlebar-height`，两处必须一致 |
+| 改任务/设置模式与设置项 | `src/renderer/app.ts` 的 `appMode` / `setAppMode()` / `paintSettingsMode()`，菜单与面板在 `index.html` |
 | 改右侧 PDF 预览（视图/翻页/缩放） | `src/renderer/app.ts` 的 `renderPreview()` / `viewerUrl()` |
 | 改左侧栏分组 | `src/renderer/index.html` 的 `details.group` + `app.ts` 的 `expandGroup()` |
 | 改供应商/模型的界面编辑 | `src/renderer/app.ts`（供应商与模型两级下拉 + 字段） |
@@ -100,15 +102,15 @@ pdfxlate/
 │           └── text_spacing.py 44 行  中英混排间距（上游照搬）
 ├── src/
 │   ├── main/
-│   │   ├── main.ts          195 行  窗口 + 应用生命周期 + IPC（含原生对话框文案表）
+│   │   ├── main.ts          246 行  窗口 + 应用生命周期 + IPC（自建标题栏、原生对话框文案表）
 │   │   └── sidecar.ts       204 行  Python 子进程管理 + JSON 行协议
 │   ├── preload/
 │   │   └── preload.ts       105 行  contextBridge，向渲染进程暴露 API
 │   └── renderer/
-│       ├── index.html       253 行  界面结构（文案走 data-i18n* 属性）
-│       ├── app.ts          1186 行  界面逻辑（拖拽、供应商/模型编辑、进度、结果、语言切换）
-│       ├── i18n.ts          458 行  中英文字符串表 + t()/applyStaticTranslations()
-│       └── style.css        582 行  样式
+│       ├── index.html       297 行  界面结构（文案走 data-i18n* 属性）
+│       ├── app.ts          1287 行  界面逻辑（任务/设置双模式、拖拽、进度、结果、语言切换）
+│       ├── i18n.ts          485 行  中英文字符串表 + t()/applyStaticTranslations()
+│       └── style.css        695 行  样式（含标题栏拖拽区与设置模式布局）
 ├── tests/
 │   ├── test_translation.py   187 行  缓存、占位符、推理标签剥离、注册表、缓存开关
 │   ├── test_openai_compat.py 137 行  适配器参数透传、校验、提示词渲染
@@ -345,6 +347,18 @@ models: {别名: {model, reasoning_effort, temperature}}}}}`。
 plugin，不开这一项时 iframe 会加载成空白页。窗口默认 1280×820、最小 1000×640——
 侧栏固定 340px，窗口再窄预览区就放不下完整页宽。
 
+**自建标题栏**：`titleBarStyle: "hidden"` 去掉系统标题栏与菜单条，界面自己画一条
+空的拖拽栏。但**三个窗口按钮仍交给系统**——`titleBarOverlay` 让 OS 在右上角继续
+绘制最小化/最大化/关闭。自绘这三个按钮要自己实现窗口控制 IPC、hover 态、
+双击最大化、Aero Snap、多显示器 DPI 和无障碍标签，做残的概率远大于收益。
+`TITLEBAR_HEIGHT = 50` **必须与 `style.css` 的 `--titlebar-height` 一致**：
+overlay 的位置由 OS 按这个值摆放，不一致时系统三键会在栏内垂直偏心。
+
+`Menu.setApplicationMenu(null)` 去掉默认菜单（File / Edit / View… 在本界面没有
+对应物）。副作用是**菜单的快捷键一起没了**，所以 `registerDevShortcuts()` 用
+`before-input-event` 在 `--dev` 下补回 `F12` / `Ctrl+Shift+I`（DevTools）与
+`Ctrl+R`（重载）；打包版不注册。文本编辑类快捷键是 Chromium 行为，不受影响。
+
 **`src/main/sidecar.ts`** — `Sidecar` 类。请求按 `id` 关联响应，
 事件推给监听者，stderr 日志转发到终端。`Sidecar.resolve()` 决定用哪个可执行文件：
 打包后用 `process.resourcesPath/sidecar/` 下的 PyInstaller 产物，
@@ -365,12 +379,36 @@ plugin，不开这一项时 iframe 会加载成空白页。窗口默认 1280×82
 由它处理（已实测中文名 + 空格的文件能正常打开）。
 
 **`src/renderer/app.ts`** — 界面逻辑，无前端框架，直接操作 DOM。
-两栏工作区：左侧栏是**可折叠分组**（文档 / 模型 / 选项 / 进度 / 结果 / 日志），
-翻译按钮钉在侧栏底部；右侧是**预览区**（工具栏 + 画布）。另有拖拽与文件选择、
-**供应商/模型两级编辑**（供应商下拉 + 模型下拉，各自带增删，供应商级字段
-kind/base_url/api_key 共享、模型级字段 model/推理强度/温度/extra_body）、
-页码范围解析、进度渲染、结果列表、日志面板、语言切换。
+两栏工作区，且**有任务 / 设置两种模式**（`appMode`）：
+
+- **任务模式**（默认）：左侧栏是**可折叠分组**（文档 / 选项 / 进度 / 结果 / 日志），
+  右侧是**预览区**（工具栏 + 画布）。底部动作区**竖排两个按钮**：「开始翻译」
+  在上、「⚙ 设置」在下，都钉底。
+- **设置模式**（点 ⚙）：**左栏换成设置菜单**（顶部「← 返回」，下接模型 / 外观 /
+  常规），**右侧换成该设置项的表单**（此时不显示预览）。底部动作区**整体隐藏**——
+  不在翻译状态，两个按钮都没有意义。
+
+设置项三项：**模型**（供应商→模型两级编辑器，从任务侧栏**移进来**，避免两处编辑器
+状态打架）、**外观**（界面语言）、**常规**（引擎状态、版本、配置目录——只读诊断）。
+标题栏清空后**引擎状态必须有地方显示**，就落在「常规」里。
+
+另有拖拽与文件选择、页码范围解析、进度渲染、结果列表、日志面板。
 用户可见文案一律走 `t()`，不写字面量。
+
+`appMode` / `settingsSection` 是**状态变量 + 重绘**（`setAppMode()` /
+`setSettingsSection()` / `paintSettingsMode()`），不是隐藏若干元素：模式切换要动的
+是「哪一栏显示什么」，散落的 `hidden` 开关很快会互相矛盾。
+
+**平台差异靠 `<body>` 类名**（`platform-win32` / `platform-darwin`，由
+`api.platform` 写入）：Windows 的系统三键在**右上**，拖拽条要 `padding-right` 让开；
+macOS 的交通灯在**左上**，改留 `padding-left`。同一份 CSS 靠类名分叉，而不是运行时
+改内联样式。
+
+**拖拽区是自建标题栏最容易踩的坑**：`-webkit-app-region: drag` 只加在标题栏的
+**空拖拽条**上（`.titlebar__drag`），**任何可交互元素都不能落在里面**——拖拽区会
+静默吞掉点击，按钮看起来在、就是点不动，且没有任何报错。实测方式是经 CDP 发真实
+`mousePressed` / `mouseReleased` 并断言处理器真的跑了，光看截图证明不了这件事
+（`getComputedStyle` 里 `.titlebar` 是 `none`、拖拽条是 `drag`、各按钮都是 `none`）。
 
 预览有三个视图：原文 / 译文（mono）/ 对比（左右并排；只有对比模式给窗格加标签，
 单栏时工具栏的激活按钮已经说明了是哪一份，重复是噪音）。译文与对比在有结果前
@@ -573,5 +611,9 @@ gitleaks detect                            # 扫 git 历史
 
 - **紧行距**：压测下仍有少量相邻行间距偏小（原版 1935 处 → 修复后 165 处）。
   这是行高压缩的正常结果，不属叠印，可读性未受损。
-- 前端尚无自动化测试，仅 `typecheck` 通过。
+- **标题栏 overlay 颜色是固定浅色值**：深色主题需要改成运行时
+  `setTitleBarOverlay()`，目前只有浅色。
+- 前端尚无自动化测试，仅 `typecheck` 通过。自建标题栏的拖拽区属于「静默吞掉点击、
+  不报错」的一类问题，只靠 `typecheck` 和截图都测不出来，需经 CDP 发真实鼠标事件
+  断言处理器确实执行。
 
