@@ -12,69 +12,71 @@
   <body>
     <header class="titlebar">
       <h1>pdfxlate</h1>
-      <span class="subtitle">Layout-preserving PDF translation</span>
-      <span id="engine-status" class="status status--pending">starting…</span>
+      <span class="subtitle" data-i18n="app.subtitle"></span>
+      <span id="engine-status" class="status status--pending" data-i18n="status.starting"></span>
+      <select id="locale-select" class="locale-select" data-i18n-aria-label="status.localeLabel"></select>
     </header>
 
     <main>
       <!-- First-run asset setup -->
       <section id="setup-banner" class="banner hidden">
-        <div class="banner__text">
-          <strong>First run:</strong> the layout model (75&nbsp;MB) and fonts must be
-          downloaded before translating. This happens once.
-        </div>
-        <button id="btn-download-assets" class="btn btn--primary">Download now</button>
+        <div class="banner__text" data-i18n-html="setup.text"></div>
+        <button id="btn-download-assets" class="btn btn--primary" data-i18n="setup.download"></button>
       </section>
 
       <!-- File selection -->
       <section class="card">
-        <h2>1. Documents</h2>
+        <h2 data-i18n="docs.title"></h2>
         <div id="dropzone" class="dropzone">
-          <p>Drop PDF files here, or</p>
-          <button id="btn-pick" class="btn">Choose files…</button>
+          <p data-i18n="docs.drop"></p>
+          <button id="btn-pick" class="btn" data-i18n="docs.choose"></button>
         </div>
         <ul id="file-list" class="file-list"></ul>
       </section>
 
       <!-- Model configuration -->
       <section class="card">
-        <h2>2. Model</h2>
+        <h2 data-i18n="model.title"></h2>
         <div class="grid">
           <label>
-            Profile
+            <span data-i18n="model.profile"></span>
             <select id="profile-select"></select>
           </label>
           <label>
-            Provider
+            <span data-i18n="model.provider"></span>
             <input id="field-provider" type="text" placeholder="openai_compat" />
           </label>
           <label>
-            Base URL
+            <span data-i18n="model.baseUrl"></span>
             <input id="field-base-url" type="text" placeholder="https://api.example.com/v1" />
           </label>
           <label>
-            API key
-            <input id="field-api-key" type="password" placeholder="sk-…" />
+            <span data-i18n="model.apiKey"></span>
+            <input
+              id="field-api-key"
+              type="password"
+              data-i18n-placeholder="model.apiKeyPlaceholder"
+            />
           </label>
           <label>
-            Model
+            <span data-i18n="model.name"></span>
             <input id="field-model" type="text" placeholder="model-name" />
           </label>
           <label>
-            Reasoning effort
+            <span data-i18n="model.reasoning"></span>
             <select id="field-reasoning">
-              <option value="">(default)</option>
-              <option value="low">low</option>
-              <option value="medium">medium</option>
-              <option value="high">high</option>
+              <option value="" data-i18n="model.reasoningDefault"></option>
+              <option value="low" data-i18n="model.reasoningLow"></option>
+              <option value="medium" data-i18n="model.reasoningMedium"></option>
+              <option value="high" data-i18n="model.reasoningHigh"></option>
             </select>
           </label>
           <label>
-            Temperature
+            <span data-i18n="model.temperature"></span>
             <input id="field-temperature" type="number" step="0.1" min="0" max="2" value="0" />
           </label>
           <label>
-            Extra body (JSON)
+            <span data-i18n="model.extraBody"></span>
             <input
               id="field-extra-body"
               type="text"
@@ -83,70 +85,75 @@
           </label>
         </div>
         <div class="row">
-          <button id="btn-save-profile" class="btn">Save profile</button>
+          <button id="btn-save-profile" class="btn" data-i18n="model.save"></button>
           <span id="profile-msg" class="msg"></span>
         </div>
       </section>
 
       <!-- Translation options -->
       <section class="card">
-        <h2>3. Options</h2>
+        <h2 data-i18n="options.title"></h2>
         <div class="grid">
           <label>
-            Source language
+            <span data-i18n="options.langIn"></span>
             <input id="field-lang-in" type="text" value="en" />
           </label>
           <label>
-            Target language
+            <span data-i18n="options.langOut"></span>
             <input id="field-lang-out" type="text" value="zh" />
           </label>
           <label>
-            Mode
+            <span data-i18n="options.mode"></span>
             <select id="field-mode">
-              <option value="fast">fast — ONNX layout detection</option>
-              <option value="ultrafast">ultrafast — native text positions</option>
+              <option value="fast" data-i18n="options.modeFast"></option>
+              <option value="ultrafast" data-i18n="options.modeUltrafast"></option>
             </select>
           </label>
           <label>
-            Threads
+            <span data-i18n="options.threads"></span>
             <input id="field-thread" type="number" min="1" max="64" value="4" />
           </label>
           <label>
-            Pages (optional)
+            <span data-i18n="options.pages"></span>
             <input id="field-pages" type="text" placeholder="1,3-5" />
           </label>
           <label>
-            Output directory
+            <span data-i18n="options.output"></span>
             <div class="row">
-              <input id="field-output" type="text" readonly placeholder="(same folder as input)" />
+              <input
+                id="field-output"
+                type="text"
+                readonly
+                data-i18n-placeholder="options.outputPlaceholder"
+              />
               <button id="btn-pick-output" class="btn btn--small">…</button>
             </div>
           </label>
         </div>
         <div class="row row--actions">
-          <button id="btn-translate" class="btn btn--primary" disabled>Translate</button>
-          <button id="btn-cancel" class="btn btn--danger hidden">Cancel</button>
+          <button id="btn-translate" class="btn btn--primary" disabled data-i18n="options.translate"></button>
+          <button id="btn-cancel" class="btn btn--danger hidden" data-i18n="options.cancel"></button>
         </div>
       </section>
 
       <!-- Progress -->
       <section id="progress-card" class="card hidden">
-        <h2>Progress</h2>
+        <h2 data-i18n="progress.title"></h2>
         <div class="progress">
           <div id="progress-bar" class="progress__bar"></div>
         </div>
-        <p id="progress-text" class="progress__text">Waiting…</p>
+        <p id="progress-text" class="progress__text" data-i18n="progress.waiting"></p>
       </section>
 
       <!-- Results -->
       <section id="result-card" class="card hidden">
-        <h2>Results</h2>
+        <h2 data-i18n="results.title"></h2>
         <ul id="result-list" class="file-list"></ul>
       </section>
 
       <!-- Log -->
       <details class="card log-card">
-        <summary>Engine log</summary>
+        <summary data-i18n="log.title"></summary>
         <pre id="log-pane"></pre>
       </details>
     </main>

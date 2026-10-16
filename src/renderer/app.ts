@@ -2,7 +2,22 @@
  * Renderer logic: file selection, model configuration, job control, progress.
  *
  * Talks to the main process only through `window.pdfxlate` (see preload.ts).
+ *
+ * Every user-visible string comes from the translation table: static markup is
+ * translated by `initI18n()` at startup, and anything built in code goes
+ * through `t()`. `onLocaleChange` re-runs those code-built render paths so a
+ * language switch updates the whole UI without a restart.
  */
+
+import {
+  getLocale,
+  initI18n,
+  onLocaleChange,
+  setLocale,
+  t,
+  LOCALES,
+  LOCALE_LABELS,
+} from "./i18n.js";
 
 interface ProfileSummary {
   provider: string;
@@ -42,8 +57,8 @@ interface PdfxlateApi {
   onEvent(cb: (event: SidecarEvent) => void): () => void;
   onLog(cb: (line: string) => void): () => void;
   request<T>(method: string, params?: Record<string, unknown>): Promise<T>;
-  pickPdf(): Promise<string[]>;
-  pickOutputDir(): Promise<string | null>;
+  pickPdf(locale?: string): Promise<string[]>;
+  pickOutputDir(locale?: string): Promise<string | null>;
   reveal(target: string): Promise<void>;
   openPath(target: string): Promise<void>;
   platform: string;
@@ -66,24 +81,95 @@ const $ = <T extends HTMLElement>(id: string): T =>
 let selectedFiles: string[] = [];
 let outputDir: string | null = null;
 let activeJobId: string | null = null;
-let engineReady = false;
+
+type EngineState = "pending" | "ok" | "error";
+let engineState: EngineState = "pending";
+
+let downloadingAssets = false;
+let apiKeySaved = false;
+
+/**
+ * A progress message is either a translation key (for text this module owns)
+ * or a raw string (diagnostics produced by the Python engine, which are not
+ * translated). Keeping the key lets a locale switch retranslate it.
+ */
+type ProgressMessage = { key: string; params?: Record<string, string> } | { raw: string };
+
+// Remembered so a locale switch can rebuild strings that are otherwise only
+// produced at event time — without disturbing the job in progress.
+let lastResults: Array<{ mono: string; dual: string }> = [];
+let lastProgress: {
+  stage: string;
+  current: number;
+  total: number;
+  message: ProgressMessage;
+} | null = null;
+let lastProfileMessage: {
+  key: string;
+  params?: Record<string, string>;
+  error: boolean;
+} | null = null;
+
+// --- locale ----------------------------------------------------------------
+
+function renderLocaleSelect(): void {
+  const select = $<HTMLSelectElement>("locale-select");
+  select.innerHTML = "";
+  for (const locale of LOCALES) {
+    const opt = document.createElement("option");
+    opt.value = locale;
+    opt.textContent = LOCALE_LABELS[locale];
+    select.append(opt);
+  }
+  select.value = getLocale();
+}
+
+$("locale-select").addEventListener("change", (e) => {
+  setLocale((e.target as HTMLSelectElement).value as (typeof LOCALES)[number]);
+});
+
+// Translate the static markup and pick the startup locale before anything is
+// rendered, so the first pass builds runtime strings in the right language.
+initI18n();
+renderLocaleSelect();
+
+onLocaleChange(() => {
+  renderLocaleSelect();
+  paintEngineStatus();
+  renderFiles();
+  paintApiKeyPlaceholder();
+  renderDownloadButton();
+  paintProgress();
+  if (lastResults.length) paintResults();
+  paintProfileMessage();
+});
 
 // --- engine status ---------------------------------------------------------
 
 function applyEngineState(payload: { ok: boolean; error?: string }): void {
-  engineReady = payload.ok;
-  const status = $("engine-status");
+  engineState = payload.ok ? "ok" : "error";
+  paintEngineStatus();
   if (payload.ok) {
-    status.textContent = "engine ready";
-    status.className = "status status--ok";
     void refreshProfiles();
     void refreshAssets();
   } else {
-    status.textContent = "engine failed";
-    status.className = "status status--error";
-    appendLog(`engine failed to start: ${payload.error ?? "unknown error"}`);
+    appendLog(t("log.engineFailed", { error: payload.error ?? t("log.unknownError") }));
   }
   updateTranslateButton();
+}
+
+function paintEngineStatus(): void {
+  const status = $("engine-status");
+  if (engineState === "ok") {
+    status.textContent = t("status.ready");
+    status.className = "status status--ok";
+  } else if (engineState === "error") {
+    status.textContent = t("status.failed");
+    status.className = "status status--error";
+  } else {
+    status.textContent = t("status.starting");
+    status.className = "status status--pending";
+  }
 }
 
 // Listen for the event, and also query the current state: the engine may
@@ -109,24 +195,29 @@ async function refreshAssets(): Promise<void> {
     const missing = !status.layout_model || !status.font_zh;
     $("setup-banner").classList.toggle("hidden", !missing);
   } catch (err) {
-    appendLog(`asset check failed: ${String(err)}`);
+    appendLog(t("log.assetCheckFailed", { error: String(err) }));
   }
 }
 
-$("btn-download-assets").addEventListener("click", async () => {
+function renderDownloadButton(): void {
   const button = $<HTMLButtonElement>("btn-download-assets");
-  button.disabled = true;
-  button.textContent = "Downloading…";
+  button.disabled = downloadingAssets;
+  button.textContent = t(downloadingAssets ? "setup.downloading" : "setup.download");
+}
+
+$("btn-download-assets").addEventListener("click", async () => {
+  downloadingAssets = true;
+  renderDownloadButton();
   showProgress();
   try {
     await api.request("assets.download", { targets: ["layout_model", "fonts"], languages: ["zh"] });
     $("setup-banner").classList.add("hidden");
-    setProgress("setup", 1, 1, "Assets ready.");
+    setProgress("setup", 1, 1, { key: "setup.ready" });
   } catch (err) {
-    setProgress("setup", 0, 1, `Download failed: ${String(err)}`);
+    setProgress("setup", 0, 1, { key: "setup.failed", params: { error: String(err) } });
   } finally {
-    button.disabled = false;
-    button.textContent = "Download now";
+    downloadingAssets = false;
+    renderDownloadButton();
   }
 });
 
@@ -144,7 +235,7 @@ function renderFiles(): void {
     const remove = document.createElement("button");
     remove.className = "remove";
     remove.textContent = "×";
-    remove.title = "Remove";
+    remove.title = t("docs.remove");
     remove.addEventListener("click", () => {
       selectedFiles = selectedFiles.filter((f) => f !== file);
       renderFiles();
@@ -162,7 +253,7 @@ function addFiles(paths: string[]): void {
   renderFiles();
 }
 
-$("btn-pick").addEventListener("click", async () => addFiles(await api.pickPdf()));
+$("btn-pick").addEventListener("click", async () => addFiles(await api.pickPdf(getLocale())));
 
 const dropzone = $("dropzone");
 dropzone.addEventListener("dragover", (e) => {
@@ -180,7 +271,7 @@ dropzone.addEventListener("drop", (e) => {
     .map((f) => (f as File & { path?: string }).path)
     .filter((p): p is string => Boolean(p));
   if (paths.length) addFiles(paths);
-  else appendLog("Could not read dropped file paths; use “Choose files…” instead.");
+  else appendLog(t("docs.dropUnreadable"));
 });
 
 // --- profiles --------------------------------------------------------------
@@ -193,7 +284,7 @@ async function refreshProfiles(): Promise<void> {
     const names = Object.keys(data.profiles);
     if (!names.length) {
       const opt = document.createElement("option");
-      opt.textContent = "(no profiles configured)";
+      opt.textContent = t("model.noProfiles");
       opt.value = "";
       select.append(opt);
       return;
@@ -207,7 +298,7 @@ async function refreshProfiles(): Promise<void> {
     }
     applyProfile(data, select.value);
   } catch (err) {
-    appendLog(`could not load profiles: ${String(err)}`);
+    appendLog(t("log.profilesFailed", { error: String(err) }));
   }
 }
 
@@ -223,20 +314,44 @@ function applyProfile(data: ProfilesResponse, name: string): void {
   $<HTMLSelectElement>("field-reasoning").value = profile.reasoning_effort ?? "";
   const keyField = $<HTMLInputElement>("field-api-key");
   keyField.value = "";
-  keyField.placeholder = profile.has_api_key ? "(saved — leave blank to keep)" : "sk-…";
+  apiKeySaved = profile.has_api_key;
+  paintApiKeyPlaceholder();
+}
+
+function paintApiKeyPlaceholder(): void {
+  $<HTMLInputElement>("field-api-key").placeholder = t(
+    apiKeySaved ? "model.apiKeySaved" : "model.apiKeyPlaceholder",
+  );
 }
 
 $("profile-select").addEventListener("change", (e) => {
   if (cachedProfiles) applyProfile(cachedProfiles, (e.target as HTMLSelectElement).value);
 });
 
-$("btn-save-profile").addEventListener("click", async () => {
+function paintProfileMessage(): void {
   const msg = $("profile-msg");
-  msg.className = "msg";
+  if (!lastProfileMessage) {
+    msg.textContent = "";
+    msg.className = "msg";
+    return;
+  }
+  msg.textContent = t(lastProfileMessage.key, lastProfileMessage.params);
+  msg.className = lastProfileMessage.error ? "msg msg--error" : "msg";
+}
+
+function setProfileMessage(
+  key: string,
+  params?: Record<string, string>,
+  error = false,
+): void {
+  lastProfileMessage = { key, params, error };
+  paintProfileMessage();
+}
+
+$("btn-save-profile").addEventListener("click", async () => {
   const name = $<HTMLSelectElement>("profile-select").value;
   if (!name) {
-    msg.textContent = "No profile to save.";
-    msg.className = "msg msg--error";
+    setProfileMessage("model.noProfile", undefined, true);
     return;
   }
   try {
@@ -247,8 +362,7 @@ $("btn-save-profile").addEventListener("click", async () => {
       try {
         extraBody = JSON.parse(extraRaw);
       } catch {
-        msg.textContent = "Extra body is not valid JSON.";
-        msg.className = "msg msg--error";
+        setProfileMessage("model.extraBodyInvalid", undefined, true);
         return;
       }
     }
@@ -269,18 +383,17 @@ $("btn-save-profile").addEventListener("click", async () => {
     };
     config.profiles = profiles;
     await api.request("config.save", { config });
-    msg.textContent = "Saved.";
+    setProfileMessage("model.saved");
     await refreshProfiles();
   } catch (err) {
-    msg.textContent = `Save failed: ${String(err)}`;
-    msg.className = "msg msg--error";
+    setProfileMessage("model.saveFailed", { error: String(err) }, true);
   }
 });
 
 // --- options ---------------------------------------------------------------
 
 $("btn-pick-output").addEventListener("click", async () => {
-  const dir = await api.pickOutputDir();
+  const dir = await api.pickOutputDir(getLocale());
   if (dir) {
     outputDir = dir;
     $<HTMLInputElement>("field-output").value = dir;
@@ -308,7 +421,8 @@ function parsePages(spec: string): number[] | undefined {
 
 function updateTranslateButton(): void {
   const button = $<HTMLButtonElement>("btn-translate");
-  button.disabled = !engineReady || selectedFiles.length === 0 || activeJobId !== null;
+  button.disabled =
+    engineState !== "ok" || selectedFiles.length === 0 || activeJobId !== null;
 }
 
 $("btn-translate").addEventListener("click", async () => {
@@ -319,7 +433,7 @@ $("btn-translate").addEventListener("click", async () => {
   $("btn-cancel").classList.remove("hidden");
   $("result-card").classList.add("hidden");
   showProgress();
-  setProgress("starting", 0, 1, "Starting…");
+  setProgress("starting", 0, 1, { key: "progress.starting" });
 
   try {
     const result = await api.request<{ job_id: string; outputs: Array<{ mono: string; dual: string }> }>(
@@ -335,7 +449,7 @@ $("btn-translate").addEventListener("click", async () => {
     );
     renderResults(result.outputs);
   } catch (err) {
-    setProgress("error", 0, 1, `Translation failed: ${String(err)}`);
+    setProgress("error", 0, 1, { key: "progress.failed", params: { error: String(err) } });
   } finally {
     activeJobId = null;
     $("btn-cancel").classList.add("hidden");
@@ -347,7 +461,7 @@ $("btn-cancel").addEventListener("click", async () => {
   try {
     await api.request("translate.cancel", {});
   } catch (err) {
-    appendLog(`cancel failed: ${String(err)}`);
+    appendLog(t("log.cancelFailed", { error: String(err) }));
   }
 });
 
@@ -357,53 +471,84 @@ function showProgress(): void {
   $("progress-card").classList.remove("hidden");
 }
 
-function setProgress(stage: string, current: number, total: number, message: string): void {
+function messageText(message: ProgressMessage): string {
+  return "key" in message ? t(message.key, message.params) : message.raw;
+}
+
+function setProgress(
+  stage: string,
+  current: number,
+  total: number,
+  message: ProgressMessage,
+): void {
+  lastProgress = { stage, current, total, message };
+  paintProgress();
+}
+
+/**
+ * Repaint the progress line from `lastProgress`.
+ *
+ * Deliberately does not show/hide the card: repainting after a locale switch
+ * must leave the current stage and percentage exactly as they were.
+ */
+function paintProgress(): void {
+  if (!lastProgress) return;
+  const { stage, current, total, message } = lastProgress;
   const pct = total > 0 ? Math.min(100, Math.round((current / total) * 100)) : 0;
   $("progress-bar").style.width = `${pct}%`;
   const counter = total > 1 ? ` (${current}/${total})` : "";
-  $("progress-text").textContent = `${stage}${counter} — ${message}`;
+  // Unknown stages (the sidecar may add new ones) fall back to the raw id
+  // rather than rendering as "stage.foo".
+  $("progress-text").textContent = `${t(`stage.${stage}`, undefined, stage)}${counter} — ${messageText(message)}`;
 }
 
 function handleProgress(event: JobProgress): void {
   showProgress();
-  setProgress(event.stage, event.current, event.total, event.message);
+  // `event.message` is a diagnostic from the Python engine, not UI copy, so it
+  // is shown verbatim in either locale.
+  setProgress(event.stage, event.current, event.total, { raw: event.message });
 }
 
 function handleDone(event: DoneEvent): void {
-  setProgress("done", 1, 1, "Finished.");
+  setProgress("done", 1, 1, { key: "progress.done" });
   renderResults(event.result.outputs);
 }
 
 function renderResults(outputs: Array<{ mono: string; dual: string }>): void {
-  const card = $("result-card");
+  lastResults = outputs;
+  paintResults();
+  $("result-card").classList.remove("hidden");
+}
+
+/** Rebuild the result rows from `lastResults`; visibility is left untouched. */
+function paintResults(): void {
   const list = $("result-list");
   list.innerHTML = "";
-  for (const pair of outputs) {
-    for (const [label, file] of [
-      ["mono", pair.mono],
-      ["dual", pair.dual],
+  for (const pair of lastResults) {
+    for (const [labelKey, file] of [
+      ["results.mono", pair.mono],
+      ["results.dual", pair.dual],
     ] as const) {
       const li = document.createElement("li");
       const tag = document.createElement("span");
       tag.className = "tag";
-      tag.textContent = label;
+      tag.textContent = t(labelKey);
       const name = document.createElement("span");
       name.className = "name";
       name.textContent = file.split(/[\\/]/).pop() ?? file;
       name.title = file;
       const open = document.createElement("button");
       open.className = "btn btn--small";
-      open.textContent = "Open";
+      open.textContent = t("results.open");
       open.addEventListener("click", () => void api.openPath(file));
       const reveal = document.createElement("button");
       reveal.className = "btn btn--small";
-      reveal.textContent = "Show";
+      reveal.textContent = t("results.reveal");
       reveal.addEventListener("click", () => void api.reveal(file));
       li.append(tag, name, open, reveal);
       list.append(li);
     }
   }
-  card.classList.remove("hidden");
 }
 
 // --- log -------------------------------------------------------------------

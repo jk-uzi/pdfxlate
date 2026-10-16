@@ -58,6 +58,9 @@ const EN: Table = {
   "model.name": "Model",
   "model.reasoning": "Reasoning effort",
   "model.reasoningDefault": "(default)",
+  "model.reasoningLow": "low",
+  "model.reasoningMedium": "medium",
+  "model.reasoningHigh": "high",
   "model.temperature": "Temperature",
   "model.extraBody": "Extra body (JSON)",
   "model.save": "Save profile",
@@ -97,6 +100,7 @@ const EN: Table = {
   "log.assetCheckFailed": "asset check failed: {error}",
   "log.profilesFailed": "could not load profiles: {error}",
   "log.cancelFailed": "cancel failed: {error}",
+  "log.unknownError": "unknown error",
 
   // Stage names arrive from the sidecar as bare identifiers; unknown stages
   // fall through to the raw value (see t()).
@@ -148,6 +152,9 @@ const ZH: Table = {
   "model.name": "模型",
   "model.reasoning": "推理强度",
   "model.reasoningDefault": "（默认）",
+  "model.reasoningLow": "低",
+  "model.reasoningMedium": "中",
+  "model.reasoningHigh": "高",
   "model.temperature": "温度",
   "model.extraBody": "额外请求体（JSON）",
   "model.save": "保存配置档",
@@ -187,6 +194,7 @@ const ZH: Table = {
   "log.assetCheckFailed": "资源检查失败：{error}",
   "log.profilesFailed": "无法加载配置档：{error}",
   "log.cancelFailed": "取消失败：{error}",
+  "log.unknownError": "未知错误",
 
   "stage.assets": "资源",
   "stage.layout": "版面",
@@ -278,10 +286,21 @@ function storeLocale(locale: Locale): void {
  * Unknown keys return the key itself so a missing translation is visible in
  * the UI rather than rendering as an empty element. Placeholders without a
  * matching param are left untouched.
+ *
+ * `fallback`, when given, replaces the key for a lookup that misses BOTH the
+ * active table and the fallback locale's. Use it for values that legitimately
+ * have no translation — most notably sidecar stage identifiers, where
+ * `t(\`stage.${stage}\`, undefined, stage)` must render the raw stage name
+ * instead of `stage.foo`. Omitting it keeps the historical behaviour of
+ * returning the key.
  */
-export function t(key: string, params?: Record<string, string | number>): string {
+export function t(
+  key: string,
+  params?: Record<string, string | number>,
+  fallback?: string,
+): string {
   const table = MESSAGES[current] ?? MESSAGES[FALLBACK_LOCALE];
-  const raw = table[key] ?? MESSAGES[FALLBACK_LOCALE][key] ?? key;
+  const raw = table[key] ?? MESSAGES[FALLBACK_LOCALE][key] ?? fallback ?? key;
   if (!params) return raw;
   return raw.replace(/\{(\w+)\}/g, (match, name: string) =>
     name in params ? String(params[name]) : match,
