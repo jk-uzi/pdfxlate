@@ -34,17 +34,20 @@
         <ul id="file-list" class="file-list"></ul>
       </section>
 
-      <!-- Model configuration -->
+      <!-- Model configuration: a provider (endpoint + credentials) holding
+           any number of models. -->
       <section class="card">
         <h2 data-i18n="model.title"></h2>
+
+        <h3 class="subhead" data-i18n="model.providerSection"></h3>
         <div class="grid">
           <label>
-            <span data-i18n="model.profile"></span>
-            <select id="profile-select"></select>
+            <span data-i18n="model.providerName"></span>
+            <select id="provider-select"></select>
           </label>
           <label>
-            <span data-i18n="model.provider"></span>
-            <input id="field-provider" type="text" placeholder="openai_compat" />
+            <span data-i18n="model.kind"></span>
+            <input id="field-kind" type="text" placeholder="openai_compat" />
           </label>
           <label>
             <span data-i18n="model.baseUrl"></span>
@@ -58,9 +61,31 @@
               data-i18n-placeholder="model.apiKeyPlaceholder"
             />
           </label>
+        </div>
+        <div class="row">
+          <input
+            id="new-provider-name"
+            type="text"
+            class="grow"
+            data-i18n-placeholder="model.newProviderPlaceholder"
+          />
+          <button id="btn-add-provider" class="btn btn--small" data-i18n="model.add"></button>
+          <button
+            id="btn-remove-provider"
+            class="btn btn--small btn--danger"
+            data-i18n="model.remove"
+          ></button>
+        </div>
+
+        <h3 class="subhead" data-i18n="model.modelSection"></h3>
+        <div class="grid">
           <label>
-            <span data-i18n="model.name"></span>
-            <input id="field-model" type="text" placeholder="model-name" />
+            <span data-i18n="model.modelName"></span>
+            <select id="model-select"></select>
+          </label>
+          <label>
+            <span data-i18n="model.modelId"></span>
+            <input id="field-model-id" type="text" placeholder="model-name" />
           </label>
           <label>
             <span data-i18n="model.reasoning"></span>
@@ -85,8 +110,23 @@
           </label>
         </div>
         <div class="row">
-          <button id="btn-save-profile" class="btn" data-i18n="model.save"></button>
-          <span id="profile-msg" class="msg"></span>
+          <input
+            id="new-model-name"
+            type="text"
+            class="grow"
+            data-i18n-placeholder="model.newModelPlaceholder"
+          />
+          <button id="btn-add-model" class="btn btn--small" data-i18n="model.add"></button>
+          <button
+            id="btn-remove-model"
+            class="btn btn--small btn--danger"
+            data-i18n="model.remove"
+          ></button>
+        </div>
+
+        <div class="row">
+          <button id="btn-save-model" class="btn" data-i18n="model.save"></button>
+          <span id="model-msg" class="msg"></span>
         </div>
       </section>
 

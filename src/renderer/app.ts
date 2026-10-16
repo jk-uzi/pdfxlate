@@ -19,18 +19,52 @@ import {
   LOCALE_LABELS,
 } from "./i18n.js";
 
-interface ProfileSummary {
-  provider: string;
-  model: string;
-  base_url: string | null;
+// One model under a provider, as summarised by `providers.list`.
+interface ProviderModelSummary {
+  model: string | null;
   reasoning_effort: string | null;
-  has_api_key: boolean;
+  temperature: number;
 }
 
-interface ProfilesResponse {
-  default: string | null;
-  profiles: Record<string, ProfileSummary>;
+interface ProviderSummary {
+  kind: string;
+  base_url: string | null;
+  has_api_key: boolean;
+  models: Record<string, ProviderModelSummary>;
 }
+
+interface ProvidersResponse {
+  default_provider: string | null;
+  default_model: string | null;
+  providers: Record<string, ProviderSummary>;
+}
+
+/**
+ * The editor's working copy of a model entry.
+ *
+ * Looser than the backend schema on purpose: `top_p` / `max_tokens` / `stream`
+ * are not surfaced in the UI but are carried through a save untouched.
+ */
+interface ModelDraft {
+  model?: string | null;
+  temperature?: number;
+  top_p?: number | null;
+  max_tokens?: number | null;
+  stream?: boolean;
+  reasoning_effort?: string | null;
+  extra_body?: Record<string, unknown>;
+}
+
+/** The editor's working copy of one provider (endpoint + its models). */
+interface ProviderDraft {
+  kind?: string;
+  base_url?: string | null;
+  api_key?: string | null;
+  models?: Record<string, ModelDraft>;
+}
+
+/** The full config document, as returned by `config.get`. */
+type ConfigDoc = Record<string, unknown>;
 
 // Named JobProgress rather than ProgressEvent: the latter is a DOM built-in
 // and declaring it here would collide with lib.dom.
@@ -110,6 +144,19 @@ let lastProfileMessage: {
   error: boolean;
 } | null = null;
 
+// Last `providers.list` summary and the full `config.get` document the model
+// editor works against. The summary drives the two selectors and the API-key
+// masking (`has_api_key`); the config document carries the model detail fields
+// the summary omits (notably `extra_body`) and is what a save posts back.
+let cachedProviders: ProvidersResponse | null = null;
+let cachedConfig: ConfigDoc | null = null;
+// True only once `config.get` has actually succeeded. Guards every save: a
+// draft fabricated after a failed load must never be posted back, or it would
+// overwrite the settings the load could not read.
+let configLoaded = false;
+let currentProvider: string | null = null;
+let currentModel: string | null = null;
+
 // --- locale ----------------------------------------------------------------
 
 function renderLocaleSelect(): void {
@@ -142,6 +189,8 @@ onLocaleChange(() => {
   paintProgress();
   if (lastResults.length) paintResults();
   paintProfileMessage();
+  renderProviderSelect();
+  renderModelSelect();
 });
 
 // --- engine status ---------------------------------------------------------
@@ -150,7 +199,7 @@ function applyEngineState(payload: { ok: boolean; error?: string }): void {
   engineState = payload.ok ? "ok" : "error";
   paintEngineStatus();
   if (payload.ok) {
-    void refreshProfiles();
+    void refreshProviders();
     void refreshAssets();
   } else {
     appendLog(t("log.engineFailed", { error: payload.error ?? t("log.unknownError") }));
@@ -274,48 +323,168 @@ dropzone.addEventListener("drop", (e) => {
   else appendLog(t("docs.dropUnreadable"));
 });
 
-// --- profiles --------------------------------------------------------------
+// --- providers & models ----------------------------------------------------
 
-async function refreshProfiles(): Promise<void> {
+/**
+ * Reload the provider summary and the full config document.
+ *
+ * The two are fetched together because the editor needs both: the draft config
+ * is the source of truth for the editor's structure (provider names, model
+ * aliases, defaults, detail fields), while the summary supplies `has_api_key`,
+ * which the config document's expanded key cannot be trusted to answer after a
+ * user edit.
+ */
+async function refreshProviders(): Promise<void> {
   try {
-    const data = await api.request<ProfilesResponse>("profiles.list");
-    const select = $<HTMLSelectElement>("profile-select");
-    select.innerHTML = "";
-    const names = Object.keys(data.profiles);
-    if (!names.length) {
-      const opt = document.createElement("option");
-      opt.textContent = t("model.noProfiles");
-      opt.value = "";
-      select.append(opt);
-      return;
-    }
-    for (const name of names) {
-      const opt = document.createElement("option");
-      opt.value = name;
-      opt.textContent = name;
-      if (name === data.default) opt.selected = true;
-      select.append(opt);
-    }
-    applyProfile(data, select.value);
+    const [summary, config] = await Promise.all([
+      api.request<ProvidersResponse>("providers.list"),
+      api.request<ConfigDoc>("config.get"),
+    ]);
+    cachedProviders = summary;
+    cachedConfig = config;
+    configLoaded = true;
+    // Keep the current selection if it still exists; otherwise fall back to
+    // the configured default, then to the first entry.
+    currentProvider = pickProvider();
+    currentModel = currentProvider ? pickModel(currentProvider) : null;
+    renderProviderSelect();
+    renderModelSelect();
+    applyProviderFields();
+    applyModelFields();
   } catch (err) {
-    appendLog(t("log.profilesFailed", { error: String(err) }));
+    appendLog(t("log.providersFailed", { error: String(err) }));
   }
 }
 
-let cachedProfiles: ProfilesResponse | null = null;
+/** The provider to select: the current one, else the default, else the first. */
+function pickProvider(): string | null {
+  const names = draftProviderNames();
+  if (currentProvider && names.includes(currentProvider)) return currentProvider;
+  const def = defaultProvider();
+  if (def && names.includes(def)) return def;
+  return names[0] ?? null;
+}
 
-function applyProfile(data: ProfilesResponse, name: string): void {
-  cachedProfiles = data;
-  const profile = data.profiles[name];
-  if (!profile) return;
-  $<HTMLInputElement>("field-provider").value = profile.provider;
-  $<HTMLInputElement>("field-base-url").value = profile.base_url ?? "";
-  $<HTMLInputElement>("field-model").value = profile.model;
-  $<HTMLSelectElement>("field-reasoning").value = profile.reasoning_effort ?? "";
-  const keyField = $<HTMLInputElement>("field-api-key");
-  keyField.value = "";
-  apiKeySaved = profile.has_api_key;
+/** The model to select within `provider`: current, else default, else first. */
+function pickModel(provider: string): string | null {
+  const models = draftModelNames(provider);
+  if (currentModel && models.includes(currentModel)) return currentModel;
+  const def = defaultModel();
+  if (defaultProvider() === provider && def && models.includes(def)) return def;
+  return models[0] ?? null;
+}
+
+function defaultProvider(): string | null {
+  const value = cachedConfig?.default_provider;
+  return typeof value === "string" && value ? value : null;
+}
+
+function defaultModel(): string | null {
+  const value = cachedConfig?.default_model;
+  return typeof value === "string" && value ? value : null;
+}
+
+/** Rebuild the provider `<select>` from the draft config. */
+function renderProviderSelect(): void {
+  const select = $<HTMLSelectElement>("provider-select");
+  select.innerHTML = "";
+  const names = draftProviderNames();
+  if (!names.length) {
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = t("model.noProviders");
+    select.append(opt);
+    select.disabled = true;
+    return;
+  }
+  select.disabled = false;
+  const def = defaultProvider();
+  for (const name of names) {
+    const opt = document.createElement("option");
+    opt.value = name;
+    opt.textContent = name + (def === name ? t("model.defaultSuffix") : "");
+    if (name === currentProvider) opt.selected = true;
+    select.append(opt);
+  }
+}
+
+/** Rebuild the model `<select>` for the current provider. */
+function renderModelSelect(): void {
+  const select = $<HTMLSelectElement>("model-select");
+  select.innerHTML = "";
+  const names = currentProvider ? draftModelNames(currentProvider) : [];
+  if (!names.length) {
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = t("model.noModels");
+    select.append(opt);
+    select.disabled = true;
+    return;
+  }
+  select.disabled = false;
+  const def = defaultModel();
+  const isDefaultProvider = defaultProvider() === currentProvider;
+  for (const name of names) {
+    const opt = document.createElement("option");
+    opt.value = name;
+    opt.textContent =
+      name + (isDefaultProvider && def === name ? t("model.defaultSuffix") : "");
+    if (name === currentModel) opt.selected = true;
+    select.append(opt);
+  }
+}
+
+/** Fill the provider-level fields from the cached config, and mask the key. */
+function applyProviderFields(): void {
+  const provider = draftProvider(currentProvider);
+  $<HTMLInputElement>("field-kind").value = provider?.kind ?? "";
+  $<HTMLInputElement>("field-base-url").value = provider?.base_url ?? "";
+  // The key field always starts empty: the stored secret is never shown back,
+  // only the `has_api_key` flag the summary reports.
+  $<HTMLInputElement>("field-api-key").value = "";
+  apiKeySaved = !!cachedProviders?.providers[currentProvider ?? ""]?.has_api_key;
   paintApiKeyPlaceholder();
+}
+
+/** Fill the model-level fields from the cached config. */
+function applyModelFields(): void {
+  const model = draftModel(currentProvider, currentModel);
+  $<HTMLInputElement>("field-model-id").value = model?.model ?? "";
+  $<HTMLSelectElement>("field-reasoning").value = model?.reasoning_effort ?? "";
+  $<HTMLInputElement>("field-temperature").value = String(model?.temperature ?? 0);
+  const extra = model?.extra_body;
+  $<HTMLInputElement>("field-extra-body").value =
+    extra && Object.keys(extra).length ? JSON.stringify(extra) : "";
+}
+
+/** The `providers` map in the draft config, created on demand. */
+function draftProviders(): Record<string, ProviderDraft> {
+  if (!cachedConfig) cachedConfig = {};
+  let providers = cachedConfig.providers as Record<string, ProviderDraft> | undefined;
+  if (!providers || typeof providers !== "object") {
+    providers = {};
+    cachedConfig.providers = providers;
+  }
+  return providers;
+}
+
+function draftProviderNames(): string[] {
+  return Object.keys(draftProviders());
+}
+
+function draftModelNames(provider: string): string[] {
+  const models = draftProviders()[provider]?.models;
+  return models ? Object.keys(models) : [];
+}
+
+function draftProvider(name: string | null): ProviderDraft | null {
+  if (!name) return null;
+  return draftProviders()[name] ?? null;
+}
+
+function draftModel(provider: string | null, alias: string | null): ModelDraft | null {
+  if (!provider || !alias) return null;
+  return draftProvider(provider)?.models?.[alias] ?? null;
 }
 
 function paintApiKeyPlaceholder(): void {
@@ -324,12 +493,92 @@ function paintApiKeyPlaceholder(): void {
   );
 }
 
-$("profile-select").addEventListener("change", (e) => {
-  if (cachedProfiles) applyProfile(cachedProfiles, (e.target as HTMLSelectElement).value);
+$("provider-select").addEventListener("change", (e) => {
+  currentProvider = (e.target as HTMLSelectElement).value || null;
+  // A model alias is only meaningful within its own provider, so start the new
+  // provider at its default (or first) model rather than carrying the old one.
+  currentModel = currentProvider ? pickModel(currentProvider) : null;
+  renderModelSelect();
+  applyProviderFields();
+  applyModelFields();
 });
 
+$("model-select").addEventListener("change", (e) => {
+  currentModel = (e.target as HTMLSelectElement).value || null;
+  applyModelFields();
+});
+
+/** Commit the provider-level fields into the draft config, in place. */
+function commitProviderFields(name: string): void {
+  const providers = draftProviders();
+  const existing = providers[name] ?? {};
+  providers[name] = {
+    ...existing,
+    kind: $<HTMLInputElement>("field-kind").value || "openai_compat",
+    base_url: $<HTMLInputElement>("field-base-url").value || null,
+    models: existing.models ?? {},
+  };
+  const apiKey = $<HTMLInputElement>("field-api-key").value;
+  // Only overwrite the stored key when the user typed a new one, so a masked
+  // value never erases the saved credential.
+  if (apiKey) providers[name].api_key = apiKey;
+}
+
+/** Parse the extra-body field; `undefined` means "leave the draft as is". */
+function readExtraBody(): Record<string, unknown> | undefined {
+  const raw = $<HTMLInputElement>("field-extra-body").value.trim();
+  if (!raw) return {};
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    // The backend schema types this as a mapping; a bare number, string or
+    // array would be rejected on save, so treat it as invalid here too.
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return undefined;
+    }
+    return parsed as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Commit the model-level fields into the draft config, in place. */
+function commitModelFields(provider: string, alias: string): void {
+  const extraBody = readExtraBody();
+  if (extraBody === undefined) return;
+  const providers = draftProviders();
+  const prov = providers[provider];
+  if (!prov) return;
+  if (!prov.models) prov.models = {};
+  const existing = prov.models[alias] ?? {};
+  prov.models[alias] = {
+    ...existing,
+    model: $<HTMLInputElement>("field-model-id").value || alias,
+    reasoning_effort: $<HTMLSelectElement>("field-reasoning").value || null,
+    temperature: Number($<HTMLInputElement>("field-temperature").value) || 0,
+    extra_body: extraBody,
+  };
+}
+
+/** POST the cached config document, reporting the outcome on `model-msg`. */
+async function saveConfig(successKey: string): Promise<void> {
+  // Refuse to save a document that was never successfully loaded, so a failed
+  // `config.get` can never be "fixed" by writing an empty config over the real
+  // one.
+  if (!configLoaded || !cachedConfig) {
+    setProfileMessage("model.configUnavailable", undefined, true);
+    return;
+  }
+  try {
+    await api.request("config.save", { config: cachedConfig });
+    setProfileMessage(successKey);
+    await refreshProviders();
+  } catch (err) {
+    setProfileMessage("model.saveFailed", { error: String(err) }, true);
+  }
+}
+
 function paintProfileMessage(): void {
-  const msg = $("profile-msg");
+  const msg = $("model-msg");
   if (!lastProfileMessage) {
     msg.textContent = "";
     msg.className = "msg";
@@ -348,46 +597,129 @@ function setProfileMessage(
   paintProfileMessage();
 }
 
-$("btn-save-profile").addEventListener("click", async () => {
-  const name = $<HTMLSelectElement>("profile-select").value;
+$("btn-add-provider").addEventListener("click", () => {
+  const input = $<HTMLInputElement>("new-provider-name");
+  const name = input.value.trim();
   if (!name) {
-    setProfileMessage("model.noProfile", undefined, true);
+    setProfileMessage("model.nameRequired", undefined, true);
     return;
   }
-  try {
-    const config = await api.request<Record<string, unknown>>("config.get");
-    const extraRaw = $<HTMLInputElement>("field-extra-body").value.trim();
-    let extraBody: Record<string, unknown> = {};
-    if (extraRaw) {
-      try {
-        extraBody = JSON.parse(extraRaw);
-      } catch {
-        setProfileMessage("model.extraBodyInvalid", undefined, true);
-        return;
-      }
-    }
-    const profiles = (config.profiles ?? {}) as Record<string, Record<string, unknown>>;
-    const existing = profiles[name] ?? {};
-    const apiKey = $<HTMLInputElement>("field-api-key").value;
-    profiles[name] = {
-      ...existing,
-      provider: $<HTMLInputElement>("field-provider").value,
-      base_url: $<HTMLInputElement>("field-base-url").value || null,
-      model: $<HTMLInputElement>("field-model").value,
-      reasoning_effort: $<HTMLSelectElement>("field-reasoning").value || null,
-      temperature: Number($<HTMLInputElement>("field-temperature").value) || 0,
-      extra_body: extraBody,
-      // Only overwrite the stored key when the user typed a new one, so a
-      // masked value never erases the saved credential.
-      ...(apiKey ? { api_key: apiKey } : {}),
-    };
-    config.profiles = profiles;
-    await api.request("config.save", { config });
-    setProfileMessage("model.saved");
-    await refreshProfiles();
-  } catch (err) {
-    setProfileMessage("model.saveFailed", { error: String(err) }, true);
+  const providers = draftProviders();
+  if (providers[name]) {
+    setProfileMessage("model.providerExists", { name }, true);
+    return;
   }
+  providers[name] = {
+    kind: "openai_compat",
+    base_url: null,
+    models: {},
+  };
+  input.value = "";
+  currentProvider = name;
+  currentModel = null;
+  renderProviderSelect();
+  renderModelSelect();
+  applyProviderFields();
+  applyModelFields();
+  void saveConfig("model.saved");
+});
+
+$("btn-remove-provider").addEventListener("click", () => {
+  const name = currentProvider;
+  if (!name) {
+    setProfileMessage("model.noProvider", undefined, true);
+    return;
+  }
+  if (!confirm(t("model.removeProviderConfirm", { name }))) return;
+  const providers = draftProviders();
+  delete providers[name];
+  if (cachedConfig && cachedConfig.default_provider === name) {
+    cachedConfig.default_provider = null;
+    cachedConfig.default_model = null;
+  }
+  // Re-pick against the mutated draft so the selection can never point at the
+  // provider that was just deleted.
+  currentProvider = null;
+  currentModel = null;
+  currentProvider = pickProvider();
+  currentModel = currentProvider ? pickModel(currentProvider) : null;
+  renderProviderSelect();
+  renderModelSelect();
+  applyProviderFields();
+  applyModelFields();
+  void saveConfig("model.saved");
+});
+
+$("btn-add-model").addEventListener("click", () => {
+  const name = $<HTMLInputElement>("new-model-name").value.trim();
+  if (!name) {
+    setProfileMessage("model.nameRequired", undefined, true);
+    return;
+  }
+  const provider = currentProvider;
+  if (!provider) {
+    setProfileMessage("model.noProvider", undefined, true);
+    return;
+  }
+  const providers = draftProviders();
+  const prov = providers[provider];
+  if (!prov) return;
+  if (!prov.models) prov.models = {};
+  if (prov.models[name]) {
+    setProfileMessage("model.modelExists", { name }, true);
+    return;
+  }
+  // A new model defaults to its alias as the API model id, matching the
+  // backend's own fill-in behaviour.
+  prov.models[name] = { model: name, temperature: 0 };
+  $<HTMLInputElement>("new-model-name").value = "";
+  currentModel = name;
+  renderModelSelect();
+  applyModelFields();
+  void saveConfig("model.saved");
+});
+
+$("btn-remove-model").addEventListener("click", () => {
+  const provider = currentProvider;
+  const alias = currentModel;
+  if (!provider || !alias) {
+    setProfileMessage("model.noModel", undefined, true);
+    return;
+  }
+  if (!confirm(t("model.removeModelConfirm", { name: alias }))) return;
+  const providers = draftProviders();
+  const prov = providers[provider];
+  if (prov?.models) delete prov.models[alias];
+  if (
+    cachedConfig &&
+    cachedConfig.default_provider === provider &&
+    cachedConfig.default_model === alias
+  ) {
+    cachedConfig.default_model = null;
+  }
+  // Re-pick from the mutated draft so the selection never points at a deleted
+  // model.
+  currentModel = pickModel(provider);
+  renderModelSelect();
+  applyModelFields();
+  void saveConfig("model.saved");
+});
+
+$("btn-save-model").addEventListener("click", async () => {
+  const provider = currentProvider;
+  if (!provider) {
+    setProfileMessage("model.noProvider", undefined, true);
+    return;
+  }
+  // Validate the extra body before writing anything, so a bad value cannot
+  // leave a half-committed draft.
+  if (readExtraBody() === undefined) {
+    setProfileMessage("model.extraBodyInvalid", undefined, true);
+    return;
+  }
+  commitProviderFields(provider);
+  if (currentModel) commitModelFields(provider, currentModel);
+  await saveConfig("model.saved");
 });
 
 // --- options ---------------------------------------------------------------
@@ -440,7 +772,8 @@ $("btn-translate").addEventListener("click", async () => {
       "translate.start",
       {
         files: selectedFiles,
-        profile: $<HTMLSelectElement>("profile-select").value || undefined,
+        provider: currentProvider ?? undefined,
+        model: currentModel ?? undefined,
         output: outputDir ?? undefined,
         pages: parsePages($<HTMLInputElement>("field-pages").value),
         mode,
