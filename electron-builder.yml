@@ -6,6 +6,12 @@ directories:
   output: dist
   buildResources: build
 
+# The app mark. Kept in `assets/` rather than the conventional `build/` because
+# `.gitignore` excludes `build/` as packaging output, and the icon is source
+# that has to be committed. Generated from src/renderer/icon.svg by
+# scripts/make_icon.py, which is also what the title bar shows.
+icon: assets/icon.png
+
 files:
   - out/**/*
   - package.json
@@ -29,6 +35,10 @@ linux:
 win:
   target:
     - nsis
+  # An .ico is supplied rather than letting electron-builder convert the PNG:
+  # the conversion path is not exercised here, and the multi-size container is
+  # generated anyway by scripts/make_icon.py.
+  icon: assets/icon.ico
   # Code signing is intentionally omitted: it requires a purchased certificate.
   # Unsigned builds trigger a SmartScreen warning on first run.
 nsis:

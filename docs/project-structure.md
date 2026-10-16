@@ -43,7 +43,10 @@ Python 3.12，venv 在 `python/.venv`，包以 editable 方式安装，改源码
 | 改渲染进程可用的 API | `src/preload/preload.ts`（`contextBridge`） |
 | 改 Electron 界面 | `src/renderer/app.ts` + `index.html` + `style.css` |
 | 改标题栏 / 窗口按钮 | `src/main/main.ts`（`titleBarOverlay` / `TITLEBAR_HEIGHT`）+ `style.css` 的 `--titlebar-height`，两处必须一致 |
+| 改应用图标 / 标记 | `src/renderer/icon.svg` 是唯一来源；改完跑 `npm run make:icon` 重新生成 `assets/`，标题栏靠构建期内联自动跟上 |
 | 改任务/设置模式与设置项 | `src/renderer/app.ts` 的 `appMode` / `setAppMode()` / `paintSettingsMode()`，菜单与面板在 `index.html` |
+| 改侧栏折叠 | `src/renderer/app.ts` 的 `setSidebarCollapsed()` + `style.css` 的 `body.sidebar-collapsed` |
+| 改进度显示 | `src/renderer/app.ts` 的 `paintProgress()`，落点在 `index.html` 的 `.statusbar`（**不在侧栏**） |
 | 改右侧 PDF 预览（视图/翻页/缩放） | `src/renderer/app.ts` 的 `renderPreview()` / `viewerUrl()` |
 | 改左侧栏分组 | `src/renderer/index.html` 的 `details.group` + `app.ts` 的 `expandGroup()` |
 | 改供应商/模型的界面编辑 | `src/renderer/app.ts`（供应商与模型两级下拉 + 字段） |
@@ -107,10 +110,14 @@ pdfxlate/
 │   ├── preload/
 │   │   └── preload.ts       105 行  contextBridge，向渲染进程暴露 API
 │   └── renderer/
-│       ├── index.html       297 行  界面结构（文案走 data-i18n* 属性）
-│       ├── app.ts          1287 行  界面逻辑（任务/设置双模式、拖拽、进度、结果、语言切换）
-│       ├── i18n.ts          485 行  中英文字符串表 + t()/applyStaticTranslations()
-│       └── style.css        695 行  样式（含标题栏拖拽区与设置模式布局）
+│       ├── index.html       315 行  界面结构（文案走 data-i18n* 属性；图标在构建时内联）
+│       ├── app.ts          1322 行  界面逻辑（任务/设置双模式、侧栏折叠、拖拽、进度、结果）
+│       ├── i18n.ts          489 行  中英文字符串表 + t()/applyStaticTranslations()
+│       ├── icon.svg          49 行  应用标记的**唯一来源**（标题栏内联 + 打包图标）
+│       └── style.css        774 行  样式（含标题栏拖拽区、折叠与状态栏）
+├── assets/
+│   ├── icon.png               512×512，由 make_icon.py 从 icon.svg 生成后提交
+│   └── icon.ico               16–256 多尺寸，同上（Windows 用）
 ├── tests/
 │   ├── test_translation.py   187 行  缓存、占位符、推理标签剥离、注册表、缓存开关
 │   ├── test_openai_compat.py 137 行  适配器参数透传、校验、提示词渲染
@@ -121,7 +128,9 @@ pdfxlate/
 │   ├── test_mcp_server.py    600 行  MCP 工具、stdio 握手、两遍式端到端与确定性护栏
 │   └── test_assets_fonts.py  113 行  语言→字体映射、status() 兼容性
 └── scripts/
-    ├── copy-static.mjs        20 行  拷贝 HTML/CSS 到 out/renderer/
+    ├── copy-static.mjs        81 行  拷贝 CSS、**把 icon.svg 内联进 index.html**
+    ├── make-icon.mjs          33 行  用 venv 解释器调用 make_icon.py（npm run make:icon）
+    ├── make_icon.py          186 行  从 icon.svg 生成 assets/icon.png 与 .ico（PyMuPDF）
     ├── check-i18n.mjs        100 行  校验中英文字符串表一致（npm run check:i18n）
     └── build.sh               40 行  一键构建：PyInstaller → tsc → electron-builder
 ```
@@ -381,7 +390,7 @@ overlay 的位置由 OS 按这个值摆放，不一致时系统三键会在栏�
 **`src/renderer/app.ts`** — 界面逻辑，无前端框架，直接操作 DOM。
 两栏工作区，且**有任务 / 设置两种模式**（`appMode`）：
 
-- **任务模式**（默认）：左侧栏是**可折叠分组**（文档 / 选项 / 进度 / 结果 / 日志），
+- **任务模式**（默认）：左侧栏是**可折叠分组**（文档 / 选项 / 结果），
   右侧是**预览区**（工具栏 + 画布）。底部动作区**竖排两个按钮**：「开始翻译」
   在上、「⚙ 设置」在下，都钉底。
 - **设置模式**（点 ⚙）：**左栏换成设置菜单**（顶部「← 返回」，下接模型 / 外观 /
@@ -389,10 +398,28 @@ overlay 的位置由 OS 按这个值摆放，不一致时系统三键会在栏�
   不在翻译状态，两个按钮都没有意义。
 
 设置项三项：**模型**（供应商→模型两级编辑器，从任务侧栏**移进来**，避免两处编辑器
-状态打架）、**外观**（界面语言）、**常规**（引擎状态、版本、配置目录——只读诊断）。
-标题栏清空后**引擎状态必须有地方显示**，就落在「常规」里。
+状态打架）、**外观**（界面语言）、**常规**（引擎状态、版本、配置目录，加**引擎日志**
+——都是只读诊断）。标题栏清空后**引擎状态必须有地方显示**，就落在「常规」里。
 
-另有拖拽与文件选择、页码范围解析、进度渲染、结果列表、日志面板。
+**进度不在侧栏，在窗口底部的状态栏**（`.statusbar`）。这不是审美选择：侧栏可以折叠，
+进度若留在侧栏，一折叠就看不见了——而进度恰恰是任务进行中唯一要看的东西。状态栏
+通栏、与折叠无关，且**常驻**（空闲显示 `progress.idle`），避免窗口底部高度跳动。
+设置模式下也保持可见，因为翻译可以在设置模式里继续跑。
+
+**引擎日志移进「常规」，没有删除**。`appendLog` 是 7 条失败路径的唯一出口
+（`log.engineFailed` / `assetCheckFailed` / `providersFailed` / `engineFactsFailed` /
+`pageCountFailed` / `cancelFailed` / `preview.dropUnreadable`），还承接 sidecar 的
+stderr 流；删掉面板等于这些失败全部变静默。`#log-pane` 的 **id 没改**，所以
+`appendLog` 一行都没动（隐藏元素照样能追加）。
+
+**侧栏折叠**由 `<body>` 的 `sidebar-collapsed` 类驱动，而不是逐个元素开关：侧栏有
+**两个**（任务 / 设置），类名一次覆盖两者，设置模式下折叠也成立。折叠用**负 margin
+位移**而非 `display: none`，以便过渡；状态存 `localStorage`。
+
+**一个已知取舍**：设置模式下折叠侧栏会连「← 返回」一起藏起来，退出设置只能靠标题栏
+那个图标。图标常驻，所以可恢复；这是「图标折叠侧栏」的直接推论，没有为它做特例。
+
+另有拖拽与文件选择、页码范围解析、结果列表。
 用户可见文案一律走 `t()`，不写字面量。
 
 `appMode` / `settingsSection` 是**状态变量 + 重绘**（`setAppMode()` /
@@ -406,9 +433,25 @@ macOS 的交通灯在**左上**，改留 `padding-left`。同一份 CSS 靠类�
 
 **拖拽区是自建标题栏最容易踩的坑**：`-webkit-app-region: drag` 只加在标题栏的
 **空拖拽条**上（`.titlebar__drag`），**任何可交互元素都不能落在里面**——拖拽区会
-静默吞掉点击，按钮看起来在、就是点不动，且没有任何报错。实测方式是经 CDP 发真实
-`mousePressed` / `mouseReleased` 并断言处理器真的跑了，光看截图证明不了这件事
-（`getComputedStyle` 里 `.titlebar` 是 `none`、拖拽条是 `drag`、各按钮都是 `none`）。
+静默吞掉点击，按钮看起来在、就是点不动，且没有任何报错。所以折叠图标是拖拽条的
+**兄弟节点**。实测方式是经 CDP 发真实 `mousePressed` / `mouseReleased` 并断言处理器
+真的跑了，光看截图证明不了这件事（`getComputedStyle` 里 `.titlebar` 是 `none`、
+拖拽条是 `drag`、各按钮都是 `none`）。
+
+**应用标记（`icon.svg`）在构建时被内联进 `index.html`，不能用 `<img src>`**。页面跑在
+`file://` 下，**origin 是不透明的，CSP 的 `'self'` 匹配不到相对路径**，`<img>` 会被
+直接拒绝（控制台报 `Refused to connect ... "default-src 'none'"`）——和 PDF 预览必须
+放行 `frame-src file:` 是同一个原因。`scripts/copy-static.mjs` 把 SVG 内联进去，内联
+**不是子资源请求**，因此不需要放宽任何 CSP 指令（`frame-src file:` 仍是有意为之的
+唯一放宽）。这也意味着 `icon.svg` 不再被单独拷到 `out/renderer/`，脚本里有 `retired`
+列表把它从旧构建里删掉，否则陈旧副本会一直留着。
+
+**应用图标与标题栏标记同源**：`scripts/make_icon.py` 从同一个 `icon.svg` 光栅化出
+`assets/icon.png`（512）与 `assets/icon.ico`（16–256），由 `electron-builder.yml` 引用。
+用 PyMuPDF 而不是 Electron 截图：**PyMuPDF 是既有依赖且原生渲染 SVG**，而 Electron 的
+离屏渲染在隐藏窗口下**永不合成，`capturePage` 直接挂住**（已实测）。图标提交在
+`assets/` 而非惯例的 `build/`，因为 `.gitignore` 把 `build/` 当打包产物忽略掉了，
+而图标是需要入库的源材料。
 
 预览有三个视图：原文 / 译文（mono）/ 对比（左右并排；只有对比模式给窗格加标签，
 单栏时工具栏的激活按钮已经说明了是哪一份，重复是噪音）。译文与对比在有结果前
@@ -450,7 +493,10 @@ key 名与渲染进程的 `dialog.*` 保持一致，便于人工对照。
 ### 构建与打包
 
 - `npm run build` — `tsc` 编译主进程与渲染进程，再由 `scripts/copy-static.mjs`
-  把 `index.html` / `style.css` 拷进 `out/renderer/`。
+  把 `style.css` 拷进 `out/renderer/`、并把 `icon.svg` **内联**进 `index.html`。
+- `npm run make:icon` — 从 `src/renderer/icon.svg` 重新生成 `assets/icon.png` 与
+  `assets/icon.ico`。**改了图标就要跑一次**，否则打包图标会停在旧版本（标题栏靠
+  构建期内联，会自动跟上）。
 - `npm run dev` — 构建后以 `--dev` 启动 Electron，走本地 venv 里的 sidecar。
 - `npm run typecheck` — 只做类型检查，两个 tsconfig 各跑一次。
 - `npm run check:i18n` — 校验中英文字符串表一致：key 对齐、`{placeholder}` 对齐、
@@ -613,6 +659,12 @@ gitleaks detect                            # 扫 git 历史
   这是行高压缩的正常结果，不属叠印，可读性未受损。
 - **标题栏 overlay 颜色是固定浅色值**：深色主题需要改成运行时
   `setTitleBarOverlay()`，目前只有浅色。
+- **应用标记不支持深色主题**：内联的 SVG 自带固定配色，改色要么换文件、要么改内联
+  逻辑。与上一条同源，留待深色主题那轮一起解决。
+- **设置模式下折叠侧栏会连「← 返回」一起藏起来**，退出设置只能靠标题栏图标。图标
+  常驻所以可恢复，属「图标折叠侧栏」的直接推论，未做特例。
+- **打包产物未在本环境验证**：应用图标只验到「PNG/ICO 结构正确 + 配置指向正确」，
+  `electron-builder` 的实际构建没有跑（与仓库现状一致，打包验证是早前在 Linux 上做的）。
 - 前端尚无自动化测试，仅 `typecheck` 通过。自建标题栏的拖拽区属于「静默吞掉点击、
   不报错」的一类问题，只靠 `typecheck` 和截图都测不出来，需经 CDP 发真实鼠标事件
   断言处理器确实执行。

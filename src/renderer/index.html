@@ -20,8 +20,21 @@
       The app's own title bar. The OS title bar and menu are hidden (see
       main.ts); the native window buttons are painted by the OS in the
       top-right, so `.titlebar__drag` is a drag region with nothing under them.
+
+      The mark doubles as the sidebar toggle. It sits beside the drag strip
+      rather than inside it: a drag region swallows clicks silently, so an
+      interactive element placed within one would look present and do nothing.
     -->
     <header class="titlebar">
+      <button
+        id="btn-toggle-sidebar"
+        class="titlebar__icon"
+        data-i18n-title="titlebar.toggleSidebar"
+        data-i18n-aria-label="titlebar.toggleSidebar"
+        aria-expanded="true"
+      >
+        <!-- icon-inline -->
+      </button>
       <div class="titlebar__drag"></div>
     </header>
 
@@ -88,27 +101,10 @@
             </div>
           </details>
 
-          <details class="group" id="group-progress">
-            <summary class="group__head" data-i18n="progress.title"></summary>
-            <div class="group__body">
-              <div class="progress">
-                <div id="progress-bar" class="progress__bar"></div>
-              </div>
-              <p id="progress-text" class="progress__text" data-i18n="progress.waiting"></p>
-            </div>
-          </details>
-
           <details class="group" id="group-results">
             <summary class="group__head" data-i18n="results.title"></summary>
             <div class="group__body">
               <ul id="result-list" class="file-list"></ul>
-            </div>
-          </details>
-
-          <details class="group" id="group-log">
-            <summary class="group__head" data-i18n="log.title"></summary>
-            <div class="group__body">
-              <pre id="log-pane"></pre>
             </div>
           </details>
         </div>
@@ -287,10 +283,32 @@
               <dt data-i18n="settings.configDir"></dt>
               <dd id="engine-config-dir">–</dd>
             </dl>
+
+            <!--
+              The engine log lives here rather than in the task sidebar: it is
+              the only sink for the engine's stderr stream and for every failure
+              path in app.ts, so it has to stay reachable, and read-only
+              diagnostics is what this panel already is. The `log-pane` id is
+              unchanged, so `appendLog` needs no change to find it.
+            -->
+            <h3 class="subhead" data-i18n="settings.logTitle"></h3>
+            <pre id="log-pane"></pre>
           </section>
         </div>
       </section>
     </div>
+
+    <!--
+      Progress is pinned to the window rather than kept in the sidebar: the
+      sidebar can be collapsed, and the progress of a running job is the one
+      thing that must stay visible when it is.
+    -->
+    <footer class="statusbar">
+      <div class="progress">
+        <div id="progress-bar" class="progress__bar"></div>
+      </div>
+      <p id="progress-text" class="statusbar__text" data-i18n="progress.idle"></p>
+    </footer>
 
     <script type="module" src="app.js"></script>
   </body>

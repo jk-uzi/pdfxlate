@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The app mark: a rounded badge holding one page split by a vertical rule, with
+  text blocks on both sides — the bilingual (dual) PDF this tool produces.
+
+  This file is the single source for the mark. It is inlined into index.html at
+  build time by scripts/copy-static.mjs (see the `#include` placeholder there)
+  rather than referenced with `<img src>`: the page runs from a `file://` URL,
+  where the origin is opaque and CSP's `'self'` does not match a relative path,
+  so an <img> would be blocked. Inlining is not a subresource fetch, so it needs
+  no CSP change. The packaged app icon is rasterised from this same file by
+  scripts/make_icon.py.
+
+  Drawn as a solid badge with its own colours rather than a line drawing that
+  follows the theme, because an SVG inlined this way still cannot be recoloured
+  from CSS without duplicating the markup; the accent matches `--accent` in
+  style.css. A dark theme needs a second file.
+
+  Geometry is tuned for the sizes it is actually shown at: 22px in the title
+  bar and 16px in the smallest Windows icon slot, i.e. this 512-unit canvas
+  divided by 23 and 32. The page therefore fills most of the badge and the text
+  blocks are heavy — see scripts/make_icon.py, which renders the small sizes
+  side by side so this can be checked rather than guessed.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <!-- Badge. 112/512 keeps the corner radius close to a platform squircle. -->
+  <rect width="512" height="512" rx="112" fill="#2f6feb" />
+
+  <!-- Page with the top-right corner cut, as if folded. -->
+  <path
+    d="M 98 72 H 352 L 440 160 V 414 A 26 26 0 0 1 414 440 H 98 A 26 26 0 0 1 72 414 V 98 A 26 26 0 0 1 98 72 Z"
+    fill="#ffffff"
+  />
+  <!-- The folded-over flap: the lower half of the cut corner, tinted so the
+       fold reads as a fold rather than as a missing corner. -->
+  <path d="M 352 72 L 440 160 H 352 Z" fill="#2f6feb" fill-opacity="0.26" />
+
+  <!-- Vertical rule dividing the two languages. -->
+  <rect x="246" y="150" width="20" height="212" rx="10" fill="#2f6feb" fill-opacity="0.5" />
+
+  <!-- Text blocks: two per side. The two sides are uneven so the page reads as
+       running text in two scripts rather than as a table. -->
+  <g fill="#2f6feb">
+    <rect x="104" y="161" width="116" height="76" rx="16" />
+    <rect x="104" y="275" width="76" height="76" rx="16" />
+    <rect x="292" y="161" width="116" height="76" rx="16" />
+    <rect x="292" y="275" width="116" height="76" rx="16" />
+  </g>
+</svg>

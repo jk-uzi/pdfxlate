@@ -197,6 +197,45 @@ let settingsSection: SettingsSection = "model";
 let engineVersion: string | null = null;
 let engineConfigDir: string | null = null;
 
+// --- sidebar collapse ------------------------------------------------------
+
+/**
+ * Whether the left sidebar is slid out of view.
+ *
+ * Held as a class on `<body>` rather than as per-element state because there
+ * are two sidebars (task and settings) and both have to move together; the
+ * class also survives the mode switch without re-applying anything.
+ */
+const SIDEBAR_STORAGE_KEY = "pdfxlate.sidebarCollapsed";
+let sidebarCollapsed = false;
+
+function paintSidebarCollapsed(): void {
+  document.body.classList.toggle("sidebar-collapsed", sidebarCollapsed);
+  $("btn-toggle-sidebar").setAttribute("aria-expanded", String(!sidebarCollapsed));
+}
+
+function setSidebarCollapsed(collapsed: boolean): void {
+  sidebarCollapsed = collapsed;
+  paintSidebarCollapsed();
+  try {
+    localStorage.setItem(SIDEBAR_STORAGE_KEY, collapsed ? "1" : "0");
+  } catch {
+    // Storage can be unavailable (private mode, quota); the toggle still works
+    // for this session, it just will not be remembered.
+  }
+}
+
+$("btn-toggle-sidebar").addEventListener("click", () =>
+  setSidebarCollapsed(!sidebarCollapsed),
+);
+
+try {
+  sidebarCollapsed = localStorage.getItem(SIDEBAR_STORAGE_KEY) === "1";
+} catch {
+  sidebarCollapsed = false;
+}
+paintSidebarCollapsed();
+
 // --- locale ----------------------------------------------------------------
 
 /**
@@ -382,7 +421,7 @@ function renderDownloadButton(): void {
 $("btn-download-assets").addEventListener("click", async () => {
   downloadingAssets = true;
   renderDownloadButton();
-  showProgress();
+  setProgress("setup", 0, 1, { key: "setup.downloading" });
   try {
     await api.request("assets.download", { targets: ["layout_model", "fonts"], languages: ["zh"] });
     $("setup-banner").classList.add("hidden");
@@ -1146,7 +1185,6 @@ $("btn-translate").addEventListener("click", async () => {
   paintResults();
   updatePreviewControls();
   if (viewMode !== "original") setViewMode("original");
-  showProgress();
   setProgress("starting", 0, 1, { key: "progress.starting" });
 
   try {
@@ -1182,10 +1220,6 @@ $("btn-cancel").addEventListener("click", async () => {
 
 // --- progress + results ----------------------------------------------------
 
-function showProgress(): void {
-  expandGroup("group-progress");
-}
-
 function messageText(message: ProgressMessage): string {
   return "key" in message ? t(message.key, message.params) : message.raw;
 }
@@ -1203,8 +1237,10 @@ function setProgress(
 /**
  * Repaint the progress line from `lastProgress`.
  *
- * Deliberately does not show/hide the card: repainting after a locale switch
- * must leave the current stage and percentage exactly as they were.
+ * Does nothing before the first job: the status bar is always on screen and
+ * starts on its static `progress.idle` text, which `applyStaticTranslations`
+ * owns. Repainting after a locale switch must leave the current stage and
+ * percentage exactly as they were, so this only ever writes, never resets.
  */
 function paintProgress(): void {
   if (!lastProgress) return;
@@ -1218,7 +1254,6 @@ function paintProgress(): void {
 }
 
 function handleProgress(event: JobProgress): void {
-  showProgress();
   // `event.message` is a diagnostic from the Python engine, not UI copy, so it
   // is shown verbatim in either locale.
   setProgress(event.stage, event.current, event.total, { raw: event.message });

@@ -30,6 +30,8 @@ type Table = Record<string, string>;
 const EN: Table = {
   "app.subtitle": "Layout-preserving PDF translation",
 
+  "titlebar.toggleSidebar": "Collapse or expand the sidebar",
+
   "status.starting": "starting…",
   "status.ready": "engine ready",
   "status.failed": "engine failed",
@@ -46,6 +48,7 @@ const EN: Table = {
   "settings.engineStatus": "Engine",
   "settings.version": "Version",
   "settings.configDir": "Config directory",
+  "settings.logTitle": "Engine log",
   "settings.unknown": "unknown",
 
   "setup.text":
@@ -130,8 +133,7 @@ const EN: Table = {
   "preview.labelTranslated": "Translated",
   "preview.title": "Preview",
 
-  "progress.title": "Progress",
-  "progress.waiting": "Waiting…",
+  "progress.idle": "Ready.",
   "progress.starting": "Starting…",
   "progress.done": "Finished.",
   "progress.failed": "Translation failed: {error}",
@@ -142,7 +144,8 @@ const EN: Table = {
   "results.open": "Open",
   "results.reveal": "Show",
 
-  "log.title": "Engine log",
+  // `log.title` went with the log group; the panel heading is now
+  // `settings.logTitle`, since the log lives in the General settings panel.
   "log.engineFailed": "engine failed to start: {error}",
   "log.assetCheckFailed": "asset check failed: {error}",
   "log.providersFailed": "could not load providers: {error}",
@@ -173,6 +176,8 @@ const EN: Table = {
 const ZH: Table = {
   "app.subtitle": "保持版式的 PDF 文献翻译",
 
+  "titlebar.toggleSidebar": "折叠或展开侧栏",
+
   "status.starting": "启动中…",
   "status.ready": "引擎就绪",
   "status.failed": "引擎启动失败",
@@ -188,6 +193,7 @@ const ZH: Table = {
   "settings.engineStatus": "引擎",
   "settings.version": "版本",
   "settings.configDir": "配置目录",
+  "settings.logTitle": "引擎日志",
   "settings.unknown": "未知",
 
   "setup.text":
@@ -271,8 +277,7 @@ const ZH: Table = {
   "preview.labelTranslated": "译文",
   "preview.title": "预览",
 
-  "progress.title": "进度",
-  "progress.waiting": "等待中…",
+  "progress.idle": "就绪。",
   "progress.starting": "正在启动…",
   "progress.done": "已完成。",
   "progress.failed": "翻译失败：{error}",
@@ -283,7 +288,6 @@ const ZH: Table = {
   "results.open": "打开",
   "results.reveal": "显示位置",
 
-  "log.title": "引擎日志",
   "log.engineFailed": "引擎启动失败：{error}",
   "log.assetCheckFailed": "资源检查失败：{error}",
   "log.providersFailed": "无法加载服务商：{error}",

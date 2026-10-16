@@ -34,8 +34,11 @@ python/pdfxlate/          Python 核心
                           （two_phase.py 是 MCP 用的两遍式收集/回填引擎）
 src/{main,preload,renderer}/   Electron 前端（主进程 / preload / 渲染进程）
                               渲染进程为两栏：左侧设置栏 + 右侧 PDF 预览
+  renderer/icon.svg       应用标记的唯一来源（标题栏内联 + 打包图标）
+assets/                   打包用应用图标（make_icon.py 从 icon.svg 生成后提交）
 tests/                    pytest 测试
-scripts/                  copy-static.mjs（拷静态资源）、build.sh（一键构建）
+scripts/                  copy-static.mjs（拷静态资源 + 内联图标）、
+                          make_icon.py（生成 assets/ 图标）、build.sh（一键构建）
 ```
 
 配置是**供应商 → 模型**两层：一个供应商配一次 endpoint 与密钥，下面挂任意多个
@@ -50,6 +53,7 @@ scripts/                  copy-static.mjs（拷静态资源）、build.sh（一�
 git config core.hooksPath .githooks                     # 启用提交前密钥扫描（克隆后一次）
 python/.venv/bin/python -m pytest tests/ -q             # Python 测试
 npm run typecheck                                       # 前端类型检查
+npm run make:icon                                       # 改了 icon.svg 后重新生成应用图标
 ```
 
 venv 在 `python/.venv`（Python 3.12），包以 editable 方式装好，改源码即时生效。
