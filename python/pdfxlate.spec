@@ -9,6 +9,22 @@
 
 from PyInstaller.utils.hooks import collect_dynamic_libs, collect_submodules
 
+import importlib.util
+
+
+def _collect_if_installed(*packages):
+    """collect_submodules for each package that is actually installed.
+
+    The mcp SDK is an optional extra (see pyproject.toml), so a bundle built
+    without it must still build — it just ships without the MCP entry point.
+    """
+    found = []
+    for package in packages:
+        if importlib.util.find_spec(package) is not None:
+            found += collect_submodules(package)
+    return found
+
+
 hiddenimports = [
     # pdfminer resolves its submodules dynamically; the ported interpreter
     # touches internals that static analysis does not see.
@@ -17,6 +33,15 @@ hiddenimports = [
     "pdfxlate.pdf.ultrafast",
     "pdfxlate.pdf.ocr",
     "pdfxlate.models.openai_compat",
+    # The MCP server is an alternative entry point into the same bundle, so a
+    # packaged build can be launched by an agent (``python -m
+    # pdfxlate.mcp_server``).  It is a hidden import because nothing in the
+    # sidecar entry point references it, so static analysis would drop it.
+    "pdfxlate.mcp_server",
+    # The mcp SDK and its separate ``mcp_types`` package import transport and
+    # type modules lazily, which static analysis does not follow.  Both are
+    # optional, hence the guard.
+    *_collect_if_installed("mcp", "mcp_types"),
 ]
 
 # Native libraries for the ONNX runtime, OpenCV and fontTools.

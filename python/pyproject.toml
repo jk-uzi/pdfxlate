@@ -35,11 +35,17 @@ dependencies = [
 # Native-text heuristic layout, skips the ONNX model entirely.
 ultrafast = ["pdf-inspector>=1.25.2,<2"]
 cuda = ["onnxruntime-gpu"]
+# Expose the translator to a coding agent over MCP.  Kept out of the core
+# dependencies on purpose: mcp 2.x pulls in starlette, uvicorn, pyjwt and
+# cryptography, and the desktop bundle is already ~253 MB without them.  Only
+# users who wire the server into an agent need this extra.
+mcp = ["mcp>=2.3.0"]
 dev = ["pytest", "pyinstaller"]
 
 [project.scripts]
 pdfxlate = "pdfxlate.cli:main"
 pdfxlate-sidecar = "pdfxlate.sidecar:main"
+pdfxlate-mcp = "pdfxlate.mcp_server:main"
 
 [build-system]
 requires = ["hatchling"]
