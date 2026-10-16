@@ -161,6 +161,19 @@ def translate_stream(
     )
 
 
+def load_layout_model(
+    cfg: config_mod.AppConfig | None = None, progress: ProgressFn = None
+):
+    """Load (and if necessary download) the DocLayout ONNX model.
+
+    Public because a caller that supplies its own translator object (rather
+    than a configured provider) still has to hand the pipeline a layout model
+    in ``fast`` mode.  The model is cached in a module-level singleton, so
+    calling this repeatedly is cheap.
+    """
+    return _load_layout_model(cfg or config_mod.load(), progress)
+
+
 def _load_layout_model(cfg: config_mod.AppConfig, progress: ProgressFn):
     """Load (and if necessary download) the DocLayout ONNX model."""
     from pdfxlate.pdf.layout import ModelInstance, OnnxModel, set_backend
