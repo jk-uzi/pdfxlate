@@ -42,6 +42,8 @@ Python 3.12，venv 在 `python/.venv`，包以 editable 方式安装，改源码
 | 改子进程管理与 JSON 协议 | `src/main/sidecar.ts`（`Sidecar` 类） |
 | 改渲染进程可用的 API | `src/preload/preload.ts`（`contextBridge`） |
 | 改 Electron 界面 | `src/renderer/app.ts` + `index.html` + `style.css` |
+| 改右侧 PDF 预览（视图/翻页/缩放） | `src/renderer/app.ts` 的 `renderPreview()` / `viewerUrl()` |
+| 改左侧栏分组 | `src/renderer/index.html` 的 `details.group` + `app.ts` 的 `expandGroup()` |
 | 改供应商/模型的界面编辑 | `src/renderer/app.ts`（供应商与模型两级下拉 + 字段） |
 | 改界面文案 / 加一门语言 | `src/renderer/i18n.ts`（`en`/`zh` 两张表），静态文案用 `data-i18n*` 属性标注 |
 | 改原生对话框文案 | `src/main/main.ts` 的 `DIALOG_STRINGS`（主进程另有一份小表，原因见该处注释） |
@@ -80,7 +82,7 @@ pdfxlate/
 │       ├── cache.py         144 行  sqlite3 翻译缓存
 │       ├── api.py           192 行  公开 Python API
 │       ├── cli.py           216 行  命令行入口
-│       ├── sidecar.py       299 行  stdio JSON 行协议（Electron 调用）
+│       ├── sidecar.py       335 行  stdio JSON 行协议（Electron 调用）
 │       ├── mcp_server.py    509 行  MCP 服务（外部 agent 调用，stdio）
 │       ├── models/
 │       │   ├── __init__.py     23 行  导出翻译层公开符号
@@ -98,15 +100,15 @@ pdfxlate/
 │           └── text_spacing.py 44 行  中英混排间距（上游照搬）
 ├── src/
 │   ├── main/
-│   │   ├── main.ts          188 行  窗口 + 应用生命周期 + IPC（含原生对话框文案表）
+│   │   ├── main.ts          195 行  窗口 + 应用生命周期 + IPC（含原生对话框文案表）
 │   │   └── sidecar.ts       204 行  Python 子进程管理 + JSON 行协议
 │   ├── preload/
-│   │   └── preload.ts        93 行  contextBridge，向渲染进程暴露 API
+│   │   └── preload.ts       105 行  contextBridge，向渲染进程暴露 API
 │   └── renderer/
-│       ├── index.html       203 行  界面结构（文案走 data-i18n* 属性）
-│       ├── app.ts           896 行  界面逻辑（拖拽、供应商/模型编辑、进度、结果、语言切换）
-│       ├── i18n.ts          421 行  中英文字符串表 + t()/applyStaticTranslations()
-│       └── style.css        361 行  样式
+│       ├── index.html       253 行  界面结构（文案走 data-i18n* 属性）
+│       ├── app.ts          1186 行  界面逻辑（拖拽、供应商/模型编辑、进度、结果、语言切换）
+│       ├── i18n.ts          458 行  中英文字符串表 + t()/applyStaticTranslations()
+│       └── style.css        582 行  样式
 ├── tests/
 │   ├── test_translation.py   187 行  缓存、占位符、推理标签剥离、注册表、缓存开关
 │   ├── test_openai_compat.py 137 行  适配器参数透传、校验、提示词渲染
@@ -275,6 +277,7 @@ GoNoto 语言」与「未知语言码」，不是「支持/不支持」的分界
 | `config.get` / `config.save` | 读写配置 |
 | `providers.list` | 列出供应商及其模型（只回 `has_api_key`，绝不回密钥） |
 | `assets.status` / `assets.download` | 资源状态 / 触发下载 |
+| `pdf.info` | 只读元数据（页数），供预览工具栏显示「N / M」 |
 | `translate.start` / `translate.cancel` | 启停翻译任务 |
 
 请求 `{id, method, params}`，响应 `{id, ok, result|error}`，
@@ -289,6 +292,10 @@ models: {别名: {model, reasoning_effort, temperature}}}}}`。
 `provider` + `model`）；**旧名不再作为别名保留**——结果形状也变了，留个别名只会把
 调用方的错藏起来。`translate.start` 现在也转发 `ignore_cache` 与
 `skip_subset_fonts`（后者原样透传，`None` 仍表示「用配置」）。
+
+`pdf.info` 是**只读**的元数据探测（页数），打开文档读 `page_count` 后即关闭，
+不渲染也不修改；非 PDF、损坏文件、路径不存在都给出可读错误而不是库的 traceback。
+预览工具栏拿它显示「N / M」，取不到时退化为只显示当前页码。
 
 **`mcp_server.py`** — 供**外部 agent**（Claude Code / ZCode / 任何 MCP 客户端）
 调用的 MCP 服务，同样走 stdio：不占端口（无防火墙弹窗）、无鉴权面、随父进程回收。
@@ -334,6 +341,9 @@ models: {别名: {model, reasoning_effort, temperature}}}}}`。
 
 **`src/main/main.ts`** — 窗口创建、应用生命周期、IPC 注册。
 `--dev` 参数区分开发/打包模式；退出时调 `sidecar.stop()` 确保不留下孤儿进程。
+`webPreferences.plugins = true` **是 PDF 预览的前提**：Chromium 的内置查看器是个
+plugin，不开这一项时 iframe 会加载成空白页。窗口默认 1280×820、最小 1000×640——
+侧栏固定 340px，窗口再窄预览区就放不下完整页宽。
 
 **`src/main/sidecar.ts`** — `Sidecar` 类。请求按 `id` 关联响应，
 事件推给监听者，stderr 日志转发到终端。`Sidecar.resolve()` 决定用哪个可执行文件：
@@ -348,13 +358,34 @@ models: {别名: {model, reasoning_effort, temperature}}}}}`。
 在 `contextIsolation` 开启的前提下向渲染进程暴露：
 `request()`（转发到 sidecar）、`onEvent()` / `onLog()`（订阅事件）、
 `pickPdf(locale?)` / `pickOutputDir(locale?)`（原生对话框，语言由渲染进程传入）、
-`reveal()` / `openPath()`（打开输出）。
+`reveal()` / `openPath()`（打开输出）、`fileUrl(path)`（绝对路径 → `file://` URL）。
+
+`fileUrl()` 是**纯函数、不走 IPC**：渲染进程在 `contextIsolation` 下没有 Node，
+拿不到 `pathToFileURL`，而 Windows 的盘符、反斜杠、空格与非 ASCII 文件名都必须
+由它处理（已实测中文名 + 空格的文件能正常打开）。
 
 **`src/renderer/app.ts`** — 界面逻辑，无前端框架，直接操作 DOM。
-拖拽与文件选择、**供应商/模型两级编辑**（供应商下拉 + 模型下拉，各自带增删，
-供应商级字段 kind/base_url/api_key 共享、模型级字段 model/推理强度/温度/extra_body）、
-页码范围解析、进度渲染（解析→版面→翻译→排版→保存）、结果列表、日志面板、语言切换。
+两栏工作区：左侧栏是**可折叠分组**（文档 / 模型 / 选项 / 进度 / 结果 / 日志），
+翻译按钮钉在侧栏底部；右侧是**预览区**（工具栏 + 画布）。另有拖拽与文件选择、
+**供应商/模型两级编辑**（供应商下拉 + 模型下拉，各自带增删，供应商级字段
+kind/base_url/api_key 共享、模型级字段 model/推理强度/温度/extra_body）、
+页码范围解析、进度渲染、结果列表、日志面板、语言切换。
 用户可见文案一律走 `t()`，不写字面量。
+
+预览有三个视图：原文 / 译文（mono）/ 对比（左右并排；只有对比模式给窗格加标签，
+单栏时工具栏的激活按钮已经说明了是哪一份，重复是噪音）。译文与对比在有结果前
+禁用，并把原因写在 `title` 上。无文件时整个右侧画布本身就是投放区。
+
+**驱动内置查看器的方式（都是实测结论，别改）**：URL 片段
+`#toolbar=0&navpanes=0` 关掉查看器自带的深色工具栏与缩略图栏（这是能用自建
+工具栏的前提），`&page=N` 与 `&zoom=<百分比|page-width>` 设定初始视图。
+**但改已加载 iframe 的 `src` 或片段不会导航**——所以 `renderPreview()` 每次都
+**重建 iframe 元素**，这是切页/缩放唯一可行的办法。缩放默认 `page-width`：
+预览区比整页窄得多，固定 100% 会让每份文档一打开就带横向滚动条。
+
+**一个无法绕过的限制**：查看器跑在 `file://` 的 iframe 里，**父页面无法给它注入
+脚本**，因此对比模式的两个窗格**滚动无法同步**（各自独立滚动），也读不到查看器
+当前的页码——工具栏显示的页码是界面自己的状态。别试图用脚本去同步。
 
 供应商与模型编辑以 **`config.get` 返回的文档为结构的唯一真相**（名字、别名、默认项、
 明细字段），`providers.list` 只提供 `has_api_key` 与下拉列表——所以界面需要首屏
@@ -411,7 +442,7 @@ key 名与渲染进程的 `dialog.*` 保持一致，便于人工对照。
 ## 五、测试与检查
 
 ```bash
-python/.venv/bin/python -m pytest tests/ -q          # Python，当前 152 passed
+python/.venv/bin/python -m pytest tests/ -q          # Python，当前 166 passed
 python/.venv/bin/python -m pytest tests/ -q -k cache # 单个方向
 npm run typecheck                                    # 前端类型检查
 npm run check:i18n                                   # 中英文字符串表一致性
@@ -427,6 +458,8 @@ npm run check:i18n                                   # 中英文字符串表一�
 `test_cli_options.py` 测 CLI 排版选项的解析与三态覆盖语义（不传时不动配置），
 以及 `--provider` / `--model` / `--list-models` 的接线。
 `test_sidecar_providers.py` 钉住 `providers.list` 的结果形状与「密钥不外传」。
+`test_sidecar_pdf_info.py` 测 `pdf.info`：页数正确、结果形状、以及路径不存在 /
+非 PDF / 损坏文件都给出可读错误（用 PyMuPDF 现场生成夹具，不依赖 `references/`）。
 `test_mcp_server.py` 覆盖 MCP 工具的 stdio 握手、两遍式端到端、确定性护栏与
 「缺失译文必须被拒」；其中的端到端用例不需要任何模型 API（收集/字典翻译器都不打
 网络），因此排版正确性可以离线验证。缺 `mcp` extra 或样例 PDF 时会带原因 skip。
@@ -434,6 +467,13 @@ npm run check:i18n                                   # 中英文字符串表一�
 前端目前只有 `typecheck` 与 `check:i18n` 两个静态检查，尚无自动化测试。
 `check:i18n.mjs` 会真的加载 `i18n.ts` 并逐 key 比对，因此它能挡住"某门语言漏了一
 条文案""译文把 `{error}` 吃掉了""某条译成空串"这类漂移；它不检查译文质量。
+
+**界面改动怎么验证**：没有 DOM 级测试，所以布局与预览这类改动只能靠
+`typecheck` + `check:i18n` + **真跑 Electron 核对**。可行的做法是用
+`--remote-debugging-port` 启动，再经 CDP 读 DOM/量尺寸/截图——本项目已用这种方式
+验证过双语切换、两栏布局、翻页/缩放是否真的重建了 iframe，以及完整翻译链路
+（配一个本地 mock OpenAI 服务，让真实翻译产出 mono/dual 后检查译文与对比视图）。
+这些验证脚本是临时的，跑完即删，不进仓库。
 
 ## 六、提交前密钥扫描
 

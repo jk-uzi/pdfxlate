@@ -21,6 +21,9 @@ for the PDF layout and typesetting pipeline.
   Groq, xAI, OpenRouter, SiliconFlow, and local vLLM / Ollama / LM Studio.
   A provider holds the endpoint and key once, with any number of models under
   it.
+- Settings live in a left sidebar of collapsible groups; the right pane is a
+  PDF preview with Original / Translated / Compare views, paging and zoom, so
+  the result can be checked against the source without leaving the app.
 - Can be driven by other agents over MCP, using either a configured model or
   the agent's own model. See [Using it from another agent](#using-it-from-another-agent-mcp).
 - Ships with an English / Simplified Chinese interface. The first run picks the
@@ -287,6 +290,9 @@ must not pull in the renderer's browser-dependent module.
 - `--ultrafast` does not protect figures/tables by class, only by proximity.
 - Encrypted PDFs are not supported.
 - Scanned PDFs need OCR; PyMuPDF's built-in OCR is used for image-only pages.
+- In the Compare view the two panes scroll independently: the preview uses
+  Chromium's built-in PDF viewer inside a `file://` frame, which cannot be
+  scripted from the page around it. Only the page number is synchronised.
 
 ## License
 
