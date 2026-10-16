@@ -45,6 +45,44 @@ function inlineSvg(svg) {
     .trim();
 }
 
+/**
+ * Reject a stylesheet whose comment delimiters do not pair up.
+ *
+ * A single missing `/*` turns the rest of a comment into a garbage selector,
+ * and the browser then discards whichever rule follows — silently, with no
+ * console error, no failed build and no failed test. That happened: the
+ * save-a-copy chip lost its positioning and its `opacity: 0` from one dropped
+ * character, so it sat in the wrong corner and never hid, and it was only
+ * noticed by eye.
+ *
+ * The check is deliberately about balance rather than full validity: it costs
+ * nothing, catches the failure mode that actually bit, and cannot reject valid
+ * CSS. `style.css` is the only stylesheet, and it goes through here, so this is
+ * the one place that sees every one of them.
+ */
+function assertCommentsBalanced(css, name) {
+  const opens = (css.match(/\/\*/g) || []).length;
+  const closes = (css.match(/\*\//g) || []).length;
+  if (opens !== closes) {
+    throw new Error(
+      `${name}: ${opens} "/*" but ${closes} "*/" — a comment is unclosed, which ` +
+        `silently discards the rule that follows it`,
+    );
+  }
+  // A line that looks like comment body outside a comment is the same fault.
+  // Matched precisely: `* {` is the universal selector and perfectly legal, so
+  // a bare "starts with a star" test would fail on it.
+  const withoutComments = css.replace(/\/\*[\s\S]*?\*\//g, "");
+  const orphan = withoutComments.match(/(^|\n)\s*\*[ \t]+[^{\s,][^\n]*/);
+  if (orphan) {
+    throw new Error(
+      `${name}: a line starts with "*" outside any comment (${JSON.stringify(
+        orphan[0].trim().slice(0, 40),
+      )}) — missing "/*"?`,
+    );
+  }
+}
+
 await mkdir(dest, { recursive: true });
 
 for (const file of retired) {
@@ -53,7 +91,9 @@ for (const file of retired) {
 }
 
 for (const file of files) {
-  await writeFile(path.join(dest, file), await readFile(path.join(src, file)));
+  const content = await readFile(path.join(src, file));
+  if (file.endsWith(".css")) assertCommentsBalanced(content.toString("utf8"), file);
+  await writeFile(path.join(dest, file), content);
   console.log(`copied ${file} -> out/renderer/${file}`);
 }
 

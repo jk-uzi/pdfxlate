@@ -175,6 +175,21 @@ body {
   background: #eef0f3;
 }
 
+/* The pin sits after the drag strip, so it needs no left margin of its own —
+   and it does need to opt out of the drag region it sits beside. */
+.titlebar__pin {
+  margin-left: 4px;
+  margin-right: 4px;
+  -webkit-app-region: no-drag;
+  color: var(--muted);
+}
+
+/* Pressed: the corner controls are pinned on screen. */
+.titlebar__pin[aria-pressed="true"] {
+  background: #e4e8ee;
+  color: var(--accent);
+}
+
 /* The mark is inlined into index.html at build time (see copy-static.mjs), so
    it is styled as an element rather than as a background image. */
 .titlebar__mark {
@@ -986,6 +1001,18 @@ input[readonly] {
 }
 
 
+/* A pin: the lid and its point, with the stem through the middle. Drawn with
+   `currentColor` so it follows the theme — an inline SVG is part of the
+   document and inherits `color`, which an <img> reference could not. Strokes
+   are thick on purpose: thin ones dissolve at the 18px this renders at. */
+.titlebar__pin svg {
+  display: block;
+  width: 18px;
+  height: 18px;
+}
+
+/*
+ * "Save a copy", top-right of the document.
  *
  * Deliberately the same chip and the same reveal rules as `.viewer-overlay`:
  * one is paging, the other is saving, and having them fade in together and
@@ -1026,6 +1053,21 @@ input[readonly] {
 .viewer-saveas .icon-btn:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.12);
   color: #ffffff;
+}
+
+/*
+ * Pinned: the corner controls stay on screen instead of appearing on hover.
+ *
+ * One class and one rule, rather than a second set of show/hide logic: the
+ * `:hover` and `is-visible` paths already do the revealing, and this only
+ * removes the need for them. `.hidden` still wins, so a pinned chip is still
+ * absent when there is no document — `display: none !important` beats an
+ * opacity declaration regardless of order.
+ */
+body.overlays-pinned .viewer-fit,
+body.overlays-pinned .viewer-overlay,
+body.overlays-pinned .viewer-saveas {
+  opacity: 1;
 }
 
 .preview__frame {

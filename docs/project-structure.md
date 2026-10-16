@@ -136,7 +136,7 @@ pdfxlate/
 │   ├── test_per_job_overrides.py 136 行  按次覆盖语言/推理；调用方配置对象不被改动
 │   └── test_assets_fonts.py  113 行  语言→字体映射、status() 兼容性
 └── scripts/
-    ├── copy-static.mjs        81 行  拷贝 CSS、**把 icon.svg 内联进 index.html**
+    ├── copy-static.mjs       110 行  拷贝 CSS、**把 icon.svg 内联进 index.html**、校验 CSS 注释配对
     ├── make-icon.mjs          33 行  用 venv 解释器调用 make_icon.py（npm run make:icon）
     ├── make_icon.py          186 行  从 icon.svg 生成 assets/icon.png 与 .ico（PyMuPDF）
     ├── check-i18n.mjs        154 行  校验字符串表一致 + **引用的 key 确实存在**（npm run check:i18n）
@@ -546,6 +546,13 @@ config.yaml**——与同面板的页码、线程数、模式一致。存进 loc
 三者并存，鼠标停在上面时不会被计时器藏掉。无文档时由 `updatePreviewControls()` 整块
 `hidden`。**已知取舍**：自动隐藏意味着平时看不出当前是哪种适应模式。
 
+**第四个条件：标题栏的图钉按钮**（`#btn-toggle-overlays`）可以把三个浮层**钉住常显**，
+给不想每次去"找"控件的人用。实现只有**一个类 + 一条 CSS**（`body.overlays-pinned` 把三块
+设为 `opacity: 1`），**没有另起一套显隐逻辑**——`:hover` / `is-visible` / 计时器都照旧，
+这条规则只是让它们变得不必要。`.hidden` 是 `display: none !important`，**优先级高于钉住**，
+所以没有文档时钉住也不会凭空造出控件来。图钉在**窗口拖拽条之后、系统三键之前**，且必须
+`-webkit-app-region: no-drag`（拖拽区会静默吞点击，本项目已踩过三次）。
+
 **加新浮层时注意 `renderPreview()`**：它 `host.innerHTML = ""` 清空 `#preview-host`，
 浮层现在都住在里面，所以必须先把它们取出来再 `append` 回去（见 `VIEWER_OVERLAYS`），
 且新建的 frame 要按 `frameDroppable` 复原 `pointer-events`。漏掉会出问题——写这两轮时
@@ -679,6 +686,10 @@ key 名与渲染进程的 `dialog.*` 保持一致，便于人工对照。
 
 - `npm run build` — `tsc` 编译主进程与渲染进程，再由 `scripts/copy-static.mjs`
   把 `style.css` 拷进 `out/renderer/`、并把 `icon.svg` **内联**进 `index.html`。
+  **拷贝 CSS 时会校验注释定界符配对**（`/*` 与 `*/` 数量相等、且没有游离的 `*` 开头行）：
+  少一个 `/*` 会把后面的注释变成畸形选择器，**整条规则被浏览器静默丢弃**——不报错、
+  不影响构建、不影响任何测试，只是界面坏掉。这个 bug 真的发生过（另存为浮层因此丢失
+  定位与 `opacity: 0`，跑到了左上角且永不隐藏），所以才在这里加一道必然经过的检查。
 - `npm run make:icon` — 从 `src/renderer/icon.svg` 重新生成 `assets/icon.png` 与
   `assets/icon.ico`。**改了图标就要跑一次**，否则打包图标会停在旧版本（标题栏靠
   构建期内联，会自动跟上）。

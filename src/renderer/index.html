@@ -45,6 +45,36 @@
       <div class="tabbar" id="tabbar"></div>
 
       <div class="titlebar__drag"></div>
+
+      <!--
+        Keeps the document's corner controls on screen instead of having them
+        appear on hover. Placed after the drag strip so it sits just left of the
+        native window buttons, which the OS paints in the reserved strip.
+
+        The tooltip is set from app.ts rather than with `data-i18n-title`: it
+        names whichever action pressing the button performs, so it depends on
+        the state and cannot come from a static attribute.
+      -->
+      <button
+        id="btn-toggle-overlays"
+        class="titlebar__icon titlebar__pin"
+        aria-pressed="false"
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <!--
+            A pin: the head, the point, and a stem between them. One drawing
+            for both states — the pressed state is shown by the button's own
+            highlight, since a second glyph would only add a thing to keep in
+            step.
+          -->
+          <g stroke="currentColor" stroke-width="2" stroke-linecap="round"
+             stroke-linejoin="round" fill="none">
+            <path d="M9 3h6" />
+            <path d="M10 3v6.5L7.5 13v1.5h9V13L14 9.5V3" />
+            <path d="M12 14.5V21" />
+          </g>
+        </svg>
+      </button>
     </header>
 
     <div class="workspace">

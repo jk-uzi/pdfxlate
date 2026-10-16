@@ -30,6 +30,8 @@ type Table = Record<string, string>;
 const EN: Table = {
   "app.subtitle": "Layout-preserving PDF translation",
 
+  "titlebar.pinOverlays": "Keep the page controls on screen",
+  "titlebar.unpinOverlays": "Let the page controls hide again",
   "titlebar.toggleSidebar": "Collapse or expand the sidebar",
 
   "status.starting": "starting…",
@@ -191,6 +193,8 @@ const EN: Table = {
 const ZH: Table = {
   "app.subtitle": "保持版式的 PDF 文献翻译",
 
+  "titlebar.pinOverlays": "让页面控件常驻显示",
+  "titlebar.unpinOverlays": "恢复为鼠标移入才显示",
   "titlebar.toggleSidebar": "折叠或展开侧栏",
 
   "status.starting": "启动中…",

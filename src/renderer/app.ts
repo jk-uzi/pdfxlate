@@ -285,6 +285,53 @@ try {
 }
 paintSidebarCollapsed();
 
+// --- pinned overlays -------------------------------------------------------
+
+/**
+ * Whether the document's corner controls stay on screen.
+ *
+ * Two states, and the default is the quieter one: hidden until wanted, which
+ * keeps the page unobstructed. Pinned is for when you keep reaching for those
+ * controls and would rather they never went away.
+ */
+const PIN_STORAGE_KEY = "pdfxlate.overlaysPinned";
+let overlaysPinned = false;
+
+function paintOverlaysPinned(): void {
+  document.body.classList.toggle("overlays-pinned", overlaysPinned);
+  const button = $("btn-toggle-overlays");
+  button.setAttribute("aria-pressed", String(overlaysPinned));
+  // Both keys named literally (rather than via a variable) so the i18n check
+  // can see them. The tooltip names what pressing the button will do, so it
+  // reads as an action rather than as a state to decode.
+  const label = overlaysPinned
+    ? t("titlebar.unpinOverlays")
+    : t("titlebar.pinOverlays");
+  button.title = label;
+  button.setAttribute("aria-label", label);
+}
+
+function setOverlaysPinned(pinned: boolean): void {
+  overlaysPinned = pinned;
+  paintOverlaysPinned();
+  try {
+    localStorage.setItem(PIN_STORAGE_KEY, pinned ? "1" : "0");
+  } catch {
+    // Storage can be unavailable; the toggle still works for this session.
+  }
+}
+
+$("btn-toggle-overlays").addEventListener("click", () =>
+  setOverlaysPinned(!overlaysPinned),
+);
+
+try {
+  overlaysPinned = localStorage.getItem(PIN_STORAGE_KEY) === "1";
+} catch {
+  overlaysPinned = false;
+}
+paintOverlaysPinned();
+
 // --- sidebar width ---------------------------------------------------------
 
 /**
@@ -438,6 +485,7 @@ onLocaleChange(() => {
   renderModelSelect();
   renderOptionModels();
   paintOptionSelects();
+  paintOverlaysPinned();
   updatePreviewControls();
   renderPreview();
   paintSettingsMode();
