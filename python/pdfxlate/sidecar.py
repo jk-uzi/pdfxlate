@@ -13,11 +13,12 @@ Event    (stdout): ``{"event": "progress", "job_id": "...", "stage": "...",
                      "current": 3, "total": 10, "message": "..."}``
 
 Methods: ``ping``, ``config.get``, ``config.save``, ``providers.list``,
-``assets.status``, ``assets.download``, ``translate.start``,
+``assets.status``, ``assets.download``, ``pdf.info``, ``translate.start``,
 ``translate.cancel``.  ``providers.list`` reports the provider → models tree
 (``default_provider``/``default_model`` plus each provider's ``kind``,
 ``base_url``, ``has_api_key`` and ``models``); it deliberately never returns
-an ``api_key``.
+an ``api_key``.  ``pdf.info`` is a read-only metadata probe (page count) used
+by the preview toolbar; it never renders or modifies the document.
 
 All non-protocol output (logs, library chatter) goes to **stderr** so stdout
 carries only JSON.
@@ -161,6 +162,40 @@ def method_assets_download(params: dict) -> dict:
     return {"downloaded": done}
 
 
+def method_pdf_info(params: dict) -> dict:
+    """Report read-only metadata (page count) for one PDF.
+
+    Used by the preview toolbar's "page N / M" label, so it must stay fast and
+    side-effect free: the document is opened, its page count read, and closed
+    without rendering or modifying anything.
+    """
+    from pymupdf import Document, FileDataError
+
+    if "path" not in params:
+        raise ValueError("missing required parameter: path")
+    raw = params["path"]
+    if not isinstance(raw, (str, Path)) or not str(raw).strip():
+        raise ValueError(f"path must be a non-empty string, got {raw!r}")
+
+    path = Path(raw).expanduser()
+    if not path.exists():
+        raise FileNotFoundError(f"input file does not exist: {raw}")
+    if not path.is_file():
+        raise ValueError(f"input path is not a file: {raw}")
+
+    try:
+        with Document(path) as doc:
+            if not doc.is_pdf:
+                raise ValueError(f"input file is not a PDF: {raw}")
+            pages = doc.page_count
+    except FileDataError as exc:
+        # PyMuPDF raises this for truncated/corrupt/non-PDF data; reword it so
+        # the UI shows something actionable instead of a library traceback.
+        raise ValueError(f"could not read PDF file: {raw} ({exc})") from exc
+
+    return {"pages": pages, "path": str(path.resolve())}
+
+
 def method_translate_start(params: dict) -> dict:
     """Run a translation job, streaming progress events."""
     from pdfxlate.api import translate
@@ -242,6 +277,7 @@ METHODS = {
     "providers.list": method_providers_list,
     "assets.status": method_assets_status,
     "assets.download": method_assets_download,
+    "pdf.info": method_pdf_info,
     "translate.start": method_translate_start,
     "translate.cancel": method_translate_cancel,
 }
