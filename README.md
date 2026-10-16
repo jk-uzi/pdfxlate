@@ -19,6 +19,9 @@ for the PDF layout and typesetting pipeline.
   DocLayout-YOLO ONNX model, so protected regions are left untouched.
 - Supports any OpenAI-compatible API: OpenAI, DeepSeek, Qwen, Moonshot, GLM,
   Groq, xAI, OpenRouter, SiliconFlow, and local vLLM / Ollama / LM Studio.
+- Ships with an English / Simplified Chinese interface. The first run picks the
+  language from the OS locale; the switcher in the title bar overrides it and
+  the choice is remembered.
 
 ## Architecture
 
@@ -183,7 +186,21 @@ SmartScreen warning on Windows.
 
 ```bash
 cd python && .venv/bin/python -m pytest ../tests -q
+npm run typecheck     # main/preload and renderer
+npm run check:i18n    # English/Chinese string tables stay in sync
 ```
+
+## Adding a UI language
+
+The interface strings live in two flat tables in `src/renderer/i18n.ts`
+(`EN` / `ZH`). To add a locale, extend the `Locale` union, `LOCALES`,
+`LOCALE_LABELS` and `MESSAGES`, then run `npm run check:i18n` — it fails
+loudly if a key, a `{placeholder}` or a value is missing. Static markup is
+tagged with `data-i18n*` attributes; strings built in code go through `t()`.
+
+The main process keeps its own small table for native dialog titles
+(`DIALOG_STRINGS` in `src/main/main.ts`) because it compiles as CommonJS and
+must not pull in the renderer's browser-dependent module.
 
 ## Known limitations
 

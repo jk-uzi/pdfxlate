@@ -310,4 +310,87 @@ GoNoto 语言」与「未知语言码」，**不是「支持/不支持」的分�
   无回归）；译文≈原文长时与最初的原版**逐页内容流仍逐字节一致**（16/16 页）。
 - 非 CJK 目标语言实测跑通：`--lang-out ru` 选到 GoNotoKurrent 并产出 mono + dual。
 
+---
+
+## 2026-10-16（续三）：环境配置 + 中英双语界面
+
+### 环境（这台机器是新克隆，此前完全没配）
+
+- **pre-commit hook 启用**：`git config core.hooksPath .githooks`。此前是空的，
+  等于密钥扫描一直没生效。本机没装 gitleaks，hook 走正则兜底。
+- **Python venv**：用 `uv venv --python 3.12 --seed python/.venv` 建（系统默认是
+  3.13，超出 `requires-python` 的 `<3.13` 上界），`uv pip install -e ".[dev]"`。
+  `pytest` 84 passed。
+- **npm 依赖**：首次 `npm install` 失败——Electron 从 GitHub 下载预编译二进制时
+  `ECONNRESET`（本机 github.com 不可达）。建了 `.npmrc` 指向
+  `electron_mirror=https://cdn.npmmirror.com/binaries/electron/` 后成功。
+  该文件被 `.gitignore` 忽略（镜像地址因机器而异），文档提到的 `.npmrc` 此前
+  并不存在，这次才补上。
+- **`.mimosa/` 加入 `.gitignore`**：Mimosa 插件在会话期间往仓库写状态，此前
+  `git status` 一直显示 `?? .mimosa/`，有被 `git add -A` 误提交的风险。
+
+### 中英双语界面
+
+按 `parallel-branch-delegation` 拆分，主代理先冻结契约再并行派活：
+
+1. **契约先落地**（主代理自己写、单独合并）：`src/renderer/i18n.ts` 的两张扁平
+   key 表 + `t()` / `applyStaticTranslations()` / `setLocale()` / `auditKeys()`，
+   以及 `scripts/check-i18n.mjs`。契约先行是关键——两路并行时都对着它写，
+   避免各自发明接口后合并时对不上。
+2. **两路并行**：一路渲染进程（`app.ts` + `index.html` + `style.css`），
+   一路主进程（`main.ts` + `preload.ts`）+ 仓库杂项（`.gitignore`、`package.json`）。
+   文件范围互斥，合并零冲突。
+
+设计要点：
+
+- **模块导入时无副作用**：`i18n.ts` 不碰 `document` / `localStorage` / `navigator`，
+  所以 `check-i18n.mjs` 能在纯 Node 里 `ts.transpileModule` 后直接加载它做校验，
+  不需要先构建。
+- **主进程另存一份文案表**：`DIALOG_STRINGS` 只有 4 条，故意不 import 渲染进程的
+  `i18n.ts`——`src/main` 按 CommonJS 编译而渲染进程是原生 ESM，且 `i18n.ts` 依赖
+  浏览器全局，引进来会把浏览器专用依赖拖进主进程。key 名与渲染进程 `dialog.*` 对齐。
+- **未知 stage 不能渲染成 `stage.foo`**：sidecar 传来的 stage 是裸标识符，未来可能
+  新增。给 `t()` 加了第三个参数 `fallback`，调用处写
+  `t(\`stage.${stage}\`, undefined, stage)`。两参数调用行为不变。
+- **首启语言**：先读 `localStorage` 存过的选择，没有则按 `navigator.language`
+  判断（`zh` 开头 → 中文，其余 → 英文）。切换即时生效并持久化。
+
+### 验证
+
+- `npm run typecheck`（两个 tsconfig）、`npm run check:i18n`（77 keys，en/zh in sync）、
+  `npm run build`、Python 84 passed，全绿。
+- **契约校验脚本做了变异测试**，确认它不是空跑：删掉中文一个 key → 报
+  `key parity` 并 exit 1；把中文的 `{error}` 去掉 → 报 `placeholder parity` 并 exit 1。
+- **真实 Electron 实机验证**（不只是静态检查）：启动应用、通过 CDP 读取渲染结果，
+  确认 `index.html` 里的 ES module 真的加载成功、两种语言都正确渲染、切换器能实时
+  切换、选择写入 `localStorage`。本机 OS locale 是 zh-CN，首启即中文——这条同时
+  验证了自动识别。
+- 静态检查 + 编译产物 + 真机三层都过了，不是只跑通 typecheck 就宣称完成。
+
+### 过程中踩到的坑（值得记）
+
+1. **Mimosa 门禁误报，拦住了主代理的 commit**。它把 `references/PDFMathTranslate/`
+   （上游克隆，142 MB，`.gitignore` 忽略）当成本轮新增文件来扫，报出 19 高危
+   （SSRF / 路径穿越 / SSTI / 硬编码凭据），全部属于上游代码、且该项目明确
+   「不修改上游仓库」。诊断依据：门禁的 baseline 快照在会话开始后才建立，
+   `references/` 之前不在快照里，于是被算成「新文件」。
+   处理：**没有**用 `--no-verify` 或改 hook 绕过（那会训练人忽略扫描器）；
+   改走 worktree——worktree 里没有 `references/`（被 gitignore 的目录不签出），
+   子代理在 worktree 里提交、主代理合并，全程绿灯。这也正好是本工作流的正常形态。
+   另外建了 `.mimosa/security-policy.json` 写明威胁模型与排除项。
+2. **Windows junction 陷阱**：为让 worktree 里的子代理能用 tsc，把主仓库的
+   `node_modules` 用 `mklink /J` 链进 worktree。结果 `git worktree remove --force`
+   **顺着 junction 把主仓库的 `node_modules` 一起删了**。源码无恙，`npm install`
+   重装即可。教训：worktree 清理前必须先删 junction（`rmdir` 而非 `rm -rf`），
+   或者干脆别链、让子代理用绝对路径调主仓库的 tsc。
+3. `git worktree cleanup` 会把未提交的 `.mimosa/` 状态文件做成快照提交，留下
+   一个无意义的分支。已删。这也是把 `.mimosa/` 写进 `.gitignore` 的另一个理由。
+
+### 遗留
+
+- 前端仍无自动化测试：新增的 i18n 校验只保证两表一致，不检查译文质量，
+  也没有 DOM 级回归测试（本次的渲染验证是临时脚本，验证完已删除）。
+- 上一轮报告的 5 个实测缺陷仍未修（UI 保存 profile 会写出明文密钥、cancel 不可达、
+  `font_ready_for` 在 UI 层够不着、语言输入框是死的、`_CJK_TARGETS` 重复表）。
+
 

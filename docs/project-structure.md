@@ -39,6 +39,8 @@ Python 3.12，venv 在 `python/.venv`，包以 editable 方式安装，改源码
 | 改子进程管理与 JSON 协议 | `src/main/sidecar.ts`（`Sidecar` 类） |
 | 改渲染进程可用的 API | `src/preload/preload.ts`（`contextBridge`） |
 | 改 Electron 界面 | `src/renderer/app.ts` + `index.html` + `style.css` |
+| 改界面文案 / 加一门语言 | `src/renderer/i18n.ts`（`en`/`zh` 两张表），静态文案用 `data-i18n*` 属性标注 |
+| 改原生对话框文案 | `src/main/main.ts` 的 `DIALOG_STRINGS`（主进程另有一份小表，原因见该处注释） |
 | 改前端构建配置 | `package.json`、`tsconfig.node.json`、`tsconfig.renderer.json` |
 | 改打包配置 | Electron → `electron-builder.yml`；Python → `python/pdfxlate.spec` |
 | 加测试 | `tests/` |
@@ -90,14 +92,15 @@ pdfxlate/
 │           └── text_spacing.py 44 行  中英混排间距（上游照搬）
 ├── src/
 │   ├── main/
-│   │   ├── main.ts          136 行  窗口 + 应用生命周期 + IPC
+│   │   ├── main.ts          188 行  窗口 + 应用生命周期 + IPC（含原生对话框文案表）
 │   │   └── sidecar.ts       204 行  Python 子进程管理 + JSON 行协议
 │   ├── preload/
-│   │   └── preload.ts        87 行  contextBridge，向渲染进程暴露 API
+│   │   └── preload.ts        93 行  contextBridge，向渲染进程暴露 API
 │   └── renderer/
-│       ├── index.html       156 行  界面结构
-│       ├── app.ts           418 行  界面逻辑（拖拽、profile、进度、结果）
-│       └── style.css        333 行  样式
+│       ├── index.html       163 行  界面结构（文案走 data-i18n* 属性）
+│       ├── app.ts           563 行  界面逻辑（拖拽、profile、进度、结果、语言切换）
+│       ├── i18n.ts          389 行  中英文字符串表 + t()/applyStaticTranslations()
+│       └── style.css        340 行  样式
 ├── tests/
 │   ├── test_translation.py   187 行  缓存、占位符、推理标签剥离、注册表、缓存开关
 │   ├── test_openai_compat.py 137 行  适配器参数透传、校验、提示词渲染
@@ -106,6 +109,7 @@ pdfxlate/
 │   └── test_assets_fonts.py  113 行  语言→字体映射、status() 兼容性
 └── scripts/
     ├── copy-static.mjs        20 行  拷贝 HTML/CSS 到 out/renderer/
+    ├── check-i18n.mjs        100 行  校验中英文字符串表一致（npm run check:i18n）
     └── build.sh               40 行  一键构建：PyInstaller → tsc → electron-builder
 ```
 
@@ -255,11 +259,29 @@ profile 驱动，调用方不碰 provider 内部。`__init__.py` 惰性转出前
 **`src/preload/preload.ts`** — `contextBridge.exposeInMainWorld("pdfxlate", ...)`，
 在 `contextIsolation` 开启的前提下向渲染进程暴露：
 `request()`（转发到 sidecar）、`onEvent()` / `onLog()`（订阅事件）、
-`pickPdf()` / `pickOutputDir()`（原生对话框）、`reveal()` / `openPath()`（打开输出）。
+`pickPdf(locale?)` / `pickOutputDir(locale?)`（原生对话框，语言由渲染进程传入）、
+`reveal()` / `openPath()`（打开输出）。
 
 **`src/renderer/app.ts`** — 界面逻辑，无前端框架，直接操作 DOM。
 拖拽与文件选择、profile 下拉与参数编辑、页码范围解析、进度渲染
-（解析→版面→翻译→排版→保存）、结果列表、日志面板。
+（解析→版面→翻译→排版→保存）、结果列表、日志面板、语言切换。
+用户可见文案一律走 `t()`，不写字面量。
+
+**`src/renderer/i18n.ts`** — 界面双语（English / 简体中文）。两张扁平 key 表
+`EN` / `ZH` 加一层解析运行时：`t(key, params?, fallback?)` 用于代码里拼的字符串，
+`data-i18n*` 属性用于静态标记（由 `applyStaticTranslations()` 应用，支持
+`data-i18n` / `-html` / `-title` / `-placeholder` / `-aria-label`）。
+启动语言取 `localStorage` 里存过的选择，没有则按 `navigator.language` 判断
+（`zh` 开头 → 中文，其余 → 英文）。模块**导入时无副作用**（不碰 `document` /
+`localStorage`），因此 `scripts/check-i18n.mjs` 能在纯 Node 里加载它。
+`t()` 的第三个参数 `fallback` 是给 sidecar 传来的 stage 标识用的：
+`t(\`stage.${stage}\`, undefined, stage)` 让未知阶段渲染成原始标识而不是 `stage.foo`。
+
+**`src/main/main.ts` 的 `DIALOG_STRINGS`** — 原生对话框的四条文案**在主进程另存一份**，
+不 import 渲染进程的 `i18n.ts`。原因：`src/main` 与 `src/preload` 按 CommonJS 编译
+（`tsconfig.node.json`），渲染进程是原生 ESM，且 `i18n.ts` 依赖 `document` /
+`localStorage` / `navigator` 等浏览器全局——引进来会把浏览器专用依赖拖进主进程。
+key 名与渲染进程的 `dialog.*` 保持一致，便于人工对照。
 
 ### 构建与打包
 
@@ -267,6 +289,9 @@ profile 驱动，调用方不碰 provider 内部。`__init__.py` 惰性转出前
   把 `index.html` / `style.css` 拷进 `out/renderer/`。
 - `npm run dev` — 构建后以 `--dev` 启动 Electron，走本地 venv 里的 sidecar。
 - `npm run typecheck` — 只做类型检查，两个 tsconfig 各跑一次。
+- `npm run check:i18n` — 校验中英文字符串表一致：key 对齐、`{placeholder}` 对齐、
+  无空值。它用 `ts.transpileModule` 现编译 `i18n.ts` 再加载，因此不需要先构建。
+  改动 `i18n.ts` 后跑一下，表漂移会以非零退出报出来。
 - `python/pdfxlate.spec` — PyInstaller onedir 打包 Python 侧，
   产物作为 Electron 的 `extraResources` 打进安装包（见 `electron-builder.yml`）。
 
@@ -288,6 +313,7 @@ profile 驱动，调用方不碰 provider 内部。`__init__.py` 惰性转出前
 python/.venv/bin/python -m pytest tests/ -q          # Python，当前 84 passed
 python/.venv/bin/python -m pytest tests/ -q -k cache # 单个方向
 npm run typecheck                                    # 前端类型检查
+npm run check:i18n                                   # 中英文字符串表一致性
 ```
 
 `test_translation.py` 用假 adapter（计数器、故意丢占位符）测缓存命中、
@@ -297,7 +323,9 @@ npm run typecheck                                    # 前端类型检查
 下限/空段落/零高度/公式固定宽），不构造 PDF，跑得很快。
 `test_cli_options.py` 测 CLI 排版选项的解析与三态覆盖语义（不传时不动配置）。
 `test_assets_fonts.py` 测语言→字体映射与 `status()` 的向后兼容（旧键不能丢）。
-前端目前只有 `typecheck` 通过，尚无自动化测试。
+前端目前只有 `typecheck` 与 `check:i18n` 两个静态检查，尚无自动化测试。
+`check:i18n.mjs` 会真的加载 `i18n.ts` 并逐 key 比对，因此它能挡住"某门语言漏了一
+条文案""译文把 `{error}` 吃掉了""某条译成空串"这类漂移；它不检查译文质量。
 
 ## 六、提交前密钥扫描
 
