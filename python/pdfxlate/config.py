@@ -108,6 +108,27 @@ def _strip_trailing_slash(v: str | None) -> str | None:
     return v.rstrip("/") if v else v
 
 
+def _read_env_refs(path: Path) -> dict[str, str]:
+    """Collect ``${VAR}`` references from a config file on disk.
+
+    A migrated file keeps its references under the old ``profiles.*`` paths
+    while the migrated document lives under ``providers.*``; migrating here too
+    keeps the two in step, so the lookup in :func:`_restore_env_refs` still
+    finds them (otherwise a secret held only in the environment would be
+    written out in clear on the next save).
+    """
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        logger.debug("could not read env refs from %s", path, exc_info=True)
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    if "profiles" in raw and "providers" not in raw:
+        raw = _migrate_profiles(dict(raw))
+    return _collect_env_refs(raw)
+
+
 class ModelEntry(BaseModel):
     """One model served by a provider.
 
@@ -459,11 +480,7 @@ def save(config: AppConfig, path: Path | None = None) -> Path:
         # from ``config.get``, which necessarily returns *expanded* values).
         # Re-read the references from disk so an environment-held secret is
         # rewritten as ``${VAR}`` instead of being persisted in clear.
-        try:
-            on_disk = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-            refs = _collect_env_refs(on_disk)
-        except (OSError, yaml.YAMLError):
-            logger.debug("could not re-read env refs from %s", path, exc_info=True)
+        refs = _read_env_refs(path)
     if refs:
         data = _restore_env_refs(data, refs)
 

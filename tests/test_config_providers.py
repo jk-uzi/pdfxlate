@@ -303,6 +303,30 @@ def test_migration_keeps_env_ref(tmp_path, monkeypatch):
     assert "old-secret" not in text
 
 
+def test_migrated_file_survives_ui_round_trip(tmp_path, monkeypatch):
+    """Regression: the UI round-trip on an old-layout file must not leak.
+
+    ``config.get`` returns expanded values and the renderer posts back a fresh
+    document, so the refs have to be recovered from disk.  After migration the
+    document lives under ``providers.*`` while the file still says
+    ``profiles.*``, so the recovery has to migrate too, or the paths never
+    match and the secret is written out in clear.
+    """
+    monkeypatch.setenv("OLD_KEY", "old-secret")
+    path = _write(
+        tmp_path,
+        "default_profile: p\n"
+        "profiles:\n  p:\n    base_url: https://x/v1\n"
+        "    api_key: ${OLD_KEY}\n    model: m\n",
+    )
+    expanded = config_mod.load(path).model_dump(exclude_none=True)
+    rebuilt = config_mod.AppConfig.model_validate(expanded)
+    config_mod.save(rebuilt, path)
+    text = path.read_text(encoding="utf-8")
+    assert "${OLD_KEY}" in text
+    assert "old-secret" not in text
+
+
 def test_default_template_is_valid(tmp_path):
     """The shipped template must load and resolve without edits."""
     path = tmp_path / "config.yaml"
