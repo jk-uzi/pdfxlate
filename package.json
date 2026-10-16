@@ -12,7 +12,8 @@
     "copy:static": "node scripts/copy-static.mjs",
     "start": "npm run build && electron .",
     "dev": "npm run build && electron . --dev",
-    "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.renderer.json --noEmit"
+    "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
+    "check:i18n": "node scripts/check-i18n.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

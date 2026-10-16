@@ -21,6 +21,10 @@ dist/
 .coverage
 htmlcov/
 
+# Mimosa (ZCode security plugin) session state, written during a scan; local
+# tooling output, not source.
+.mimosa/
+
 # PyInstaller (optional dev dependency)
 *.manifest
 
