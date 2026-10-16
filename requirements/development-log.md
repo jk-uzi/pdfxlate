@@ -1129,3 +1129,106 @@ cfg.translation = cfg.translation.model_copy(update=overrides)
 - **宽度上限 `min(600, 窗口一半)`** 是我定的经验值，要别的比例告诉我。
 - 前端无自动化测试，CDP 脚本仍是临时脚本，跑完即删。
 - 既有遗留不变（深色主题、打包未验证、折叠侧栏时看不到进度）。
+
+---
+
+## 2026-10-17（续）：设置 = 纯模型配置；取消「默认模型」
+
+用户指出：设置里的模型**是模型配置**（像 ZCode 那样配 url、api key、上下文、最大输出、
+推理强度等），存在配置文件里方便调用，**它不决定你用什么模型**。
+
+### 读完代码的结论：架构上已经是对的一半
+
+- **多个供应商、每个供应商多个模型**——schema 本来就是
+  `providers: dict[str, Provider]` → `Provider.models: dict[str, ModelEntry]`，UI 两级都能增删。
+- **`ModelEntry` 本来就是配置记录**，后端确实把 temperature/top_p/max_tokens/
+  reasoning_effort 送进请求。
+
+**真正缺的**：`max_tokens` / `top_p` / `stream` **完全没有 UI**，只能手改 yaml；**上下文长度在
+schema 里根本不存在**。
+
+### 两个真 bug，正是用户说的那种混淆
+
+1. **设置的选择会漏进任务**：`provider: picked?.provider ?? currentProvider ?? undefined`
+   ——`currentProvider/currentModel` 是**设置面板的下拉**。在设置里点几下就静默改变了下次
+   翻译用的模型。**这是本轮要修的核心 bug。**
+2. `default_provider` **只被清除、从未被写入**（全仓库只有 `= null`）。所谓「（默认）」标记
+   其实只是"文件里第一个"。
+
+### 修法
+
+- **变量改名**：`currentProvider/currentModel` → **`editingProvider/editingModel`**，名字即含义；
+  翻译任务**只读选项面板**的值，不再读它们。
+- **彻底删除 `default_provider`/`default_model`**（用户选）。`resolve()` 不指定时回退到
+  **文件里第一个**，CLI/MCP 不带参数仍可用；代价是**重排 config.yaml 会改变回退目标**，已记录。
+- **补齐配置字段**：`max_tokens` / `top_p` / `stream` 加 UI，新增 `context_length`。
+- 设置面板顶部加两行 `.hint` 说明"设置=描述模型，选项=决定用哪个"，否则两个地方都能选模型
+  必然让人困惑。
+
+### ⚠️ 一个必须做的迁移（否则软件打不开）
+
+`AppConfig` 是 `extra: "forbid"`，而 `load()` 直接 `model_validate(raw)`，**旧模板里就有
+`default_provider`**——几乎每份存量配置都有。删字段后不处理会直接抛 `ValidationError`，
+**引擎完全起不来**。所以 `load()` 里加 `_drop_stored_default()` 先丢弃这两个键（与既有
+`profiles:` → `providers:` 迁移同一处、同一手法），打 warning，下次保存自然消失。
+
+**拿用户磁盘上那份真实配置实测过**：`load()` 成功、只打两条 warning、`resolve()` 正常。
+旧 `profiles:` 迁移里原本会写 `default_provider`，一并改成把旧默认那组**排到最前**。
+
+### `context_length` 怎么用（有意收窄）
+
+存下来 + 用来诊断：**「最大输出」输入框显示推导出的建议值**（窗口 1/4，仅 placeholder）；
+段落提示词估算超窗口时**每个 adapter 打一条 warning**（不是每段一条，否则长文档刷屏）。
+
+**不会**在用户没填时自动塞 `max_tokens`：输出被截断比一条警告更糟，且多数服务自己有默认值，
+替它们决定会改变现有行为。token 按"约 4 字符 1 token"粗估，误报只是一行日志。**这一点明确
+标注，不假装已办到"自动推导请求参数"。**
+
+顺带修正了自己计划里的一处错：原计划把 `context_length` 放进缓存键，但该函数的契约是
+"everything that changes model output"，而我们**不自动改请求**，所以它不影响输出——放进去
+只会造成无谓的缓存失效。**没放。**
+
+### 验证
+
+- `pytest` **174 passed**（原 171 + 3 条新的超窗口告警用例，含"只告警一次"与"不告警"）；
+  `typecheck`、`check:i18n`（**133 keys**）、`build` 全绿。
+- **旧配置能加载**：新增两条测试——含已移除字段的配置能 load、且保存后字段消失；另有旧
+  `profiles:` 迁移后回退目标正确。
+- **17 处失败/13 处错误**是本轮改契约的预期代价，逐个改完（fixtures 里的 `default_*` 参数、
+  sidecar/MCP 契约断言、CLI 列表标记）。
+- **CDP 37 项断言全通过**，关键几条：
+  - **bug 修复直接验**：在设置里浏览到 `beta/three` → 发起翻译 → 断言 `translate.start`
+    收到的是选项里的 `alpha/one`，**不是设置里的 beta/three**。
+  - 新字段往返：`context_length=32768` / `max_tokens=4096` / `top_p=0.9` / `stream=true`
+    保存后进 `config.yaml`；`config.get` 文档里**没有** `default_provider`。
+  - 「最大输出」placeholder 显示推导值 `建议：8192`（32768/4）。
+  - 选项下拉无「跟随默认」项；存一个失效的模型后重载**回退到第一项**。
+  - 设置里的下拉**不再有「（默认）」标记**。
+- **清理了真实配置里的残留**：用户磁盘上的 `config.yaml` 里有一个 **`mock` 供应商**，是**我
+  早前几轮验证时留下的测试产物**（指向 `127.0.0.1:8791`，我的 mock 服务）。已用项目自己的
+  `config.load/save` 移除，并确认其余配置（deepseek provider、密钥、语言）原样无损。
+- 临时脚本、截图、Electron 进程全部清理。
+
+### 抓住并补上了一个我自己引入的 bug
+
+`check:i18n` 通过后我又手动 grep 了一遍，发现 **`options.followDefault` 被删掉但仍在两处
+被引用**（推理强度下拉、语言下拉）——那两个下拉**仍然有"跟随配置值"的语义**（模型自身的
+reasoning_effort、`translation.lang_*`），该 key 必须存在。删了它，界面会把原始 key 当文案
+显示出来。
+
+**`check:i18n` 抓不到这个**：它的三项检查全都只把两张表**互相对照**，删掉一个仍被引用的
+key，两张表依然一致、全绿。这是检查的**盲区**，不是它没跑。
+
+**于是补了第四项检查**：扫描 `src/renderer/` 里所有 `t("...")` 与 `data-i18n*` 属性，
+逐个查表，缺失即非零退出。**并验证了它确实能抓到**——临时删掉那个 key，检查报
+`"options.followConfig" is used in srcenderer\index.html but is not in the tables`
+且退出码为 1；恢复后退出 0。key 也从误导性的 `followDefault` 改名为 `followConfig`
+（已经没有"默认模型"这个概念了）。
+
+### 遗留（本轮新增）
+
+- **CLI / MCP 不指定时的回退依赖 config.yaml 的顺序**——重排会让它落到不同模型。用户选了
+  删除 default 字段，这是应有的代价，已写进文档。
+- **`context_length` 不改变请求**（见上）；要真的自动发 `max_tokens` 或做批量合并另说。
+- **设置与选项都能选模型**，含义已用文案与文档区分，但仍是两个入口。
+- 既有遗留不变（深色主题、打包未验证、折叠侧栏时看不到进度、前端无自动化测试）。

@@ -146,6 +146,14 @@ class ModelEntry(BaseModel):
     stream: bool = False
     # Reasoning models: forwarded verbatim to the API when set.
     reasoning_effort: str | None = None
+    # The model's total context window, in tokens.
+    #
+    # Recorded because it is a property of the model that nothing else knows
+    # (no catalogue is consulted), and it is what makes a too-long paragraph
+    # diagnosable: the prompt for one paragraph can exceed a small window.
+    # Deliberately *not* used to invent a `max_tokens` on the caller's behalf —
+    # see `_check_context` in models/base.py for what it does do.
+    context_length: int | None = Field(default=None, gt=0)
     # Arbitrary provider-specific body params, passed through untouched.
     extra_body: dict[str, Any] = Field(default_factory=dict)
 
@@ -201,6 +209,7 @@ class ResolvedModel(BaseModel):
     max_tokens: int | None = None
     stream: bool = False
     reasoning_effort: str | None = None
+    context_length: int | None = None
     extra_body: dict[str, Any] = Field(default_factory=dict)
 
     model_config = {"extra": "forbid"}
@@ -257,8 +266,16 @@ class OcrSettings(BaseModel):
 
 
 class AppConfig(BaseModel):
-    default_provider: str | None = None
-    default_model: str | None = None
+    """The whole configuration document.
+
+    There is deliberately no "default provider/model".  Settings describes what
+    models exist and how to reach them; which one a run uses is decided per run
+    (the options panel, ``--provider``/``--model``, or an MCP tool argument).
+    A stored default used to exist and only ever caused confusion: the UI showed
+    it as a marker, nothing wrote it, and the settings panel's selection leaked
+    into jobs as if it were one.
+    """
+
     providers: dict[str, Provider] = Field(default_factory=dict)
     translation: TranslationSettings = Field(default_factory=TranslationSettings)
     layout: LayoutSettings = Field(default_factory=LayoutSettings)
@@ -266,25 +283,6 @@ class AppConfig(BaseModel):
     ocr: OcrSettings = Field(default_factory=OcrSettings)
 
     model_config = {"extra": "forbid"}
-
-    @model_validator(mode="after")
-    def _check_defaults(self) -> "AppConfig":
-        if self.default_provider and self.default_provider not in self.providers:
-            raise ValueError(
-                f"default_provider {self.default_provider!r} is not defined in providers"
-            )
-        if self.default_model:
-            owner = self.providers.get(self.default_provider or "")
-            if owner is None:
-                raise ValueError(
-                    "default_model requires a default_provider that exists"
-                )
-            if self.default_model not in owner.models:
-                raise ValueError(
-                    f"default_model {self.default_model!r} is not defined under "
-                    f"provider {self.default_provider!r}"
-                )
-        return self
 
     # --- resolution -----------------------------------------------------
     def _find_provider_with_alias(self, alias: str) -> tuple[str, str] | None:
@@ -308,29 +306,35 @@ class AppConfig(BaseModel):
     def resolve(
         self, provider: str | None = None, model: str | None = None
     ) -> ResolvedModel:
-        """Return the flattened provider+model, filling in the defaults."""
-        requested = provider or self.default_provider
-        if not requested:
-            raise ValueError("No provider requested and no default_provider configured")
+        """Return the flattened provider+model.
 
-        pname = self.provider_for(requested)
-        prov = self.providers[pname]
-        if not prov.models:
-            raise ValueError(f"Provider {pname!r} has no models configured")
+        With nothing named, this falls back to the first provider's first model
+        so the CLI and MCP can still be called without arguments. That fallback
+        follows the order of the file, so reordering ``config.yaml`` changes
+        which model an unspecified call reaches — the price of having no stored
+        default.
+        """
+        if not self.providers:
+            raise ValueError("No providers configured")
+
+        if provider is None:
+            # In config order, not sorted: the file is the user's ordering.
+            first_provider, first_model = self.all_models()[0]
+            return self._flatten(first_provider, first_model)
 
         # A name that is not a provider but matches exactly one model alias is
         # an old-style ``profile`` reference; honour both halves at once.
-        if model is None and provider and provider not in self.providers:
+        if model is None and provider not in self.providers:
             if found := self._find_provider_with_alias(provider):
-                return self._flatten(pname, found[1])
+                return self._flatten(found[0], found[1])
 
-        alias = model
-        if alias is None and pname == self.default_provider:
-            alias = self.default_model
-        if alias is None:
-            alias = next(iter(prov.models))
-        if alias not in prov.models:
-            available = ", ".join(sorted(prov.models)) or "(none)"
+        pname = self.provider_for(provider)
+        models = self.providers[pname].models
+        if not models:
+            raise ValueError(f"Provider {pname!r} has no models configured")
+        alias = model or next(iter(models))
+        if alias not in models:
+            available = ", ".join(sorted(models)) or "(none)"
             raise ValueError(
                 f"Provider {pname!r} has no model {alias!r}; available: {available}"
             )
@@ -398,13 +402,17 @@ def _migrate_profiles(raw: dict) -> dict:
 
     raw["providers"] = providers
 
+    # `default_profile` named the one flat profile to use by default. Both the
+    # flat layout and the notion of a stored default are gone, so the former
+    # default's provider simply becomes the first entry — `resolve()` with no
+    # arguments falls back to the first provider, which reproduces the old
+    # behaviour for an unspecified call.
     old_default = raw.pop("default_profile", None)
     if old_default:
-        for name, prov in providers.items():
-            if old_default in prov["models"]:
-                raw.setdefault("default_provider", name)
-                raw.setdefault("default_model", old_default)
-                break
+        ordered = {name: prov for name, prov in providers.items() if old_default in prov["models"]}
+        ordered.update({name: prov for name, prov in providers.items() if name not in ordered})
+        providers = ordered
+        raw["providers"] = providers
     logger.warning(
         "config uses the old flat 'profiles:' layout; migrated in memory to "
         "'providers:' (saved back in the new form on the next config save)"
@@ -418,8 +426,10 @@ DEFAULT_CONFIG_TEMPLATE = """\
 # A provider holds the endpoint and credentials once; models are listed under
 # it. Add more entries under `models` to use another model from the same
 # service without repeating the URL and key.
-default_provider: deepseek
-default_model: chat
+#
+# This file describes what exists, not what to use: there is no "default"
+# model. Which one a run uses is chosen per run (the options panel in the
+# desktop app, or --provider/--model on the command line).
 
 providers:
   deepseek:
@@ -431,9 +441,14 @@ providers:
         model: deepseek-chat
         temperature: 0
         stream: false
+        # The model's context window, in tokens. Recorded so a paragraph whose
+        # prompt cannot fit is reported instead of failing obscurely; it does
+        # not set max_tokens for you.
+        context_length: 65536
       reason:
         model: deepseek-reasoner
         reasoning_effort: high
+        context_length: 65536
 
 translation:
   lang_in: en
@@ -461,11 +476,32 @@ def load(path: Path | None = None) -> AppConfig:
     # secret would be written out in clear on the first save.
     if "profiles" in raw and "providers" not in raw:
         raw = _migrate_profiles(raw)
+    _drop_stored_default(raw)
     config = AppConfig.model_validate(_expand(raw))
     # Remember which fields came from ${VAR} so save() can restore the
     # reference instead of persisting an expanded secret.
     config.__dict__["_env_refs"] = _collect_env_refs(raw)
     return config
+
+
+def _drop_stored_default(raw: dict) -> None:
+    """Discard the removed ``default_provider`` / ``default_model`` keys.
+
+    They no longer exist on :class:`AppConfig`, which forbids unknown keys, so a
+    file still carrying them would fail to validate and the engine would refuse
+    to start — for every existing user, since the setting shipped in the
+    template. Dropping them here makes old files load; the next save writes the
+    file without them.
+
+    Mutates ``raw`` in place, because the caller validates that same object.
+    """
+    for key in ("default_provider", "default_model"):
+        if raw.pop(key, None) is not None:
+            logger.warning(
+                "config has the removed %r setting; ignored. Which model a run "
+                "uses is now chosen per run.",
+                key,
+            )
 
 
 def save(config: AppConfig, path: Path | None = None) -> Path:

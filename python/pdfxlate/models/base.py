@@ -110,6 +110,9 @@ class ModelAdapter(abc.ABC):
         self.ignore_cache = ignore_cache
         # The ultrafast path sets this to bypass cache reads and writes.
         self.no_cache = False
+        # Whether the over-context warning has already been emitted, so a long
+        # document produces one line rather than one per paragraph.
+        self._context_warned = False
         # ``_CACHE_ENABLED`` is set by build_adapter for the duration of this
         # constructor call.  Passing it straight into TranslationCache means a
         # disabled cache never opens (or creates) the sqlite database.
@@ -161,6 +164,7 @@ class ModelAdapter(abc.ABC):
             if cached := self.cache.get(text):
                 return cached
 
+        self._warn_if_over_context(text)
         response = self.do_translate(text)
         cleaned = strip_reasoning(response)
         self._check_placeholders(text, cleaned)
@@ -168,6 +172,36 @@ class ModelAdapter(abc.ABC):
         if not self.no_cache:
             self.cache.set(text, cleaned)
         return cleaned
+
+    def _warn_if_over_context(self, text: str) -> None:
+        """Report a paragraph whose prompt is unlikely to fit the window.
+
+        Only reports: the request still goes out. The count is a rough estimate
+        (about four characters per token, a common rule of thumb) because no
+        tokeniser is available here, and being wrong in either direction is
+        harmless — a false positive is a log line, and a false negative leaves
+        the API's own error to explain itself.
+
+        Warns once per adapter rather than per paragraph: a document that
+        overflows usually overflows on many paragraphs, and repeating the line
+        hundreds of times would bury everything else.
+        """
+        context = getattr(self.profile, "context_length", None)
+        if not context or self._context_warned:
+            return
+        # The prompt adds the template around the text; the ratio catches that.
+        estimated = len(self.build_messages(text)[0]["content"]) / 4
+        if estimated <= context:
+            return
+        self._context_warned = True
+        logger.warning(
+            "%s: a paragraph's prompt is roughly %.0f tokens, over the configured "
+            "context_length of %d; the request may be rejected or truncated. "
+            "Check context_length for this model, or the document's paragraph sizes.",
+            self.name,
+            estimated,
+            context,
+        )
 
     def _check_placeholders(self, source: str, response: str) -> None:
         expected = placeholders(source)

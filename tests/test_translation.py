@@ -27,6 +27,7 @@ class FakeProfile:
     top_p = None
     max_tokens = None
     reasoning_effort = None
+    context_length = None
     extra_body = {}
     base_url = None
     api_key = None
@@ -185,3 +186,47 @@ def test_duplicate_registration_rejected():
 
             def do_translate(self, text):  # pragma: no cover
                 return text
+
+
+def test_over_context_warns_without_changing_the_request(temp_cache, caplog):
+    """A paragraph too big for the window is reported, not silently rewritten.
+
+    The warning exists so a mis-set `context_length` is diagnosable; the
+    request itself is left alone, because inventing a `max_tokens` would change
+    what the model returns and could truncate the translation.
+    """
+    class SmallWindow(FakeProfile):
+        context_length = 10
+
+    adapter = CountingAdapter(SmallWindow(), "en", "zh")
+    with caplog.at_level("WARNING", logger="pdfxlate.models.base"):
+        result = adapter.translate("x" * 4000)
+    assert "context_length" in caplog.text
+    # The translation still happened, in full.
+    assert result.startswith("x" * 10)
+
+
+def test_over_context_warns_only_once(temp_cache, caplog):
+    """A long document must not emit one identical line per paragraph."""
+    class SmallWindow(FakeProfile):
+        context_length = 10
+
+    adapter = CountingAdapter(SmallWindow(), "en", "zh")
+    with caplog.at_level("WARNING", logger="pdfxlate.models.base"):
+        for i in range(5):
+            adapter.translate("y" * 4000 + str(i))
+    over = [r for r in caplog.records if "over the configured" in r.getMessage()]
+    assert len(over) == 1
+    # Each paragraph really was translated, so the flag is suppressing the
+    # message rather than the work.
+    assert adapter.calls == 5
+
+
+def test_within_context_does_not_warn(temp_cache, caplog):
+    class Roomie(FakeProfile):
+        context_length = 100000
+
+    adapter = CountingAdapter(Roomie(), "en", "zh")
+    with caplog.at_level("WARNING", logger="pdfxlate.models.base"):
+        adapter.translate("short paragraph")
+    assert caplog.text == ""

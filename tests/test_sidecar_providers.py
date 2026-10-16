@@ -58,10 +58,9 @@ def loaded(tmp_path, monkeypatch):
 
 
 def test_providers_list_top_level_shape(loaded):
+    """No stored default any more: the tree is the whole payload."""
     result = sidecar.method_providers_list({})
-    assert set(result) == {"default_provider", "default_model", "providers"}
-    assert result["default_provider"] == "deepseek"
-    assert result["default_model"] == "chat"
+    assert set(result) == {"providers"}
 
 
 def test_providers_list_never_leaks_api_key(loaded):
@@ -90,7 +89,15 @@ def test_providers_list_provider_fields(loaded):
 
 def test_providers_list_model_entry_fields(loaded):
     chat = sidecar.method_providers_list({})["providers"]["deepseek"]["models"]["chat"]
-    assert set(chat) == {"model", "reasoning_effort", "temperature"}
+    assert set(chat) == {
+        "model",
+        "reasoning_effort",
+        "temperature",
+        "max_tokens",
+        "top_p",
+        "stream",
+        "context_length",
+    }
     assert chat["model"] == "deepseek-chat"
     assert chat["reasoning_effort"] == "high"
     assert chat["temperature"] == 0.0
@@ -104,15 +111,29 @@ def test_providers_list_nullable_fields(loaded):
         "model": "m",
         "reasoning_effort": None,
         "temperature": 0.0,
+        "max_tokens": None,
+        "top_p": None,
+        "stream": False,
+        "context_length": None,
     }
 
 
-def test_providers_list_defaults_may_be_null(tmp_path, monkeypatch):
-    cfg = config_mod.load(_write(tmp_path, "providers:\n  p:\n    models:\n      m: {}\n"))
+def test_providers_list_reports_sampling_settings(tmp_path, monkeypatch):
+    """The per-model knobs the settings panel edits round-trip through here."""
+    cfg = config_mod.load(
+        _write(
+            tmp_path,
+            "providers:\n  p:\n    models:\n      m:\n"
+            "        max_tokens: 4096\n        top_p: 0.9\n"
+            "        stream: true\n        context_length: 32768\n",
+        )
+    )
     monkeypatch.setattr(config_mod, "load", lambda path=None: cfg)
-    result = sidecar.method_providers_list({})
-    assert result["default_provider"] is None
-    assert result["default_model"] is None
+    entry = sidecar.method_providers_list({})["providers"]["p"]["models"]["m"]
+    assert entry["max_tokens"] == 4096
+    assert entry["top_p"] == 0.9
+    assert entry["stream"] is True
+    assert entry["context_length"] == 32768
 
 
 def test_providers_list_is_registered(monkeypatch):

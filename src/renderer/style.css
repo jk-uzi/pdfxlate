@@ -561,6 +561,28 @@ input[readonly] {
 }
 
 /* Second-level heading inside a group, e.g. "Provider" / "Model". */
+/* Explanatory line under a settings title: says what a section is for, so the
+   two model dropdowns are not mistaken for choosing what a run uses. */
+.hint {
+  margin: 0 0 4px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+/* A checkbox with its label beside it, rather than stacked like the inputs. */
+.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+}
+
+.check input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
 .subhead {
   font-size: 11.5px;
   text-transform: uppercase;

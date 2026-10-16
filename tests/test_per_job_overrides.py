@@ -20,8 +20,6 @@ from pdfxlate import config as config_mod  # noqa: E402
 def _cfg(**translation) -> config_mod.AppConfig:
     """A minimal two-provider config, with optional translation overrides."""
     return config_mod.AppConfig(
-        default_provider="prov",
-        default_model="chat",
         providers={
             "prov": {
                 "kind": "openai_compat",

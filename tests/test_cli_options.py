@@ -103,8 +103,6 @@ def run_main(monkeypatch, tmp_path):
     """Run ``cli.main`` with config loading and the pipeline stubbed out."""
     rec = _Recorder()
     cfg = config_mod.AppConfig(
-        default_provider="prov",
-        default_model="chat",
         providers={"prov": {"models": {"chat": {"model": "m"}}}},
     )
     monkeypatch.setattr(cli_mod.paths, "ensure_dirs", lambda: None)
@@ -202,8 +200,6 @@ def test_omitted_provider_and_model_stay_none(run_main):
 def list_main(monkeypatch):
     """Load a two-provider config; the caller captures stdout via capsys."""
     cfg = config_mod.AppConfig(
-        default_provider="deepseek",
-        default_model="chat",
         providers={
             "deepseek": {
                 "base_url": "https://api.deepseek.com/v1",
@@ -217,12 +213,14 @@ def list_main(monkeypatch):
     return cfg
 
 
-def test_list_models_shows_provider_tree_and_default(list_main, capsys):
+def test_list_models_shows_provider_tree(list_main, capsys):
     assert _main(["--list-models"]) == 0
     out = capsys.readouterr().out
     assert "deepseek" in out
     assert "local" in out
-    assert "chat (default): deepseek-chat" in out
+    # With no stored default, the first entry is what an unspecified call
+    # reaches, and that is what the listing marks.
+    assert "chat (used when unspecified): deepseek-chat" in out
     # A model relying on its alias keeps the alias as its name.
     assert "reason: reason" in out
     assert "qwen: Qwen3" in out
@@ -257,8 +255,6 @@ def test_build_translator_passes_ignore_cache(monkeypatch):
 
     monkeypatch.setattr(api_mod, "build_adapter", fake_build_adapter)
     cfg = config_mod.AppConfig(
-        default_provider="prov",
-        default_model="chat",
         providers={"prov": {"models": {"chat": {"model": "m"}}}},
     )
     api_mod.build_translator(app_config=cfg, ignore_cache=True)
@@ -276,8 +272,6 @@ def test_translate_forwards_ignore_cache_to_translator(monkeypatch, tmp_path):
     monkeypatch.setattr(api_mod, "build_translator", fake_build_translator)
     monkeypatch.setattr(api_mod.pipeline, "translate", lambda *a, **k: [])
     cfg = config_mod.AppConfig(
-        default_provider="prov",
-        default_model="chat",
         providers={"prov": {"models": {"chat": {"model": "m"}}}},
     )
     api_mod.translate(

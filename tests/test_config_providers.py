@@ -139,28 +139,41 @@ def test_provider_without_models_raises(tmp_path):
         cfg.resolve("p")
 
 
-def test_no_default_provider_raises(tmp_path):
+def test_no_providers_raises(tmp_path):
+    """Nothing to fall back to: resolving must say so rather than guess."""
     cfg = config_mod.load(_write(tmp_path, "providers: {}\n"))
-    with pytest.raises(ValueError, match="no default_provider"):
+    with pytest.raises(ValueError, match="No providers configured"):
         cfg.resolve()
 
 
-def test_dangling_default_provider_rejected(tmp_path):
-    with pytest.raises(Exception, match="default_provider"):
-        config_mod.load(
-            _write(tmp_path, "default_provider: ghost\nproviders: {}\n")
+def test_removed_default_keys_are_ignored(tmp_path):
+    """A config still carrying the removed settings must load.
+
+    Those keys were in the shipped template, so every file written before the
+    removal has them — and `AppConfig` forbids unknown keys, so without the
+    migration this would raise and the engine would refuse to start.
+    """
+    cfg = config_mod.load(
+        _write(
+            tmp_path,
+            "default_provider: p\ndefault_model: ghost\n"
+            "providers:\n  p:\n    models:\n      real: {}\n",
         )
+    )
+    # Dropped, not validated: with no stored default they mean nothing.
+    assert list(cfg.providers) == ["p"]
+    assert cfg.resolve().alias == "real"
 
 
-def test_dangling_default_model_rejected(tmp_path):
-    with pytest.raises(Exception, match="default_model"):
-        config_mod.load(
-            _write(
-                tmp_path,
-                "default_provider: p\ndefault_model: ghost\n"
-                "providers:\n  p:\n    models:\n      real: {}\n",
-            )
-        )
+def test_removed_default_keys_do_not_survive_a_save(tmp_path):
+    """Loading drops them, so the next write produces a clean file."""
+    path = _write(
+        tmp_path,
+        "default_provider: p\ndefault_model: real\n"
+        "providers:\n  p:\n    models:\n      real: {}\n",
+    )
+    config_mod.save(config_mod.load(path), path)
+    assert "default_provider" not in path.read_text(encoding="utf-8")
 
 
 def test_typo_in_provider_rejected(tmp_path):
@@ -195,8 +208,8 @@ profiles:
 
 def test_old_profiles_migrate(tmp_path):
     cfg = config_mod.load(_write(tmp_path, OLD))
-    assert cfg.default_provider == "deepseek"
-    assert cfg.default_model == "deepseek"
+    # The old flat default named a profile; with no stored default any more it
+    # instead becomes the first entry, which is what an unspecified call hits.
     assert cfg.resolve().model == "deepseek-chat"
     assert cfg.resolve("local_vllm").model == "Qwen/Qwen3-32B"
 

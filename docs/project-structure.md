@@ -117,18 +117,18 @@ pdfxlate/
 │   ├── preload/
 │   │   └── preload.ts       168 行  contextBridge，向渲染进程暴露 API
 │   └── renderer/
-│       ├── index.html       431 行  界面结构（文案走 data-i18n* 属性；图标在构建时内联）
-│       ├── app.ts          1956 行  界面逻辑（任务/设置双模式、折叠、标签页、文件夹浏览、拖放、缩放、进度、另存为、选项覆盖、侧栏拖拽）
-│       ├── i18n.ts          503 行  中英文字符串表 + t()/applyStaticTranslations()
+│       ├── index.html       465 行  界面结构（文案走 data-i18n* 属性；图标在构建时内联）
+│       ├── app.ts          1994 行  界面逻辑（任务/设置双模式、折叠、标签页、文件夹浏览、拖放、缩放、进度、另存为、选项覆盖、侧栏拖拽）
+│       ├── i18n.ts          517 行  中英文字符串表 + t()/applyStaticTranslations()
 │       ├── icon.svg          49 行  应用标记的**唯一来源**（标题栏内联 + 打包图标）
-│       └── style.css       1037 行  样式（含标题栏标签、查看器浮层、折叠与侧栏状态行、侧栏拖拽手柄）
+│       └── style.css       1059 行  样式（含标题栏标签、查看器浮层、折叠与侧栏状态行、侧栏拖拽手柄）
 ├── assets/
 │   ├── icon.png               512×512，由 make_icon.py 从 icon.svg 生成后提交
 │   └── icon.ico               16–256 多尺寸，同上（Windows 用）
 ├── tests/
-│   ├── test_translation.py   187 行  缓存、占位符、推理标签剥离、注册表、缓存开关
+│   ├── test_translation.py   232 行  缓存、占位符、推理标签剥离、注册表、缓存开关、超窗口告警
 │   ├── test_openai_compat.py 137 行  适配器参数透传、校验、提示词渲染
-│   ├── test_config_providers.py 336 行  供应商→模型 schema、resolve、迁移、env 引用
+│   ├── test_config_providers.py 349 行  供应商→模型 schema、resolve、迁移（含已移除字段）、env 引用
 │   ├── test_typesetting.py   172 行  字号适配纯函数（放不下时的缩字逻辑）
 │   ├── test_cli_options.py   286 行  CLI 排版选项解析与三态覆盖语义
 │   ├── test_sidecar_providers.py 181 行  providers.list 形状、密钥不外传
@@ -139,7 +139,7 @@ pdfxlate/
     ├── copy-static.mjs        81 行  拷贝 CSS、**把 icon.svg 内联进 index.html**
     ├── make-icon.mjs          33 行  用 venv 解释器调用 make_icon.py（npm run make:icon）
     ├── make_icon.py          186 行  从 icon.svg 生成 assets/icon.png 与 .ico（PyMuPDF）
-    ├── check-i18n.mjs        100 行  校验中英文字符串表一致（npm run check:i18n）
+    ├── check-i18n.mjs        154 行  校验字符串表一致 + **引用的 key 确实存在**（npm run check:i18n）
     └── build.sh               40 行  一键构建：PyInstaller → tsc → electron-builder
 ```
 
@@ -155,8 +155,8 @@ pdfxlate/
 平台默认：Windows `%APPDATA%`、macOS `~/Library/Application Support`、
 Linux `~/.config` + `~/.cache`。
 
-**`config.py`** — `AppConfig`（`default_provider` / `default_model` / `providers` /
-`translation` / `layout` / `cache` / `ocr`）、`Provider`、`ModelEntry`、
+**`config.py`** — `AppConfig`（`providers` / `translation` / `layout` / `cache` /
+`ocr`）、`Provider`、`ModelEntry`、
 `ResolvedModel`、`TranslationSettings`、`LayoutSettings`、`CacheSettings`、
 `OcrSettings`、`load()`、`save()`。全部 `extra: "forbid"`，配置写错启动即报错。
 `${VAR}` 引用在加载时从环境展开，保存时写回字面形式，所以密钥不会被固化进文件。
@@ -167,16 +167,31 @@ Linux `~/.config` + `~/.cache`。
 `ModelEntry.model` 省略时由别名回填（`_fill_model_names`），因为「快速加一个模型」
 是最常见的操作。
 
+**配置里没有"默认模型"。** 设置描述**有哪些模型可用、怎么连**；**用哪一个由每次都决定**
+（选项面板、`--provider`/`--model`、或 MCP 工具参数）。曾经有 `default_provider`/
+`default_model`，但它只带来混淆：UI 上那个「（默认）」标记其实只是"文件里第一个"，
+没有任何地方会写它，而且**设置面板的下拉会漏进任务**——在设置里点几下，下次翻译用的就
+变成了它。现已彻底移除。
+
 `AppConfig.resolve(provider, model) -> ResolvedModel` 是**唯一的解析入口**：
-填默认值、报错点名可用项，并把两层**拍平**成一个 `ResolvedModel`。拍平这一步是
+补齐缺省、报错点名可用项，并把两层**拍平**成一个 `ResolvedModel`。**不指定 provider 时
+回退到文件里第一个**（`all_models()[0]`），这样 CLI / MCP 不带参数仍可用；代价是**重排
+config.yaml 会改变这个回退目标**。拍平这一步是
 控制爆炸半径的关键——`ModelAdapter` 子类、`openai_compat.py`、`pdf/` 全都只做
 `getattr(profile, "x")`，所以加这层嵌套时它们一行都没改。
 
-**旧 `profiles:` 配置会自动迁移**（`_migrate_profiles`）：按 `(kind, base_url,
-api_key)` 分组，旧 profile 名成为模型别名，`default_profile` 映射成
-`default_provider`/`default_model`，并打一条 warning。`resolve()` 也接受旧 profile
-名（`_find_provider_with_alias`），所以 `--profile deepseek` 这类老命令仍然可用。
-迁移在**内存里**做，下次保存写回新结构。
+**两处迁移，都为了旧文件还能打开**：
+
+- **旧 `profiles:` 布局**（`_migrate_profiles`）：按 `(kind, base_url, api_key)` 分组，
+  旧 profile 名成为模型别名；旧 `default_profile` 指的那一组**排到最前**，因为"第一个"
+  就是现在不指定时的回退目标。
+- **已移除的 `default_provider` / `default_model`**（`_drop_stored_default`）：**必须**丢弃，
+  否则是灾难性的——`AppConfig` 是 `extra: "forbid"`，而这两个键**在旧模板里**，几乎每份
+  存量配置都有，留着会让 `model_validate` 直接抛错、**引擎完全起不来**。丢弃时打 warning，
+  下次保存自然消失。
+
+`resolve()` 也接受旧 profile 名（`_find_provider_with_alias`），所以 `--profile deepseek`
+这类老命令仍然可用。迁移在**内存里**做，下次保存写回新结构。
 
 **`save()` 会在配置对象丢失 `_env_refs` 时回读磁盘上的引用**：UI 的
 `config.get` → `config.save` 往返必然拿到展开后的值，若不回读，只存在于环境里的
@@ -275,7 +290,8 @@ GoNoto 语言」与「未知语言码」，不是「支持/不支持」的分界
 
 **`cli.py`** — `build_parser()` / `parse_pages()` / `main()`，调试与批处理用。
 寻址用 `--provider` / `--model`（`--profile` 是 `--provider` 的废弃别名）；
-`--list-models` 打印「供应商 → 模型」树并标出默认项，`--list-profiles` 是它的隐藏别名。
+`--list-models` 打印「供应商 → 模型」树，并标出**不指定时会被用到的那一个**（即第一项），
+`--list-profiles` 是它的隐藏别名。
 除语言 / 页码 / 模式外，还暴露了 4 个**排版**选项，都会覆盖 config.yaml
 里的同名字段：`--backend {auto,cpu,cuda,dml}`（ONNX 执行后端，覆盖 `layout.backend`）、
 `--onnx PATH`（自定义版面模型，覆盖 `layout.model_path`）、
@@ -305,7 +321,7 @@ GoNoto 语言」与「未知语言码」，不是「支持/不支持」的分界
 
 `providers.list` 的结果形状是**与渲染进程的冻结合同**，改它必须同时改
 `src/renderer/app.ts` 里的 `ProvidersResponse`：
-`{default_provider, default_model, providers: {名: {kind, base_url, has_api_key,
+`{providers: {名: {kind, base_url, has_api_key,
 models: {别名: {model, reasoning_effort, temperature}}}}}`。
 它由 `profiles.list` 改名而来（`translate.start` 的 `profile` 参数同时换成
 `provider` + `model`）；**旧名不再作为别名保留**——结果形状也变了，留个别名只会把
@@ -446,6 +462,34 @@ PDF，它是空的，两个按钮就被禁用并提示"请先翻译"：程序**�
 - **页号按标签各自记住**（`pageState: Map<path, {page, pages}>`）；**缩放是全局的**
   ——那是阅读偏好，每份文档不一样反而更糟。
 - 翻译完成后**产出自动开成标签**（mono + dual），替代原来的「结果」分组。
+
+### 设置 = 描述模型，选项 = 决定用哪个
+
+这是两个**不同的问题**，界面分开放：
+
+| | 设置 › 模型 | 选项 › 模型 |
+|---|---|---|
+| 回答 | **有哪些模型可用、怎么连** | **这次用哪一个** |
+| 存哪 | `config.yaml`（永久） | localStorage（仅供本次/记住上次） |
+| 内容 | 供应商：`kind`/`base_url`/`api_key`；模型：模型 ID、上下文长度、最大输出、top_p、推理强度、温度、流式、extra_body | 选一个 `供应商 · 模型` |
+
+**设置里的两个下拉是「编辑光标」，不是「这次用哪个」。** 它们曾经是同一个变量，导致在设置里
+浏览几下就会**静默改变下次翻译用的模型**——这正是要修的 bug。现在变量叫
+`editingProvider`/`editingModel`，名字即含义，且**翻译任务不再读它们**（只读选项面板的值）。
+
+设置面板顶部各有一行 `.hint` 说明两者的分工，否则两个都能选模型的地方必然让人困惑。
+
+### `context_length`：存下来用来诊断，不替用户决定请求
+
+`ModelEntry.context_length` 记录模型的上下文窗口。它**做什么**：
+
+- 在「最大输出」输入框上显示**推导出的建议值**（窗口的 1/4），仅作 placeholder。
+- 某段落的提示词估算超出窗口时，**每个 adapter 打一条 warning**（不是每段一条，否则长文档
+  会把日志刷屏）。
+
+它**不做什么**：**不会在用户没填时自动塞 `max_tokens`**。输出被截断比一条警告更糟，而且多数
+OpenAI 兼容服务自己就有默认值，替它们决定会改变现有行为。token 数是按"约 4 字符 1 token"
+粗估的（这里没有分词器），估错也无害：误报只是一行日志，漏报则由接口自己的报错兜底。
 
 ### 选项面板：只影响本次任务
 
@@ -609,7 +653,7 @@ macOS 的交通灯在**左上**，改留 `padding-left`。同一份 CSS 靠类�
 脚本**，也读不到查看器
 当前的页码——浮层显示的页码是界面自己的状态。别试图用脚本去同步。
 
-供应商与模型编辑以 **`config.get` 返回的文档为结构的唯一真相**（名字、别名、默认项、
+供应商与模型编辑以 **`config.get` 返回的文档为结构的唯一真相**（名字、别名、
 明细字段），`providers.list` 只提供 `has_api_key` 与下拉列表——所以界面需要首屏
 同时取这两者。删除条目前会 `confirm()`，删除后从**已改动的文档**重新选一次，
 因此选中项不可能指向已删除的条目。API key 的掩码语义保留：输入框永远从空开始，
@@ -640,9 +684,14 @@ key 名与渲染进程的 `dialog.*` 保持一致，便于人工对照。
   构建期内联，会自动跟上）。
 - `npm run dev` — 构建后以 `--dev` 启动 Electron，走本地 venv 里的 sidecar。
 - `npm run typecheck` — 只做类型检查，两个 tsconfig 各跑一次。
-- `npm run check:i18n` — 校验中英文字符串表一致：key 对齐、`{placeholder}` 对齐、
-  无空值。它用 `ts.transpileModule` 现编译 `i18n.ts` 再加载，因此不需要先构建。
-  改动 `i18n.ts` 后跑一下，表漂移会以非零退出报出来。
+- `npm run check:i18n` — 四项检查：key 对齐、`{placeholder}` 对齐、无空值，
+  以及**渲染进程引用的 key 确实存在**。它用 `ts.transpileModule` 现编译 `i18n.ts` 再加载，
+  因此不需要先构建。
+
+  第四项是**因为前三项全都只把两张表互相对照**：删掉一个仍被引用的 key，它们照样全绿，
+  而界面会把原始 key 当文案显示出来。**这个 bug 真的发生过**——一个 key 被当作"没人用了"
+  删掉，而两个下拉仍在用它，只有手动 grep 才发现。第四项扫描 `src/renderer/` 里所有
+  `t("...")` 与 `data-i18n*` 属性并逐个查表，缺失即非零退出。
 - `python/pdfxlate.spec` — PyInstaller onedir 打包 Python 侧，
   产物作为 Electron 的 `extraResources` 打进安装包（见 `electron-builder.yml`）。
 

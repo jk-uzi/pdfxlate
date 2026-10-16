@@ -34,8 +34,6 @@ interface ProviderSummary {
 }
 
 interface ProvidersResponse {
-  default_provider: string | null;
-  default_model: string | null;
   providers: Record<string, ProviderSummary>;
 }
 
@@ -52,6 +50,7 @@ interface ModelDraft {
   max_tokens?: number | null;
   stream?: boolean;
   reasoning_effort?: string | null;
+  context_length?: number | null;
   extra_body?: Record<string, unknown>;
 }
 
@@ -176,8 +175,16 @@ let cachedConfig: ConfigDoc | null = null;
 // draft fabricated after a failed load must never be posted back, or it would
 // overwrite the settings the load could not read.
 let configLoaded = false;
-let currentProvider: string | null = null;
-let currentModel: string | null = null;
+/**
+ * Which provider/model the Settings editor is currently showing.
+ *
+ * Named for what it is: the editing cursor, nothing more. It deliberately has
+ * no influence on what a job runs with — that is the Options panel's choice.
+ * The two used to be the same variable, so clicking around in Settings silently
+ * changed which model the next translation used.
+ */
+let editingProvider: string | null = null;
+let editingModel: string | null = null;
 
 // --- preview state ---------------------------------------------------------
 
@@ -1180,8 +1187,8 @@ async function refreshProviders(): Promise<void> {
     configLoaded = true;
     // Keep the current selection if it still exists; otherwise fall back to
     // the configured default, then to the first entry.
-    currentProvider = pickProvider();
-    currentModel = currentProvider ? pickModel(currentProvider) : null;
+    editingProvider = pickProvider();
+    editingModel = editingProvider ? pickModel(editingProvider) : null;
     renderProviderSelect();
     renderModelSelect();
     // The options panel lists the same pairs, and it reads from this cached
@@ -1194,32 +1201,24 @@ async function refreshProviders(): Promise<void> {
   }
 }
 
-/** The provider to select: the current one, else the default, else the first. */
+/**
+ * Which provider the editor should show: the one already being edited if it
+ * still exists, otherwise the first.
+ *
+ * There is no "default" to prefer any more — this is the editing cursor, not a
+ * choice about what to run.
+ */
 function pickProvider(): string | null {
   const names = draftProviderNames();
-  if (currentProvider && names.includes(currentProvider)) return currentProvider;
-  const def = defaultProvider();
-  if (def && names.includes(def)) return def;
+  if (editingProvider && names.includes(editingProvider)) return editingProvider;
   return names[0] ?? null;
 }
 
-/** The model to select within `provider`: current, else default, else first. */
+/** Which model to show within `provider`: the one being edited, else the first. */
 function pickModel(provider: string): string | null {
   const models = draftModelNames(provider);
-  if (currentModel && models.includes(currentModel)) return currentModel;
-  const def = defaultModel();
-  if (defaultProvider() === provider && def && models.includes(def)) return def;
+  if (editingModel && models.includes(editingModel)) return editingModel;
   return models[0] ?? null;
-}
-
-function defaultProvider(): string | null {
-  const value = cachedConfig?.default_provider;
-  return typeof value === "string" && value ? value : null;
-}
-
-function defaultModel(): string | null {
-  const value = cachedConfig?.default_model;
-  return typeof value === "string" && value ? value : null;
 }
 
 /** Rebuild the provider `<select>` from the draft config. */
@@ -1236,12 +1235,13 @@ function renderProviderSelect(): void {
     return;
   }
   select.disabled = false;
-  const def = defaultProvider();
   for (const name of names) {
     const opt = document.createElement("option");
     opt.value = name;
-    opt.textContent = name + (def === name ? t("model.defaultSuffix") : "");
-    if (name === currentProvider) opt.selected = true;
+    // No "(default)" marker: nothing is the default, this is just which entry
+    // is open in the editor.
+    opt.textContent = name;
+    if (name === editingProvider) opt.selected = true;
     select.append(opt);
   }
 }
@@ -1250,7 +1250,7 @@ function renderProviderSelect(): void {
 function renderModelSelect(): void {
   const select = $<HTMLSelectElement>("model-select");
   select.innerHTML = "";
-  const names = currentProvider ? draftModelNames(currentProvider) : [];
+  const names = editingProvider ? draftModelNames(editingProvider) : [];
   if (!names.length) {
     const opt = document.createElement("option");
     opt.value = "";
@@ -1260,39 +1260,71 @@ function renderModelSelect(): void {
     return;
   }
   select.disabled = false;
-  const def = defaultModel();
-  const isDefaultProvider = defaultProvider() === currentProvider;
   for (const name of names) {
     const opt = document.createElement("option");
     opt.value = name;
-    opt.textContent =
-      name + (isDefaultProvider && def === name ? t("model.defaultSuffix") : "");
-    if (name === currentModel) opt.selected = true;
+    opt.textContent = name;
+    if (name === editingModel) opt.selected = true;
     select.append(opt);
   }
 }
 
 /** Fill the provider-level fields from the cached config, and mask the key. */
 function applyProviderFields(): void {
-  const provider = draftProvider(currentProvider);
+  const provider = draftProvider(editingProvider);
   $<HTMLInputElement>("field-kind").value = provider?.kind ?? "";
   $<HTMLInputElement>("field-base-url").value = provider?.base_url ?? "";
   // The key field always starts empty: the stored secret is never shown back,
   // only the `has_api_key` flag the summary reports.
   $<HTMLInputElement>("field-api-key").value = "";
-  apiKeySaved = !!cachedProviders?.providers[currentProvider ?? ""]?.has_api_key;
+  apiKeySaved = !!cachedProviders?.providers[editingProvider ?? ""]?.has_api_key;
   paintApiKeyPlaceholder();
 }
 
 /** Fill the model-level fields from the cached config. */
 function applyModelFields(): void {
-  const model = draftModel(currentProvider, currentModel);
+  const model = draftModel(editingProvider, editingModel);
   $<HTMLInputElement>("field-model-id").value = model?.model ?? "";
   $<HTMLSelectElement>("field-reasoning").value = model?.reasoning_effort ?? "";
   $<HTMLInputElement>("field-temperature").value = String(model?.temperature ?? 0);
+  // Empty means "unset", which is different from 0 for these: leaving them
+  // blank lets the API apply its own default.
+  $<HTMLInputElement>("field-max-tokens").value =
+    model?.max_tokens === null || model?.max_tokens === undefined ? "" : String(model.max_tokens);
+  $<HTMLInputElement>("field-top-p").value =
+    model?.top_p === null || model?.top_p === undefined ? "" : String(model.top_p);
+  $<HTMLInputElement>("field-context-length").value =
+    model?.context_length === null || model?.context_length === undefined
+      ? ""
+      : String(model.context_length);
+  $<HTMLInputElement>("field-stream").checked = model?.stream === true;
+  paintMaxTokensHint(model?.context_length ?? null);
   const extra = model?.extra_body;
   $<HTMLInputElement>("field-extra-body").value =
     extra && Object.keys(extra).length ? JSON.stringify(extra) : "";
+}
+
+/**
+ * Suggest a `max_tokens` alongside the context length.
+ *
+ * A quarter of the window is the common convention, and it is only ever a
+ * placeholder: the engine will not invent a `max_tokens`, because truncating a
+ * reply is worse than leaving the choice to the API. Showing the number makes
+ * the relationship visible without pretending to enforce it.
+ */
+function paintMaxTokensHint(contextLength: number | null): void {
+  const field = $<HTMLInputElement>("field-max-tokens");
+  field.placeholder = contextLength
+    ? t("model.maxTokensAutoValue", { value: String(Math.round(contextLength / 4)) })
+    : t("model.maxTokensAuto");
+}
+
+/** Parse an optional positive integer field; `null` when blank. */
+function readOptionalInt(id: string): number | null {
+  const raw = $<HTMLInputElement>(id).value.trim();
+  if (!raw) return null;
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? Math.round(value) : null;
 }
 
 /** The `providers` map in the draft config, created on demand. */
@@ -1332,17 +1364,17 @@ function paintApiKeyPlaceholder(): void {
 }
 
 $("provider-select").addEventListener("change", (e) => {
-  currentProvider = (e.target as HTMLSelectElement).value || null;
+  editingProvider = (e.target as HTMLSelectElement).value || null;
   // A model alias is only meaningful within its own provider, so start the new
   // provider at its default (or first) model rather than carrying the old one.
-  currentModel = currentProvider ? pickModel(currentProvider) : null;
+  editingModel = editingProvider ? pickModel(editingProvider) : null;
   renderModelSelect();
   applyProviderFields();
   applyModelFields();
 });
 
 $("model-select").addEventListener("change", (e) => {
-  currentModel = (e.target as HTMLSelectElement).value || null;
+  editingModel = (e.target as HTMLSelectElement).value || null;
   applyModelFields();
 });
 
@@ -1388,13 +1420,27 @@ function commitModelFields(provider: string, alias: string): void {
   if (!prov) return;
   if (!prov.models) prov.models = {};
   const existing = prov.models[alias] ?? {};
+  const topP = readOptionalFloat("field-top-p");
   prov.models[alias] = {
     ...existing,
     model: $<HTMLInputElement>("field-model-id").value || alias,
     reasoning_effort: $<HTMLSelectElement>("field-reasoning").value || null,
     temperature: Number($<HTMLInputElement>("field-temperature").value) || 0,
+    max_tokens: readOptionalInt("field-max-tokens"),
+    top_p: topP,
+    stream: $<HTMLInputElement>("field-stream").checked,
+    context_length: readOptionalInt("field-context-length"),
     extra_body: extraBody,
   };
+  paintMaxTokensHint(readOptionalInt("field-context-length"));
+}
+
+/** Parse an optional 0..1 float field; `null` when blank. */
+function readOptionalFloat(id: string): number | null {
+  const raw = $<HTMLInputElement>(id).value.trim();
+  if (!raw) return null;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : null;
 }
 
 /** POST the cached config document, reporting the outcome on `model-msg`. */
@@ -1453,8 +1499,8 @@ $("btn-add-provider").addEventListener("click", () => {
     models: {},
   };
   input.value = "";
-  currentProvider = name;
-  currentModel = null;
+  editingProvider = name;
+  editingModel = null;
   renderProviderSelect();
   renderModelSelect();
   applyProviderFields();
@@ -1463,7 +1509,7 @@ $("btn-add-provider").addEventListener("click", () => {
 });
 
 $("btn-remove-provider").addEventListener("click", () => {
-  const name = currentProvider;
+  const name = editingProvider;
   if (!name) {
     setProfileMessage("model.noProvider", undefined, true);
     return;
@@ -1471,16 +1517,12 @@ $("btn-remove-provider").addEventListener("click", () => {
   if (!confirm(t("model.removeProviderConfirm", { name }))) return;
   const providers = draftProviders();
   delete providers[name];
-  if (cachedConfig && cachedConfig.default_provider === name) {
-    cachedConfig.default_provider = null;
-    cachedConfig.default_model = null;
-  }
   // Re-pick against the mutated draft so the selection can never point at the
   // provider that was just deleted.
-  currentProvider = null;
-  currentModel = null;
-  currentProvider = pickProvider();
-  currentModel = currentProvider ? pickModel(currentProvider) : null;
+  editingProvider = null;
+  editingModel = null;
+  editingProvider = pickProvider();
+  editingModel = editingProvider ? pickModel(editingProvider) : null;
   renderProviderSelect();
   renderModelSelect();
   applyProviderFields();
@@ -1494,7 +1536,7 @@ $("btn-add-model").addEventListener("click", () => {
     setProfileMessage("model.nameRequired", undefined, true);
     return;
   }
-  const provider = currentProvider;
+  const provider = editingProvider;
   if (!provider) {
     setProfileMessage("model.noProvider", undefined, true);
     return;
@@ -1511,15 +1553,15 @@ $("btn-add-model").addEventListener("click", () => {
   // backend's own fill-in behaviour.
   prov.models[name] = { model: name, temperature: 0 };
   $<HTMLInputElement>("new-model-name").value = "";
-  currentModel = name;
+  editingModel = name;
   renderModelSelect();
   applyModelFields();
   void saveConfig("model.saved");
 });
 
 $("btn-remove-model").addEventListener("click", () => {
-  const provider = currentProvider;
-  const alias = currentModel;
+  const provider = editingProvider;
+  const alias = editingModel;
   if (!provider || !alias) {
     setProfileMessage("model.noModel", undefined, true);
     return;
@@ -1528,23 +1570,16 @@ $("btn-remove-model").addEventListener("click", () => {
   const providers = draftProviders();
   const prov = providers[provider];
   if (prov?.models) delete prov.models[alias];
-  if (
-    cachedConfig &&
-    cachedConfig.default_provider === provider &&
-    cachedConfig.default_model === alias
-  ) {
-    cachedConfig.default_model = null;
-  }
   // Re-pick from the mutated draft so the selection never points at a deleted
   // model.
-  currentModel = pickModel(provider);
+  editingModel = pickModel(provider);
   renderModelSelect();
   applyModelFields();
   void saveConfig("model.saved");
 });
 
 $("btn-save-model").addEventListener("click", async () => {
-  const provider = currentProvider;
+  const provider = editingProvider;
   if (!provider) {
     setProfileMessage("model.noProvider", undefined, true);
     return;
@@ -1556,20 +1591,23 @@ $("btn-save-model").addEventListener("click", async () => {
     return;
   }
   commitProviderFields(provider);
-  if (currentModel) commitModelFields(provider, currentModel);
+  if (editingModel) commitModelFields(provider, editingModel);
   await saveConfig("model.saved");
 });
 
 // --- options ---------------------------------------------------------------
 
 /**
- * Per-job overrides, for the options panel.
+ * Per-job choices, for the options panel.
  *
- * These change the next translation only. The stored defaults live in Settings
- * and are what the engine falls back to when these are unset, so each is a
- * three-state value: `""` means "follow the configured default", and anything
- * else is an override for one run. Kept in localStorage rather than the config
- * file, because writing them back would turn a one-off choice into a default.
+ * These change the next translation only, and are the sole place a run's model
+ * is chosen. Kept in localStorage rather than the config file: they describe a
+ * run, not what models exist, and writing them back would turn a one-off
+ * choice into saved state.
+ *
+ * Empty means "not specified", which for the languages and reasoning effort
+ * leaves the engine on its configured value. The model is different — see
+ * `renderOptionModels` — because it is no longer optional.
  */
 const OPTION_KEYS = {
   model: "pdfxlate.option.model",
@@ -1635,7 +1673,7 @@ function fillLanguageSelect(select: HTMLSelectElement, name: OptionName): void {
   select.innerHTML = "";
   const follow = document.createElement("option");
   follow.value = "";
-  follow.textContent = t("options.followDefault");
+  follow.textContent = t("options.followConfig");
   select.append(follow);
   for (const code of LANGUAGES) {
     const opt = document.createElement("option");
@@ -1663,13 +1701,9 @@ function paintOptionSelects(): void {
 function renderOptionModels(): void {
   const select = $<HTMLSelectElement>("opt-model");
   select.innerHTML = "";
-  const follow = document.createElement("option");
-  follow.value = "";
-  follow.textContent = t("options.followDefault");
-  select.append(follow);
 
   const providers = cachedConfig?.providers ?? {};
-  let any = false;
+  const values: string[] = [];
   for (const [providerName, provider] of Object.entries(providers)) {
     for (const alias of Object.keys(provider.models ?? {})) {
       const opt = document.createElement("option");
@@ -1678,19 +1712,21 @@ function renderOptionModels(): void {
       opt.value = `${providerName}|${alias}`;
       opt.textContent = `${providerName} · ${alias}`;
       select.append(opt);
-      any = true;
+      values.push(opt.value);
     }
   }
-  if (!any) {
+  if (!values.length) {
     select.value = "";
     select.disabled = true;
     return;
   }
   select.disabled = false;
-  // Drop a remembered choice that no longer exists rather than leaving the
+  // No "follow the default" entry: there is no stored default any more, and
+  // this panel is where the model for a run is chosen. A remembered choice
+  // that no longer exists falls back to the first, rather than leaving the
   // dropdown on a value the engine would reject.
-  if (optionValues.model && !select.querySelector(`option[value="${CSS.escape(optionValues.model)}"]`)) {
-    storeOption("model", "");
+  if (!values.includes(optionValues.model)) {
+    storeOption("model", values[0]);
   }
   select.value = optionValues.model;
 }
@@ -1809,10 +1845,12 @@ $("btn-translate").addEventListener("click", async () => {
       "translate.start",
       {
         files,
-        // The options panel wins when it names something; `undefined` means
-        // "not specified", so the engine keeps its configured defaults.
-        provider: picked?.provider ?? currentProvider ?? undefined,
-        model: picked?.model ?? currentModel ?? undefined,
+        // The Options panel is the only thing that decides which model a run
+        // uses. Settings shows the same providers but its selection is an
+        // editing cursor, so reading it here would let browsing the settings
+        // change the next job.
+        provider: picked?.provider,
+        model: picked?.model,
         lang_in: optionValues.langIn || undefined,
         lang_out: optionValues.langOut || undefined,
         reasoning_effort: optionValues.reasoning || undefined,

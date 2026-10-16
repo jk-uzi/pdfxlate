@@ -273,7 +273,6 @@ def test_stdio_handshake_lists_tools_and_calls_list_providers(mcp_client):
 
     payload = _structured(_call_tool(mcp_client, "list_providers", {}))
     assert "providers" in payload
-    assert "default_provider" in payload
 
 
 def test_list_providers_never_leaks_the_api_key(tmp_path, monkeypatch):
@@ -281,8 +280,6 @@ def test_list_providers_never_leaks_the_api_key(tmp_path, monkeypatch):
     cfg_dir = tmp_path / "cfg"
     cfg_dir.mkdir()
     (cfg_dir / "config.yaml").write_text(
-        "default_provider: p\n"
-        "default_model: chat\n"
         "providers:\n"
         "  p:\n"
         "    kind: openai_compat\n"
@@ -300,7 +297,6 @@ def test_list_providers_never_leaks_the_api_key(tmp_path, monkeypatch):
     tool = server._tool_manager.get_tool("list_providers")
     payload = tool.fn()
 
-    assert payload["default_provider"] == "p"
     provider = payload["providers"]["p"]
     assert provider["has_api_key"] is True
     assert provider["base_url"] == "https://example.invalid/v1"

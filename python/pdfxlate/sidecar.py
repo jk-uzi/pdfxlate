@@ -15,10 +15,11 @@ Event    (stdout): ``{"event": "progress", "job_id": "...", "stage": "...",
 Methods: ``ping``, ``config.get``, ``config.save``, ``providers.list``,
 ``assets.status``, ``assets.download``, ``pdf.info``, ``translate.start``,
 ``translate.cancel``.  ``providers.list`` reports the provider → models tree
-(``default_provider``/``default_model`` plus each provider's ``kind``,
-``base_url``, ``has_api_key`` and ``models``); it deliberately never returns
-an ``api_key``.  ``pdf.info`` is a read-only metadata probe (page count) used
-by the preview toolbar; it never renders or modifies the document.
+(each provider's ``kind``, ``base_url``, ``has_api_key`` and per-model
+sampling settings); it deliberately never returns an ``api_key``.  There is no
+stored default model — which one a job uses is passed to ``translate.start``.
+``pdf.info`` is a read-only metadata probe (page count) used by the preview
+toolbar; it never renders or modifies the document.
 
 All non-protocol output (logs, library chatter) goes to **stderr** so stdout
 carries only JSON.
@@ -99,8 +100,6 @@ def method_config_save(params: dict) -> dict:
 def method_providers_list(_params: dict) -> dict:
     cfg = config_mod.load()
     return {
-        "default_provider": cfg.default_provider,
-        "default_model": cfg.default_model,
         "providers": {
             name: {
                 "kind": p.kind,
@@ -113,6 +112,10 @@ def method_providers_list(_params: dict) -> dict:
                         "model": entry.model,
                         "reasoning_effort": entry.reasoning_effort,
                         "temperature": entry.temperature,
+                        "max_tokens": entry.max_tokens,
+                        "top_p": entry.top_p,
+                        "stream": entry.stream,
+                        "context_length": entry.context_length,
                     }
                     for alias, entry in p.models.items()
                 },

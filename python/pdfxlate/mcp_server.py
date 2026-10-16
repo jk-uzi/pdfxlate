@@ -274,11 +274,7 @@ def build_server() -> MCPServer:
             }
             for name, provider in cfg.providers.items()
         }
-        return {
-            "default_provider": cfg.default_provider,
-            "default_model": cfg.default_model,
-            "providers": providers,
-        }
+        return {"providers": providers}
 
     @mcp.tool()
     async def extract_segments(

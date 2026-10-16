@@ -116,9 +116,10 @@ back to `hf-mirror.com` automatically.
 | Windows | `%APPDATA%\pdfxlate\config.yaml` |
 
 ```yaml
-default_provider: deepseek
-default_model: chat
-
+# This file describes what exists; it does not say which one to use. The model
+# for a run is chosen per run (the options panel, --provider/--model, or an MCP
+# tool argument), so there is no "default model" to set.
+#
 # A provider holds the endpoint and credentials once; list any number of
 # models under it. Adding a second model from the same service needs no
 # repetition of the URL or key.
@@ -131,9 +132,12 @@ providers:
       chat:
         model: deepseek-chat
         temperature: 0             # 0 keeps the {vN} formula markers intact
+        context_length: 65536      # the model's window; used to warn, not to
+                                   # set max_tokens for you
       reason:
         model: deepseek-reasoner
         reasoning_effort: high     # optional, forwarded verbatim
+        max_tokens: 8192           # optional; omitted leaves it to the API
 
   local_vllm:
     base_url: http://127.0.0.1:8000/v1

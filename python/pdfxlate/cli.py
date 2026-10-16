@@ -27,13 +27,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--provider",
         "-p",
-        help="Provider from config.yaml (default: default_provider)",
+        help="Provider from config.yaml (default: the first one in the file)",
     )
     parser.add_argument(
         "--model",
         "-m",
-        help="Model alias under the provider (default: default_model, else the "
-        "provider's first model)",
+        help="Model alias under the provider (default: that provider's first model)",
     )
     # ``--profile`` predates the provider/model split: a profile named one flat
     # endpoint+model.  config.resolve() still accepts such a name in the
@@ -145,7 +144,9 @@ def main(argv: list[str] | None = None) -> int:
             print("No models configured. Edit", paths.config_file())
             return 1
         print(f"config: {paths.config_file()}")
-        default = (cfg.default_provider, cfg.default_model)
+        # There is no stored default: the first entry in the file is what an
+        # unspecified call reaches, so it is marked to make that visible.
+        first = pairs[0]
         # Group by provider so the provider → models nesting is visible.
         current: str | None = None
         for provider, alias in pairs:
@@ -153,7 +154,7 @@ def main(argv: list[str] | None = None) -> int:
                 current = provider
                 base_url = cfg.providers[provider].base_url or "(no base_url)"
                 print(f"  {provider} @ {base_url}:")
-            marker = " (default)" if (provider, alias) == default else ""
+            marker = " (used when unspecified)" if (provider, alias) == first else ""
             print(f"    {alias}{marker}: {cfg.resolve(provider, alias).model}")
         return 0
 
