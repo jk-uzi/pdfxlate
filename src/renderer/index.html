@@ -19,17 +19,15 @@
     <!--
       The app's own title bar. The OS title bar and menu are hidden (see
       main.ts); the native window buttons are painted by the OS in the
-      top-right, so the controls here stop short of that reserved strip.
+      top-right, so the open tabs stop short of that reserved strip.
 
       The mark doubles as the sidebar toggle. It sits beside the drag strip
       rather than inside it: a drag region swallows clicks silently, so an
       interactive element placed within one would look present and do nothing.
-      The view controls after the strip are siblings of it for the same reason.
+      The tabs after the strip are siblings of it for the same reason.
 
-      These controls used to be a bar of their own above the preview. Moving
-      them here reclaims that whole bar's height for the document, and costs
-      nothing in width: the space beside the native buttons was reserved and
-      unused.
+      Tabs live here rather than in a row of their own so the document gets
+      that height back — the same reason the view controls used to sit here.
     -->
     <header class="titlebar">
       <button
@@ -41,20 +39,12 @@
       >
         <!-- icon-inline -->
       </button>
+
+      <!-- Populated from the open documents; empty until one is opened, in
+           which case it takes no width and the drag strip spans the bar. -->
+      <div class="tabbar" id="tabbar"></div>
+
       <div class="titlebar__drag"></div>
-
-      <div class="titlebar__actions" id="titlebar-actions">
-        <div class="segmented" role="group">
-          <button id="view-original" class="segmented__btn is-active" data-i18n="preview.viewOriginal"></button>
-          <button id="view-translated" class="segmented__btn" data-i18n="preview.viewTranslated"></button>
-          <button id="view-compare" class="segmented__btn" data-i18n="preview.viewCompare"></button>
-        </div>
-
-        <div class="segmented" role="group">
-          <button id="fit-width" class="segmented__btn is-active" data-i18n="preview.fitWidth"></button>
-          <button id="fit-height" class="segmented__btn" data-i18n="preview.fitHeight"></button>
-        </div>
-      </div>
     </header>
 
     <div class="workspace">
@@ -70,9 +60,8 @@
           <details class="group" id="group-docs" open>
             <summary class="group__head" data-i18n="docs.title"></summary>
             <div class="group__body">
-              <div class="row">
-                <button id="btn-pick" class="btn grow" data-i18n="docs.choose"></button>
-              </div>
+              <button id="btn-pick-folder" class="btn btn--block" data-i18n="docs.pickFolder"></button>
+              <p id="folder-label" class="folder-label" data-i18n="docs.noFolder"></p>
               <ul id="file-list" class="file-list"></ul>
             </div>
           </details>
@@ -112,13 +101,6 @@
                   </div>
                 </label>
               </div>
-            </div>
-          </details>
-
-          <details class="group" id="group-results">
-            <summary class="group__head" data-i18n="results.title"></summary>
-            <div class="group__body">
-              <ul id="result-list" class="file-list"></ul>
             </div>
           </details>
         </div>
@@ -190,6 +172,53 @@
           <div id="preview-empty" class="preview__empty">
             <p class="preview__empty-title" data-i18n="preview.emptyTitle"></p>
             <p class="preview__empty-hint" data-i18n="preview.emptyHint"></p>
+          </div>
+
+          <!--
+            Fit mode, top-left. Two icons rather than the labelled pair that
+            used to sit in the title bar: at this size an icon says as much, and
+            the labelled pair was the widest thing in a crowded bar.
+
+            Same chip and same reveal rules as the other two overlays. The outer
+            frame is a page outline; the arrows inside show which axis is fitted,
+            so the same drawing rotated reads as "fit height".
+          -->
+          <div class="viewer-fit" id="viewer-fit">
+            <button
+              id="fit-width"
+              class="icon-btn fit-icon"
+              data-i18n-title="preview.fitWidth"
+              disabled
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <rect x="5.2" y="2.6" width="13.6" height="18.8" rx="1.9"
+                      fill="none" stroke="currentColor" stroke-width="1.7" />
+                <g stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                   stroke-linejoin="round" fill="none">
+                  <path d="M7.4 12h9.2" />
+                  <path d="M9.6 9.9 7.5 12l2.1 2.1" />
+                  <path d="M14.4 9.9 16.5 12l-2.1 2.1" />
+                </g>
+              </svg>
+            </button>
+            <button
+              id="fit-height"
+              class="icon-btn fit-icon"
+              data-i18n-title="preview.fitHeight"
+              disabled
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <rect x="5.2" y="2.6" width="13.6" height="18.8" rx="1.9"
+                      fill="none" stroke="currentColor" stroke-width="1.7" />
+                <!-- Only the arrows rotate: the page outline stays upright. -->
+                <g stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                   stroke-linejoin="round" fill="none" transform="rotate(90 12 12)">
+                  <path d="M7.4 12h9.2" />
+                  <path d="M9.6 9.9 7.5 12l2.1 2.1" />
+                  <path d="M14.4 9.9 16.5 12l-2.1 2.1" />
+                </g>
+              </svg>
+            </button>
           </div>
 
           <!--

@@ -4,7 +4,7 @@
  * The renderer gets a small, explicit API surface — never Node or raw IPC.
  */
 
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 import { pathToFileURL } from "node:url";
 
 export interface OutputPair {
@@ -79,6 +79,29 @@ const api = {
   defaultOutputDir: (): Promise<string> => ipcRenderer.invoke("app:defaultOutputDir"),
 
   /**
+   * PDF files directly inside `dir` (not recursive), as absolute paths.
+   *
+   * The renderer is sandboxed, so listing a directory has to happen in the main
+   * process. Only the immediate contents are returned: this backs a flat file
+   * list, and walking a tree would make it unbounded.
+   */
+  listPdfs: (dir: string): Promise<string[]> => ipcRenderer.invoke("app:listPdfs", dir),
+
+  /** Native "choose a folder" dialog, for browsing a folder of PDFs. */
+  pickFolder: (locale?: string): Promise<string | null> =>
+    ipcRenderer.invoke("dialog:pickFolder", locale),
+
+  /**
+   * Copy a dropped PDF into `destDir`, returning where it actually landed.
+   *
+   * The name is made unique rather than overwriting an existing file. Returns
+   * the destination path, which differs from the source name when a collision
+   * was resolved.
+   */
+  importPdf: (source: string, destDir: string): Promise<string> =>
+    ipcRenderer.invoke("app:importPdf", source, destDir),
+
+  /**
    * Copy one file somewhere the user picks, via a native save dialog.
    *
    * Returns the chosen path, or null if the dialog was cancelled.
@@ -117,6 +140,19 @@ const api = {
    * percent-encoding.
    */
   fileUrl: (target: string): string => pathToFileURL(target).href,
+
+  /**
+   * Absolute path of a dropped `File`.
+   *
+   * This is the documented replacement for the `File.path` property, which
+   * Electron removed in v32 — reading `file.path` now yields `undefined`, which
+   * silently broke dropping files into the window. The renderer cannot look
+   * this up itself; `webUtils` is main-process/preload-only.
+   *
+   * Returns an empty string for a `File` that is not backed by a real file
+   * (one built in JS), so callers can treat "" as "not a real file".
+   */
+  pathForFile: (file: File): string => webUtils.getPathForFile(file),
 
   platform: process.platform,
 };

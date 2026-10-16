@@ -33,7 +33,8 @@ python/pdfxlate/          Python 核心
   pdf/                    PDF 管线：pipeline / interp / layout / ocr / converter 等
                           （two_phase.py 是 MCP 用的两遍式收集/回填引擎）
 src/{main,preload,renderer}/   Electron 前端（主进程 / preload / 渲染进程）
-                              渲染进程为两栏：左侧设置栏 + 右侧 PDF 预览
+                              渲染进程为两栏：左侧文件夹浏览（可勾选）+ 右侧 PDF
+                              预览；打开的 PDF 以标签页形式排在标题栏里
   renderer/icon.svg       应用标记的唯一来源（标题栏内联 + 打包图标）
 assets/                   打包用应用图标（make_icon.py 从 icon.svg 生成后提交）
 tests/                    pytest 测试

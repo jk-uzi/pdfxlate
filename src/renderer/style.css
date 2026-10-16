@@ -63,6 +63,90 @@ body {
   z-index: 10;
 }
 
+/*
+ * Open documents, inline in the title bar.
+ *
+ * `flex: 0 1 auto` is the whole trick: with no tabs it takes no width and the
+ * drag strip owns the bar (so an empty title bar still drags the window the
+ * whole way across), and as tabs accumulate it shrinks and scrolls instead of
+ * pushing the strip out of existence.
+ */
+.tabbar {
+  flex: 0 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.tabbar::-webkit-scrollbar {
+  display: none;
+}
+
+.tab {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 210px;
+  height: 32px;
+  padding: 0 6px 0 11px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--muted);
+  cursor: pointer;
+  /* Interactive controls must opt out of the window-drag behaviour; a drag
+     region swallows clicks silently, so a tab left inside one would look
+     present and never respond. */
+  -webkit-app-region: no-drag;
+}
+
+.tab:hover {
+  background: #eef0f3;
+  color: var(--text);
+}
+
+/* The active tab is the one the preview below is showing. */
+.tab.is-active {
+  background: #e4e8ee;
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.tab__name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.tab__close {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tab__close:hover {
+  background: #cfd6de;
+  color: var(--text);
+}
+
 /* Space for the native window buttons, which sit over the top-right. */
 .platform-win32 .titlebar {
   padding-right: 140px;
@@ -98,8 +182,11 @@ body {
 }
 
 .titlebar__drag {
-  flex: 1;
+  flex: 1 1 auto;
   align-self: stretch;
+  /* Never lets the tabs squeeze the window-drag area away entirely: with the
+     bar full of tabs there would otherwise be nothing left to drag by. */
+  min-width: 40px;
   -webkit-app-region: drag;
 }
 
@@ -557,41 +644,83 @@ input[readonly] {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 2px;
 }
 
 .file-list:empty {
   margin: 0;
 }
 
-.file-list li {
+/* One PDF in the browsed folder: a tick to include it in a job, and the name,
+   which opens it. Two different actions, so they are two different controls
+   rather than one row that means different things depending on where you hit
+   it. */
+.file-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
-  background: var(--sidebar);
+  gap: 7px;
+  padding: 4px 6px;
   border-radius: 6px;
   font-size: 12.5px;
 }
 
-.file-list .name {
+.file-row:hover {
+  background: var(--card);
+}
+
+.file-row__tick {
+  /* A checkbox has no intrinsic width, so in a flex row it absorbs the whole
+     basis and the name collapses to zero — which does not just look wrong, it
+     makes the name unclickable. Hence an explicit size. */
+  flex: 0 0 auto;
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+
+.file-row__name {
   flex: 1;
+  min-width: 0;
+  padding: 2px 0;
+  border: none;
+  background: none;
+  font: inherit;
+  color: var(--text);
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.file-row__name:hover {
+  color: var(--accent);
+}
+
+/* Open in a tab, and which one the preview is showing. */
+.file-row__name.is-open {
+  color: var(--accent);
+}
+
+.file-row__name.is-active {
+  font-weight: 600;
+}
+
+/* The browsed folder, above the list. */
+.folder-label {
+  margin: 8px 0 0;
+  font-size: 11.5px;
+  color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.file-list .remove {
-  cursor: pointer;
+.folder-label.muted {
   color: var(--muted);
-  border: none;
-  background: none;
-  font-size: 15px;
-  padding: 0 4px;
 }
-
-.file-list .remove:hover {
-  color: var(--danger);
 }
 
 .tag {
@@ -661,46 +790,6 @@ input[readonly] {
   background: #525659;
 }
 
-.segmented {
-  display: flex;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  overflow: hidden;
-}
-
-/* Transparent rather than white: the group now sits on the title bar, whose
-   own background already is `--card`; a white fill would be redundant at best
-   and show as a seam against the tinted sidebar at worst. */
-.segmented__btn {
-  font: inherit;
-  font-size: 12px;
-  padding: 5px 11px;
-  border: none;
-  border-right: 1px solid var(--border);
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-}
-
-.segmented__btn:last-child {
-  border-right: none;
-}
-
-.segmented__btn:hover:not(:disabled) {
-  background: #f3f4f6;
-  color: var(--text);
-}
-
-.segmented__btn.is-active {
-  background: var(--accent);
-  color: #fff;
-}
-
-.segmented__btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
 .pager {
   display: flex;
   align-items: center;
@@ -721,6 +810,20 @@ input[readonly] {
   min-height: 0;
   display: flex;
   position: relative;
+  /*
+   * An intentional margin around the document, not decoration.
+   *
+   * The viewer is an `<iframe>` — a separate document — so a file dragged
+   * straight onto it delivers its events to the viewer, and the app's own drop
+   * handler never runs. Measured directly: entering the window over the frame,
+   * or at the window edge, produced no events at all in the parent. This strip
+   * belongs to the parent, so a drag entering here is seen, and the parent can
+   * then claim the rest of the drag.
+   *
+   * It also reads as a border around the page, which is what makes the drop
+   * area visible rather than something you have to know about.
+   */
+  padding: 6px;
 }
 
 .preview__host--over {
@@ -771,7 +874,57 @@ input[readonly] {
 }
 
 /*
- * "Save a copy", top-right of the document.
+ * Fit mode, top-left of the document.
+ *
+ * Same chip and same reveal rules as the other two overlays on purpose: they
+ * are one set of controls, and having them fade in together is what makes that
+ * legible. Only the corner differs.
+ */
+.viewer-fit {
+  position: absolute;
+  left: 18px;
+  top: 18px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 5px;
+  border: 1px solid #2c2f31;
+  border-radius: var(--radius);
+  background: rgba(38, 40, 43, 0.92);
+  opacity: 0;
+  transition: opacity 0.18s ease;
+}
+
+.viewer-fit:hover,
+.viewer-fit.is-visible {
+  opacity: 1;
+}
+
+.viewer-fit .icon-btn {
+  border-color: transparent;
+  background: transparent;
+  color: #d1d9e0;
+}
+
+.viewer-fit .icon-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+}
+
+/* The mode in force. Needed because the chip is usually invisible, so without
+   this there is nothing on screen saying which fit is active. */
+.viewer-fit .icon-btn.is-active {
+  background: rgba(255, 255, 255, 0.2);
+  color: #ffffff;
+}
+
+.fit-icon svg {
+  display: block;
+  width: 18px;
+  height: 18px;
+}
+
+
  *
  * Deliberately the same chip and the same reveal rules as `.viewer-overlay`:
  * one is paging, the other is saving, and having them fade in together and
@@ -823,26 +976,8 @@ input[readonly] {
 }
 
 /* Compare mode: one labelled pane per side. */
-.preview__pane {
-  flex: 1 1 0;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-}
 
-.preview__pane + .preview__pane {
-  border-left: 1px solid #2c2f31;
-}
 
-.preview__pane-label {
-  flex: 0 0 auto;
-  font-size: 11px;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-  color: #d1d9e0;
-  background: #3c3f41;
-  padding: 4px 8px;
-}
 
 .preview__empty {
   margin: auto;

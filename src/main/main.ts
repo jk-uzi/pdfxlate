@@ -1,7 +1,8 @@
 /** Application entry point: window lifecycle, IPC wiring, sidecar control. */
 
 import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from "electron";
-import { copyFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { copyFile, readdir } from "node:fs/promises";
 import path from "node:path";
 
 import { Sidecar, type SidecarEvent } from "./sidecar";
@@ -53,6 +54,7 @@ const DIALOG_STRINGS: Record<
   {
     selectPdf: string;
     selectOutput: string;
+    pickFolder: string;
     saveAs: string;
     engineErrorTitle: string;
     engineErrorHint: string;
@@ -61,6 +63,7 @@ const DIALOG_STRINGS: Record<
   en: {
     selectPdf: "Select PDF files",
     selectOutput: "Select output directory",
+    pickFolder: "Choose a folder of PDFs",
     saveAs: "Save a copy as",
     engineErrorTitle: "Could not start the translation engine",
     engineErrorHint: "If running from source, make sure the Python environment is set up:",
@@ -68,6 +71,7 @@ const DIALOG_STRINGS: Record<
   zh: {
     selectPdf: "选择 PDF 文件",
     selectOutput: "选择输出目录",
+    pickFolder: "选择包含 PDF 的文件夹",
     saveAs: "另存为",
     engineErrorTitle: "无法启动翻译引擎",
     engineErrorHint: "若从源码运行，请确认 Python 环境已配置：",
@@ -226,6 +230,23 @@ function withDefaultOutput(params: Record<string, unknown>): Record<string, unkn
   return { ...params, output: defaultOutputDir() };
 }
 
+/**
+ * Pick an unused path in `dir` for `name`.
+ *
+ * Dropping a file into a folder must never silently replace what is already
+ * there, so a collision gets a ` (2)`, ` (3)` … suffix. The extension is kept
+ * at the end so the result is still recognised as a PDF.
+ */
+function uniquePath(dir: string, name: string): string {
+  const ext = path.extname(name);
+  const stem = path.basename(name, ext);
+  let candidate = path.join(dir, name);
+  for (let n = 2; existsSync(candidate); n++) {
+    candidate = path.join(dir, `${stem} (${n})${ext}`);
+  }
+  return candidate;
+}
+
 function registerIpc(): void {
   ipcMain.handle("sidecar:request", async (_event, method: string, params: unknown) => {
     if (!sidecar) throw new Error("sidecar is not running");
@@ -241,6 +262,24 @@ function registerIpc(): void {
   /** The directory shown as the default in the output field. */
   ipcMain.handle("app:defaultOutputDir", async () => defaultOutputDir());
 
+  /**
+   * PDF files directly inside a folder, for the sidebar's file list.
+   *
+   * Non-recursive on purpose: the list is a flat set of things you might open,
+   * and walking subfolders would make it unbounded. A missing folder is an
+   * ordinary outcome (it was deleted since it was remembered), so it is reported
+   * as a message the UI can show rather than as an opaque throw.
+   */
+  ipcMain.handle("app:listPdfs", async (_event, dir: string) => {
+    if (typeof dir !== "string" || !dir.trim()) throw new Error("no folder given");
+    if (!existsSync(dir)) throw new Error(`folder no longer exists: ${dir}`);
+    const entries = await readdir(dir, { withFileTypes: true });
+    return entries
+      .filter((e) => e.isFile() && e.name.toLowerCase().endsWith(".pdf"))
+      .map((e) => path.join(dir, e.name))
+      .sort((a, b) => a.localeCompare(b));
+  });
+
   ipcMain.handle("dialog:pickPdf", async (_event, locale?: string) => {
     const result = await dialog.showOpenDialog(mainWindow!, {
       title: DIALOG_STRINGS[resolveLocale(locale)].selectPdf,
@@ -248,6 +287,34 @@ function registerIpc(): void {
       filters: [{ name: "PDF", extensions: ["pdf"] }],
     });
     return result.canceled ? [] : result.filePaths;
+  });
+
+  /** Choose a folder of PDFs to browse. */
+  ipcMain.handle("dialog:pickFolder", async (_event, locale?: string) => {
+    const result = await dialog.showOpenDialog(mainWindow!, {
+      title: DIALOG_STRINGS[resolveLocale(locale)].pickFolder,
+      properties: ["openDirectory"],
+    });
+    return result.canceled ? null : result.filePaths[0];
+  });
+
+  /**
+   * Copy a dropped PDF into a folder, without ever overwriting.
+   *
+   * A drop carries an absolute path, but the renderer cannot move bytes, so the
+   * copy happens here. If the source already sits in the destination there is
+   * nothing to do and the source path is returned unchanged — that keeps
+   * dropping a file that is already in the folder from producing a duplicate.
+   */
+  ipcMain.handle("app:importPdf", async (_event, source: string, destDir: string) => {
+    if (typeof source !== "string" || !source.trim()) throw new Error("no source file given");
+    if (typeof destDir !== "string" || !destDir.trim()) throw new Error("no destination folder given");
+    if (!existsSync(source)) throw new Error(`file no longer exists: ${source}`);
+    if (path.dirname(path.resolve(source)) === path.resolve(destDir)) return source;
+    if (!existsSync(destDir)) throw new Error(`folder no longer exists: ${destDir}`);
+    const target = uniquePath(destDir, path.basename(source));
+    await copyFile(source, target);
+    return target;
   });
 
   ipcMain.handle("dialog:pickOutputDir", async (_event, locale?: string) => {

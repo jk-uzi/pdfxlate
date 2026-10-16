@@ -21,14 +21,15 @@ for the PDF layout and typesetting pipeline.
   Groq, xAI, OpenRouter, SiliconFlow, and local vLLM / Ollama / LM Studio.
   A provider holds the endpoint and key once, with any number of models under
   it.
-- Settings live in a left sidebar of collapsible groups; the right pane is a
-  PDF preview with Original / Translated / Compare views, paging and zoom, so
-  the result can be checked against the source without leaving the app.
+- Pick a folder and its PDFs are listed in the left sidebar; click one to open
+  it in a tab. Any PDF opens, including output from a previous run, so a
+  translation can be checked against its source without leaving the app.
+  Dropping a PDF onto the document files it into that folder and opens it.
 - Can be driven by other agents over MCP, using either a configured model or
   the agent's own model. See [Using it from another agent](#using-it-from-another-agent-mcp).
 - Ships with an English / Simplified Chinese interface. The first run picks the
-  language from the OS locale; the switcher in the title bar overrides it and
-  the choice is remembered.
+  language from the OS locale; the switcher under Settings > Appearance
+  overrides it and the choice is remembered.
 
 ## Architecture
 
@@ -290,9 +291,11 @@ must not pull in the renderer's browser-dependent module.
 - `--ultrafast` does not protect figures/tables by class, only by proximity.
 - Encrypted PDFs are not supported.
 - Scanned PDFs need OCR; PyMuPDF's built-in OCR is used for image-only pages.
-- In the Compare view the two panes scroll independently: the preview uses
-  Chromium's built-in PDF viewer inside a `file://` frame, which cannot be
-  scripted from the page around it. Only the page number is synchronised.
+- The preview uses Chromium's built-in PDF viewer inside a `file://` frame,
+  which cannot be scripted from the page around it. Consequences: the page
+  number shown is the app's own record rather than the viewer's, and a file
+  dropped directly onto the page (rather than onto the border around it) is
+  handled by the viewer instead of by the app.
 
 ## License
 

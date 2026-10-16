@@ -59,8 +59,9 @@ const EN: Table = {
   "setup.failed": "Download failed: {error}",
 
   "docs.title": "Documents",
-  "docs.choose": "Choose files…",
-  "docs.remove": "Remove",
+  "docs.pickFolder": "Choose folder…",
+  "docs.noFolder": "No folder chosen",
+  "docs.includeInJob": "Include in the next translation",
 
   "model.title": "Model",
   "model.providerSection": "Provider",
@@ -116,11 +117,14 @@ const EN: Table = {
   // --- preview pane ---
   "preview.emptyTitle": "No document open",
   "preview.emptyHint": "Drop a PDF here, or use “Choose files…” in the sidebar.",
+  "tab.close": "Close",
+
+  "drop.notPdf": "Only PDF files can be opened; skipped {name}",
+  "drop.noFolder": "No folder chosen, so the file was opened without being filed (choose a folder to keep dropped files).",
+  "drop.copied": "Copied into the folder: {path}",
+  "drop.importFailed": "Could not copy into the folder, opened in place: {error}",
+
   "preview.dropUnreadable": "Could not read dropped file paths; use “Choose files…” instead.",
-  "preview.viewOriginal": "Original",
-  "preview.viewTranslated": "Translated",
-  "preview.viewCompare": "Compare",
-  "preview.needResults": "Translate a document first to see the translated pages.",
   "preview.page": "Page",
   "preview.prevPage": "Previous page",
   "preview.nextPage": "Next page",
@@ -131,8 +135,6 @@ const EN: Table = {
   "preview.saveAs": "Save a copy",
   "preview.openFile": "Open in the default app",
   "preview.revealFile": "Show in folder",
-  "preview.labelOriginal": "Original",
-  "preview.labelTranslated": "Translated",
   "preview.title": "Preview",
 
   "progress.idle": "Ready.",
@@ -140,11 +142,6 @@ const EN: Table = {
   "progress.done": "Finished.",
   "progress.failed": "Translation failed: {error}",
 
-  "results.title": "Results",
-  "results.mono": "mono",
-  "results.dual": "dual",
-  "results.open": "Open",
-  "results.reveal": "Show",
 
   // `log.title` went with the log group; the panel heading is now
   // `settings.logTitle`, since the log lives in the General settings panel.
@@ -156,6 +153,7 @@ const EN: Table = {
   "log.defaultOutputFailed": "could not resolve the default output folder: {error}",
   "log.savedAs": "saved a copy to {path}",
   "log.saveAsFailed": "could not save a copy: {error}",
+  "log.folderFailed": "could not list the folder: {error}",
   "log.cancelFailed": "cancel failed: {error}",
   "log.unknownError": "unknown error",
 
@@ -209,8 +207,9 @@ const ZH: Table = {
   "setup.failed": "下载失败：{error}",
 
   "docs.title": "文档",
-  "docs.choose": "选择文件…",
-  "docs.remove": "移除",
+  "docs.pickFolder": "选择文件夹…",
+  "docs.noFolder": "尚未选择文件夹",
+  "docs.includeInJob": "加入下一次翻译",
 
   "model.title": "模型",
   "model.providerSection": "服务商",
@@ -265,11 +264,14 @@ const ZH: Table = {
 
   "preview.emptyTitle": "尚未打开文档",
   "preview.emptyHint": "将 PDF 拖到此处，或用左侧的「选择文件…」。",
+  "tab.close": "关闭",
+
+  "drop.notPdf": "只能打开 PDF，已跳过 {name}",
+  "drop.noFolder": "尚未选择文件夹，文件已打开但未归档（选择文件夹后可自动归档拖入的文件）。",
+  "drop.copied": "已复制到文件夹：{path}",
+  "drop.importFailed": "复制到文件夹失败，已在原位置打开：{error}",
+
   "preview.dropUnreadable": "无法读取拖入文件的路径，请改用「选择文件…」。",
-  "preview.viewOriginal": "原文",
-  "preview.viewTranslated": "译文",
-  "preview.viewCompare": "对比",
-  "preview.needResults": "请先翻译文档，才能查看译文页面。",
   "preview.page": "页",
   "preview.prevPage": "上一页",
   "preview.nextPage": "下一页",
@@ -280,8 +282,6 @@ const ZH: Table = {
   "preview.saveAs": "另存为",
   "preview.openFile": "用默认应用打开",
   "preview.revealFile": "在文件夹中显示",
-  "preview.labelOriginal": "原文",
-  "preview.labelTranslated": "译文",
   "preview.title": "预览",
 
   "progress.idle": "就绪。",
@@ -289,11 +289,6 @@ const ZH: Table = {
   "progress.done": "已完成。",
   "progress.failed": "翻译失败：{error}",
 
-  "results.title": "结果",
-  "results.mono": "纯译文",
-  "results.dual": "双语对照",
-  "results.open": "打开",
-  "results.reveal": "显示位置",
 
   "log.engineFailed": "引擎启动失败：{error}",
   "log.assetCheckFailed": "资源检查失败：{error}",
@@ -303,6 +298,7 @@ const ZH: Table = {
   "log.defaultOutputFailed": "无法解析默认输出目录：{error}",
   "log.savedAs": "已另存为 {path}",
   "log.saveAsFailed": "另存为失败：{error}",
+  "log.folderFailed": "无法列出文件夹：{error}",
   "log.cancelFailed": "取消失败：{error}",
   "log.unknownError": "未知错误",
 

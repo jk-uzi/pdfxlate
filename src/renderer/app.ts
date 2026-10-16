@@ -92,6 +92,9 @@ interface PdfxlateApi {
   onLog(cb: (line: string) => void): () => void;
   request<T>(method: string, params?: Record<string, unknown>): Promise<T>;
   defaultOutputDir(): Promise<string>;
+  listPdfs(dir: string): Promise<string[]>;
+  pickFolder(locale?: string): Promise<string | null>;
+  importPdf(source: string, destDir: string): Promise<string>;
   saveAs(source: string, suggestedName: string, locale?: string): Promise<string | null>;
   onWheel(cb: () => void): () => void;
   pickPdf(locale?: string): Promise<string[]>;
@@ -100,6 +103,8 @@ interface PdfxlateApi {
   openPath(target: string): Promise<void>;
   /** Absolute path -> `file://` URL. Synchronous: it is a pure conversion. */
   fileUrl(target: string): string;
+  /** Absolute path of a dropped `File`; see the preload for why. */
+  pathForFile(file: File): string;
   platform: string;
 }
 
@@ -117,7 +122,22 @@ const $ = <T extends HTMLElement>(id: string): T =>
   document.getElementById(id) as unknown as T;
 
 // --- state -----------------------------------------------------------------
-let selectedFiles: string[] = [];
+
+/**
+ * The PDFs in the browsed folder, and which of them are ticked for translation.
+ *
+ * Kept separately because the two answers differ: the list is everything you
+ * might open, while `checkedFiles` is only what a job should consume. Nothing
+ * is ticked by default — a folder typically holds a paper *and* its `-mono` /
+ * `-dual` outputs, and pre-ticking would translate the translations.
+ */
+let folderFiles: string[] = [];
+let checkedFiles = new Set<string>();
+/** The folder being browsed, or null before one is chosen. */
+let currentFolder: string | null = null;
+
+const FOLDER_STORAGE_KEY = "pdfxlate.folder";
+
 let outputDir: string | null = null;
 let activeJobId: string | null = null;
 
@@ -134,9 +154,6 @@ let apiKeySaved = false;
  */
 type ProgressMessage = { key: string; params?: Record<string, string> } | { raw: string };
 
-// Remembered so a locale switch can rebuild strings that are otherwise only
-// produced at event time — without disturbing the job in progress.
-let lastResults: Array<{ mono: string; dual: string }> = [];
 let lastProgress: {
   stage: string;
   current: number;
@@ -164,10 +181,16 @@ let currentModel: string | null = null;
 
 // --- preview state ---------------------------------------------------------
 
-type ViewMode = "original" | "translated" | "compare";
+/**
+ * Open documents, in the order their tabs appear. One is active at a time.
+ *
+ * A tab is just a path: any PDF can be opened, including files that are
+ * themselves translations, which is what the removed Original/Translated/
+ * Compare switch could not express.
+ */
+let openTabs: string[] = [];
+let activeTab: string | null = null;
 
-let viewMode: ViewMode = "original";
-let previewPage = 1;
 /**
  * Zoom level: an explicit percentage, or one of the two fit modes.
  *
@@ -179,11 +202,21 @@ let previewPage = 1;
  * Defaults to fit-width because the preview pane is much narrower than a page
  * at 100% — a fixed 100% would open every document with a horizontal scrollbar.
  * Pressing +/- switches to an explicit percentage, as in other viewers.
+ *
+ * Global rather than per tab: it is a reading preference, and having the zoom
+ * jump as you switch documents would be worse than having it uniform.
  */
 type ZoomMode = "fit-width" | "fit-height";
 let previewZoom: number | ZoomMode = "fit-width";
-// Page count of the file being previewed; 0 means "not known yet".
-let previewPages = 0;
+
+/**
+ * Per-document scroll position and page count.
+ *
+ * Page number is remembered per tab so switching away and back returns you to
+ * what you were reading; the count is cached so the label can show "N / M"
+ * without asking the engine again on every switch.
+ */
+const pageState = new Map<string, { page: number; pages: number }>();
 
 /** Zoom steps the +/- buttons cycle through. */
 const ZOOM_STEPS = [50, 75, 100, 125, 150, 200, 300];
@@ -282,10 +315,11 @@ onLocaleChange(() => {
   renderLocaleSelect();
   paintEngineStatus();
   renderFiles();
+  renderTabs();
+  renderFolderLabel();
   paintApiKeyPlaceholder();
   renderDownloadButton();
   paintProgress();
-  if (lastResults.length) paintResults();
   paintProfileMessage();
   renderProviderSelect();
   renderModelSelect();
@@ -318,9 +352,9 @@ function paintSettingsMode(): void {
   const inSettings = appMode === "settings";
   $("sidebar-task").classList.toggle("hidden", inSettings);
   $("sidebar-settings").classList.toggle("hidden", !inSettings);
-  // The view controls live in the title bar now, so they hide in settings mode
-  // rather than a bar of their own.
-  $("titlebar-actions").classList.toggle("hidden", inSettings);
+  // The tabs belong to the document pane, which settings replaces, so they hide
+  // with it rather than offering to open a file into a pane that is not there.
+  $("tabbar").classList.toggle("hidden", inSettings);
   $("preview-host").classList.toggle("hidden", inSettings);
   $("settings-host").classList.toggle("hidden", !inSettings);
 
@@ -445,96 +479,213 @@ $("btn-download-assets").addEventListener("click", async () => {
   }
 });
 
-// --- file selection --------------------------------------------------------
+// --- folder browsing -------------------------------------------------------
+
+/** Base name of a path, for display. */
+function baseName(file: string): string {
+  return file.split(/[\\/]/).pop() ?? file;
+}
+
+/**
+ * List a folder's PDFs.
+ *
+ * Files that were dropped in from elsewhere are folded in too, so anything you
+ * have open is also something you can tick — otherwise a dropped file would be
+ * visible in a tab but absent from the list it is supposed to be translated
+ * from.
+ */
+async function openFolder(dir: string): Promise<void> {
+  try {
+    const found = await api.listPdfs(dir);
+    currentFolder = dir;
+    try {
+      localStorage.setItem(FOLDER_STORAGE_KEY, dir);
+    } catch {
+      // Storage may be unavailable; the folder still works for this session.
+    }
+    mergeFolderFiles(found);
+  } catch (err) {
+    // A remembered folder that has since been deleted is an ordinary outcome.
+    appendLog(t("log.folderFailed", { error: String(err) }));
+    currentFolder = null;
+    folderFiles = [];
+    renderFiles();
+  }
+}
+
+/** Union the folder contents with files already open, keeping folder order. */
+function mergeFolderFiles(found: string[]): void {
+  const merged = [...found];
+  for (const path of openTabs) {
+    if (!merged.includes(path)) merged.push(path);
+  }
+  folderFiles = merged;
+  // A ticked file that disappeared from the folder must not stay ticked.
+  for (const file of [...checkedFiles]) {
+    if (!folderFiles.includes(file)) checkedFiles.delete(file);
+  }
+  renderFiles();
+}
+
+function renderFolderLabel(): void {
+  const label = $("folder-label");
+  if (currentFolder) {
+    label.textContent = currentFolder;
+    label.title = currentFolder;
+    label.classList.remove("muted");
+  } else {
+    label.textContent = t("docs.noFolder");
+    label.title = "";
+    label.classList.add("muted");
+  }
+}
 
 function renderFiles(): void {
   const list = $("file-list");
   list.innerHTML = "";
-  for (const file of selectedFiles) {
+  for (const file of folderFiles) {
     const li = document.createElement("li");
-    const name = document.createElement("span");
-    name.className = "name";
-    name.textContent = file.split(/[\\/]/).pop() ?? file;
-    name.title = file;
-    const remove = document.createElement("button");
-    remove.className = "remove";
-    remove.textContent = "×";
-    remove.title = t("docs.remove");
-    remove.addEventListener("click", () => {
-      const before = previewSource();
-      selectedFiles = selectedFiles.filter((f) => f !== file);
-      // The preview follows the first file, so removing one can change what is
-      // shown — including falling back to the empty state.
-      if (previewSource() !== before) {
-        resetPreview();
-        void refreshPageCount();
-      }
-      renderFiles();
-      renderPreview();
+    li.className = "file-row";
+
+    // The checkbox marks what a job will translate, which is a different
+    // question from which file the preview is showing.
+    const tick = document.createElement("input");
+    tick.type = "checkbox";
+    tick.className = "file-row__tick";
+    tick.checked = checkedFiles.has(file);
+    tick.title = t("docs.includeInJob");
+    tick.addEventListener("change", () => {
+      if (tick.checked) checkedFiles.add(file);
+      else checkedFiles.delete(file);
+      updateTranslateButton();
     });
-    li.append(name, remove);
+
+    // The name opens the document, rather than a separate button: a list of
+    // files reads as something you click to open.
+    const name = document.createElement("button");
+    name.className = "file-row__name";
+    name.textContent = baseName(file);
+    name.title = file;
+    name.classList.toggle("is-open", openTabs.includes(file));
+    name.classList.toggle("is-active", activeTab === file);
+    name.addEventListener("click", () => openDocument(file));
+
+    li.append(tick, name);
     list.append(li);
   }
+  renderFolderLabel();
   updateTranslateButton();
-  updatePreviewControls();
 }
 
-function addFiles(paths: string[]): void {
-  const before = previewSource();
-  for (const p of paths) {
-    if (p.toLowerCase().endsWith(".pdf") && !selectedFiles.includes(p)) selectedFiles.push(p);
+$("btn-pick-folder").addEventListener("click", async () => {
+  const dir = await api.pickFolder(getLocale());
+  if (dir) await openFolder(dir);
+});
+
+// --- tabs ------------------------------------------------------------------
+
+function renderTabs(): void {
+  const bar = $("tabbar");
+  bar.innerHTML = "";
+  for (const file of openTabs) {
+    const tab = document.createElement("div");
+    tab.className = "tab";
+    tab.classList.toggle("is-active", activeTab === file);
+    // The full path in the tooltip: two folders can hold the same file name.
+    tab.title = file;
+
+    const name = document.createElement("span");
+    name.className = "tab__name";
+    name.textContent = baseName(file);
+
+    const close = document.createElement("button");
+    close.className = "tab__close";
+    close.textContent = "×";
+    close.title = t("tab.close");
+    close.addEventListener("click", (e) => {
+      // Without this the click also lands on the tab underneath and re-selects
+      // the document that is being closed.
+      e.stopPropagation();
+      closeTab(file);
+    });
+
+    // Clicking anywhere on the tab activates it, matching how tabs behave
+    // elsewhere; the close button is the only part that acts differently.
+    tab.addEventListener("click", () => activateTab(file));
+
+    tab.append(name, close);
+    bar.append(tab);
   }
+}
+
+/** Open a document, or focus its tab if it is already open. */
+function openDocument(file: string): void {
+  if (!openTabs.includes(file)) openTabs.push(file);
+  if (!folderFiles.includes(file)) folderFiles.push(file);
+  activateTab(file);
   renderFiles();
-  if (previewSource() !== before) {
-    resetPreview();
-    void refreshPageCount();
-  }
-  renderPreview();
-  expandGroup("group-docs");
 }
 
-$("btn-pick").addEventListener("click", async () => addFiles(await api.pickPdf(getLocale())));
+function activateTab(file: string): void {
+  activeTab = file;
+  renderTabs();
+  renderFiles();
+  // Ask for the count only when this document has never been shown; the answer
+  // does not change while the app runs.
+  if (!pageState.has(file)) void refreshPageCount();
+  updatePreviewControls();
+  renderPreview();
+}
+
+function closeTab(file: string): void {
+  const index = openTabs.indexOf(file);
+  if (index < 0) return;
+  openTabs.splice(index, 1);
+  pageState.delete(file);
+  if (activeTab === file) {
+    // Prefer the tab to the right, which is where the one being closed was
+    // pointing; fall back to the left, then to nothing open at all.
+    activeTab = openTabs[index] ?? openTabs[index - 1] ?? null;
+    if (activeTab) {
+      if (!pageState.has(activeTab)) void refreshPageCount();
+    }
+  }
+  renderTabs();
+  renderFiles();
+  updatePreviewControls();
+  renderPreview();
+}
 
 // --- preview pane ----------------------------------------------------------
 
-/** The file the preview shows: the first selected one, or null. */
+/** The document the preview shows: the active tab, or null. */
 function previewSource(): string | null {
-  return selectedFiles[0] ?? null;
+  return activeTab;
 }
 
-/** The translated file for the current source, or null before a translation. */
-function previewTranslated(): string | null {
-  const pair = lastResults[0];
-  return pair ? pair.mono : null;
+/** The page/count record for a document, creating it if needed. */
+function stateFor(file: string): { page: number; pages: number } {
+  let state = pageState.get(file);
+  if (!state) {
+    state = { page: 1, pages: 0 };
+    pageState.set(file, state);
+  }
+  return state;
 }
 
-/** True once there is a translated output to show. */
-function hasResults(): boolean {
-  return previewTranslated() !== null;
-}
-
-/** Return the preview to its empty state and forget the per-file state. */
-function resetPreview(): void {
-  previewPage = 1;
-  previewZoom = "fit-width";
-  previewPages = 0;
-  if (!hasResults() && viewMode !== "original") viewMode = "original";
-  updatePreviewControls();
-}
-
-/** Ask the engine how many pages the current file has. */
+/** Ask the engine how many pages a document has. */
 async function refreshPageCount(): Promise<void> {
-  const file = previewSource();
+  const file = activeTab;
   if (!file) return;
   try {
     // `pdf.info` may be missing on an older engine; an unknown count is fine —
-    // the toolbar then shows the page number alone.
+    // the controls then show the page number alone.
     const info = await api.request<{ pages: number }>("pdf.info", { path: file });
-    // The selection may have changed while this was in flight.
-    if (previewSource() !== file) return;
-    previewPages = info.pages ?? 0;
+    // The active tab may have changed while this was in flight.
+    if (!pageState.has(file)) return;
+    stateFor(file).pages = info.pages ?? 0;
   } catch (err) {
-    previewPages = 0;
+    stateFor(file).pages = 0;
     appendLog(t("log.pageCountFailed", { error: String(err) }));
   }
   updatePreviewControls();
@@ -559,43 +710,22 @@ function viewerUrl(file: string): string {
       : previewZoom === "fit-height"
         ? "view=FitV"
         : `zoom=${previewZoom}`;
-  return `${api.fileUrl(file)}#toolbar=0&navpanes=0&page=${previewPage}&${fragment}`;
-}
-/**
- * One pane: the viewer frame for `file`, plus a label when `labelled`.
- *
- * The label only earns its space in compare mode, where two panes sit side by
- * side and it is otherwise ambiguous which is which; in single-pane mode the
- * toolbar's active view button already says it, so repeating it is noise.
- */
-function makePane(file: string, labelKey: string, labelled: boolean): HTMLElement {
-  const pane = document.createElement("div");
-  pane.className = "preview__pane";
-  if (labelled) {
-    const label = document.createElement("div");
-    label.className = "preview__pane-label";
-    label.textContent = t(labelKey);
-    pane.append(label);
-  }
-  const frame = document.createElement("iframe");
-  frame.className = "preview__frame";
-  frame.src = viewerUrl(file);
-  pane.append(frame);
-  return pane;
+  const page = stateFor(file).page;
+  return `${api.fileUrl(file)}#toolbar=0&navpanes=0&page=${page}&${fragment}`;
 }
 
 /**
- * Repaint the preview for the current file, view mode, page and zoom.
+ * Repaint the preview for the active tab, page and zoom.
  *
- * Every frame is built fresh rather than having its `src` updated: changing the
+ * The frame is built fresh rather than having its `src` updated: changing the
  * fragment of an already-loaded viewer frame does NOT navigate, so replacing
  * the element is the only way to move to another page or zoom level.
  */
 function renderPreview(): void {
   const host = $("preview-host");
-  // Both overlays live inside the host, so clearing it would delete them along
-  // with the frames. Detach and re-append them: they are absolutely
-  // positioned, so their place in the flow does not matter.
+  // Every overlay lives inside the host, so clearing it would delete them along
+  // with the frame. Detach and re-append them: they are absolutely positioned,
+  // so their place in the flow does not matter.
   const overlays = VIEWER_OVERLAYS.map((id) => $(id));
   host.innerHTML = "";
   host.append(...overlays);
@@ -614,59 +744,37 @@ function renderPreview(): void {
     return;
   }
 
-  const translated = previewTranslated();
-  if (viewMode === "compare" && translated) {
-    host.append(
-      makePane(source, "preview.labelOriginal", true),
-      makePane(translated, "preview.labelTranslated", true),
-    );
-  } else if (viewMode === "translated" && translated) {
-    host.append(makePane(translated, "preview.labelTranslated", false));
-  } else {
-    host.append(makePane(source, "preview.labelOriginal", false));
-  }
+  const frame = document.createElement("iframe");
+  frame.className = "preview__frame";
+  frame.src = viewerUrl(source);
+  // A drag may be in flight; a freshly built frame must not become droppable
+  // again underneath it.
+  if (!frameDroppable) frame.style.pointerEvents = "none";
+  host.append(frame);
 }
 
-/** Enable/disable the toolbar and paint the page and zoom labels. */
+/** Enable/disable the viewer controls and paint the page and zoom readouts. */
 function updatePreviewControls(): void {
   const hasFile = previewSource() !== null;
-  const hasOutput = hasResults();
-
-  $<HTMLButtonElement>("view-original").disabled = !hasFile;
-  $<HTMLButtonElement>("view-translated").disabled = !hasOutput;
-  $<HTMLButtonElement>("view-compare").disabled = !hasOutput;
-  for (const [id, mode] of [
-    ["view-original", "original"],
-    ["view-translated", "translated"],
-    ["view-compare", "compare"],
-  ] as const) {
-    $(id).classList.toggle("is-active", viewMode === mode);
-  }
-  // A mode that needs output can become unavailable when results are cleared.
-  if ((viewMode === "translated" || viewMode === "compare") && !hasOutput) {
-    viewMode = "original";
-    $(`view-${viewMode}`).classList.add("is-active");
-  }
-
-  const translatedButton = $<HTMLButtonElement>("view-translated");
-  translatedButton.title = hasOutput ? "" : t("preview.needResults");
-  $<HTMLButtonElement>("view-compare").title = hasOutput ? "" : t("preview.needResults");
+  const state = activeTab ? stateFor(activeTab) : null;
 
   // Fit buttons: the matching one lights up, and neither does while an explicit
-  // percentage is set. Both are unavailable without a file.
+  // percentage is set. Both are unavailable without a document.
   $<HTMLButtonElement>("fit-width").disabled = !hasFile;
   $<HTMLButtonElement>("fit-height").disabled = !hasFile;
   $("fit-width").classList.toggle("is-active", previewZoom === "fit-width");
   $("fit-height").classList.toggle("is-active", previewZoom === "fit-height");
 
-  const known = previewPages > 0;
+  const page = state?.page ?? 1;
+  const pages = state?.pages ?? 0;
+  const known = pages > 0;
   $("page-label").textContent = hasFile
     ? known
-      ? `${previewPage} / ${previewPages}`
-      : String(previewPage)
+      ? `${page} / ${pages}`
+      : String(page)
     : "–";
-  $<HTMLButtonElement>("page-prev").disabled = !hasFile || previewPage <= 1;
-  $<HTMLButtonElement>("page-next").disabled = !hasFile || (known && previewPage >= previewPages);
+  $<HTMLButtonElement>("page-prev").disabled = !hasFile || page <= 1;
+  $<HTMLButtonElement>("page-next").disabled = !hasFile || (known && page >= pages);
 
   $("zoom-label").textContent =
     previewZoom === "fit-width"
@@ -678,7 +786,7 @@ function updatePreviewControls(): void {
   $<HTMLButtonElement>("zoom-in").disabled =
     !hasFile || previewZoom === ZOOM_STEPS.at(-1)!;
   $<HTMLButtonElement>("btn-open-file").disabled = !hasFile;
-  $<HTMLButtonElement>("btn-save-as").disabled = !saveAsSource();
+  $<HTMLButtonElement>("btn-save-as").disabled = !activeTab;
 
   // The overlays are meaningless without a document; hide them outright rather
   // than relying on the auto-hide timer, which only runs after an interaction.
@@ -686,23 +794,19 @@ function updatePreviewControls(): void {
 }
 
 /**
- * The file "save a copy" should copy: whatever the preview is showing.
+ * The file "save a copy" should copy: the document on screen.
  *
- * In compare mode two documents are on screen at once and "the current one" is
- * genuinely ambiguous, so it resolves to the translation — that is what this
- * tool produces, and the source is unmodified and already on disk.
+ * Unambiguous now that a tab holds a single document — there is no second pane
+ * to choose between.
  */
 function saveAsSource(): string | null {
-  if (viewMode === "translated" || viewMode === "compare") {
-    return previewTranslated() ?? previewSource();
-  }
-  return previewSource();
+  return activeTab;
 }
 
 $("btn-save-as").addEventListener("click", async () => {
   const file = saveAsSource();
   if (!file) return;
-  const suggested = file.split(/[\\/]/).pop() ?? "output.pdf";
+  const suggested = baseName(file);
   try {
     const saved = await api.saveAs(file, suggested, getLocale());
     // A cancelled dialog returns null; that is a normal outcome, not a failure.
@@ -711,21 +815,6 @@ $("btn-save-as").addEventListener("click", async () => {
     appendLog(t("log.saveAsFailed", { error: String(err) }));
   }
 });
-
-function setViewMode(mode: ViewMode): void {
-  if (mode !== "original" && !hasResults()) return;
-  viewMode = mode;
-  updatePreviewControls();
-  renderPreview();
-}
-
-for (const [id, mode] of [
-  ["view-original", "original"],
-  ["view-translated", "translated"],
-  ["view-compare", "compare"],
-] as const) {
-  $(id).addEventListener("click", () => setViewMode(mode));
-}
 
 /**
  * Show the viewer overlays for a moment, then let them fade.
@@ -739,7 +828,7 @@ for (const [id, mode] of [
 let overlayFlashTimer: ReturnType<typeof setTimeout> | null = null;
 
 /** Every overlay chip that shares the reveal rule. */
-const VIEWER_OVERLAYS = ["viewer-overlay", "viewer-saveas"] as const;
+const VIEWER_OVERLAYS = ["viewer-fit", "viewer-overlay", "viewer-saveas"] as const;
 
 function flashViewerOverlay(): void {
   for (const id of VIEWER_OVERLAYS) $(id).classList.add("is-visible");
@@ -793,11 +882,13 @@ $("fit-width").addEventListener("click", () => setZoomMode("fit-width"));
 $("fit-height").addEventListener("click", () => setZoomMode("fit-height"));
 
 function stepPage(delta: number): void {
-  if (!previewSource()) return;
-  const next = previewPage + delta;
+  const file = activeTab;
+  if (!file) return;
+  const state = stateFor(file);
+  const next = state.page + delta;
   if (next < 1) return;
-  if (previewPages > 0 && next > previewPages) return;
-  previewPage = next;
+  if (state.pages > 0 && next > state.pages) return;
+  state.page = next;
   updatePreviewControls();
   renderPreview();
   flashViewerOverlay();
@@ -841,26 +932,108 @@ $("btn-open-file").addEventListener("click", () => {
 
 // --- canvas drop target ----------------------------------------------------
 
-// The whole preview canvas accepts drops, so a PDF can be dropped anywhere on
-// the right-hand side rather than onto a small box in the sidebar.
+/**
+ * Dropping a PDF anywhere on the document area opens it.
+ *
+ * The path comes from `api.pathForFile`, not from `File.path`: Electron removed
+ * that property in v32, and reading it silently yields `undefined`, which made
+ * this handler a no-op. The `filter(Boolean)` below is what hid that — it turns
+ * "every path is undefined" into "nothing was dropped".
+ *
+ * An open document covers this area with the viewer's `<iframe>`, which is a
+ * separate document and would take the drop itself; measured directly, the
+ * parent receives `dragenter` but never `drop`. So a drag in progress switches
+ * the frame off, letting the drop land here. Without this, dropping would work
+ * only when nothing was open — exactly backwards for a drop zone.
+ */
 const previewHost = $("preview-host");
+
+/**
+ * Whether the viewer frame currently accepts pointer events.
+ *
+ * Tracked as well as applied, because `renderPreview()` builds a fresh frame
+ * and a new element would come back interactive even in the middle of a drag.
+ */
+let frameDroppable = true;
+
+function setFrameDroppable(droppable: boolean): void {
+  frameDroppable = droppable;
+  for (const frame of previewHost.querySelectorAll<HTMLIFrameElement>(".preview__frame")) {
+    frame.style.pointerEvents = droppable ? "" : "none";
+  }
+}
+
+// Listened for on `document`, not on the host: with a document open the frame
+// swallows events aimed at the host, and this is the one event that still
+// reaches the parent, so it is where the frame has to be switched off.
+document.addEventListener("dragenter", () => {
+  setFrameDroppable(false);
+  previewHost.classList.add("preview__host--over");
+});
+document.addEventListener("dragleave", (e) => {
+  // Only when the pointer has actually left the window; moving between elements
+  // fires this constantly and would make the highlight flicker.
+  if (!e.relatedTarget) {
+    setFrameDroppable(true);
+    previewHost.classList.remove("preview__host--over");
+  }
+});
 previewHost.addEventListener("dragover", (e) => {
   e.preventDefault();
   previewHost.classList.add("preview__host--over");
 });
-previewHost.addEventListener("dragleave", () => previewHost.classList.remove("preview__host--over"));
 previewHost.addEventListener("drop", (e) => {
   e.preventDefault();
+  setFrameDroppable(true);
   previewHost.classList.remove("preview__host--over");
-  // Electron exposes absolute paths on dropped files via webUtils in newer
-  // versions; fall back to the File path property where available.
   const files = Array.from(e.dataTransfer?.files ?? []);
-  const paths = files
-    .map((f) => (f as File & { path?: string }).path)
-    .filter((p): p is string => Boolean(p));
-  if (paths.length) addFiles(paths);
-  else appendLog(t("preview.dropUnreadable"));
+  const paths = files.map((f) => api.pathForFile(f)).filter((p): p is string => Boolean(p));
+  if (!paths.length) {
+    appendLog(t("preview.dropUnreadable"));
+    return;
+  }
+  void handleDropped(paths);
 });
+
+/**
+ * Open dropped files, filing each into the browsed folder first.
+ *
+ * A drop is a request to work with a document, and the folder is where this app
+ * looks for documents, so anything arriving from elsewhere is copied in — that
+ * is also what makes it show up in the list and become tickable for a job. A
+ * file already in the folder is opened in place rather than duplicated, and a
+ * name that is already taken gets a suffix rather than replacing what is there.
+ *
+ * Without a folder there is nowhere to file anything, so the document is simply
+ * opened and the omission mentioned once.
+ */
+async function handleDropped(paths: string[]): Promise<void> {
+  const pdfs = paths.filter((p) => p.toLowerCase().endsWith(".pdf"));
+  for (const p of paths) {
+    if (!pdfs.includes(p)) appendLog(t("drop.notPdf", { name: baseName(p) }));
+  }
+  if (!pdfs.length) return;
+
+  if (!currentFolder) {
+    appendLog(t("drop.noFolder"));
+    for (const file of pdfs) openDocument(file);
+    return;
+  }
+
+  for (const file of pdfs) {
+    try {
+      const placed = await api.importPdf(file, currentFolder);
+      if (placed !== file) appendLog(t("drop.copied", { path: placed }));
+      openDocument(placed);
+    } catch (err) {
+      // A failed copy must not lose the document: open it where it is.
+      appendLog(t("drop.importFailed", { error: String(err) }));
+      openDocument(file);
+    }
+  }
+  // Pick up whatever was just added to the folder.
+  await openFolder(currentFolder);
+}
 
 // --- collapsible groups ----------------------------------------------------
 
@@ -1354,28 +1527,23 @@ function parsePages(spec: string): number[] | undefined {
 function updateTranslateButton(): void {
   const button = $<HTMLButtonElement>("btn-translate");
   button.disabled =
-    engineState !== "ok" || selectedFiles.length === 0 || activeJobId !== null;
+    engineState !== "ok" || checkedFiles.size === 0 || activeJobId !== null;
 }
 
 $("btn-translate").addEventListener("click", async () => {
-  if (!selectedFiles.length) return;
+  if (!checkedFiles.size) return;
+  const files = [...checkedFiles];
   const mode = $<HTMLSelectElement>("field-mode").value as "fast" | "ultrafast";
   activeJobId = "pending";
   updateTranslateButton();
   $("btn-cancel").classList.remove("hidden");
-  // The previous run's outputs are about to be replaced, so the translated and
-  // compare views must stop offering them.
-  lastResults = [];
-  paintResults();
-  updatePreviewControls();
-  if (viewMode !== "original") setViewMode("original");
   setProgress("starting", 0, 1, { key: "progress.starting" });
 
   try {
     const result = await api.request<{ job_id: string; outputs: Array<{ mono: string; dual: string }> }>(
       "translate.start",
       {
-        files: selectedFiles,
+        files,
         provider: currentProvider ?? undefined,
         model: currentModel ?? undefined,
         // Pass the resolved default explicitly rather than leaving it undefined:
@@ -1387,7 +1555,7 @@ $("btn-translate").addEventListener("click", async () => {
         thread: Number($<HTMLInputElement>("field-thread").value) || undefined,
       },
     );
-    renderResults(result.outputs);
+    showOutputs(result.outputs);
   } catch (err) {
     setProgress("error", 0, 1, { key: "progress.failed", params: { error: String(err) } });
   } finally {
@@ -1448,51 +1616,35 @@ function handleProgress(event: JobProgress): void {
 
 function handleDone(event: DoneEvent): void {
   setProgress("done", 1, 1, { key: "progress.done" });
-  renderResults(event.result.outputs);
+  showOutputs(event.result.outputs);
 }
 
-function renderResults(outputs: Array<{ mono: string; dual: string }>): void {
-  lastResults = outputs;
-  paintResults();
-  // Fresh output makes the translated and compare views available; surface the
-  // group so the new files are visible rather than silently expanding a
-  // collapsed section.
-  updatePreviewControls();
-  expandGroup("group-results");
-  if (outputs.length) {
-    setViewMode("translated");
-  }
-}
-
-/** Rebuild the result rows from `lastResults`; visibility is left untouched. */
-function paintResults(): void {
-  const list = $("result-list");
-  list.innerHTML = "";
-  for (const pair of lastResults) {
-    for (const [labelKey, file] of [
-      ["results.mono", pair.mono],
-      ["results.dual", pair.dual],
-    ] as const) {
-      const li = document.createElement("li");
-      const tag = document.createElement("span");
-      tag.className = "tag";
-      tag.textContent = t(labelKey);
-      const name = document.createElement("span");
-      name.className = "name";
-      name.textContent = file.split(/[\\/]/).pop() ?? file;
-      name.title = file;
-      const open = document.createElement("button");
-      open.className = "btn btn--small";
-      open.textContent = t("results.open");
-      open.addEventListener("click", () => void api.openPath(file));
-      const reveal = document.createElement("button");
-      reveal.className = "btn btn--small";
-      reveal.textContent = t("results.reveal");
-      reveal.addEventListener("click", () => void api.reveal(file));
-      li.append(tag, name, open, reveal);
-      list.append(li);
+/**
+ * Surface a finished job's files as tabs.
+ *
+ * There is no results list any more: an output is just a PDF, so the honest
+ * thing is to open it the same way any other PDF is opened. Both files are
+ * opened, and the translation is the one left in front — it is what the job was
+ * for, while the dual is for reading side by side.
+ *
+ * Files that land outside the browsed folder are added to the list too, so they
+ * remain reachable rather than existing only as a tab.
+ */
+function showOutputs(outputs: Array<{ mono: string; dual: string }>): void {
+  if (!outputs.length) return;
+  const opened: string[] = [];
+  for (const pair of outputs) {
+    for (const file of [pair.dual, pair.mono]) {
+      if (!openTabs.includes(file)) openTabs.push(file);
+      if (!folderFiles.includes(file)) folderFiles.push(file);
+      opened.push(file);
     }
   }
+  renderFiles();
+  // Activate the last mono pushed above: the frame the job was run for.
+  const firstMono = outputs[0].mono;
+  activateTab(firstMono);
+  expandGroup("group-docs");
 }
 
 // --- log -------------------------------------------------------------------
@@ -1505,7 +1657,28 @@ function appendLog(line: string): void {
 }
 
 updateTranslateButton();
+renderTabs();
+renderFiles();
 updatePreviewControls();
 renderPreview();
 trackPointerOverPreview();
 void loadDefaultOutput();
+
+/**
+ * Restore the folder browsed last time.
+ *
+ * Only the folder, not the open tabs: reopening documents nobody asked for on
+ * startup would be presumptuous, while the folder is where they were working
+ * and is what makes the list useful at all.
+ */
+async function restoreFolder(): Promise<void> {
+  let stored: string | null = null;
+  try {
+    stored = localStorage.getItem(FOLDER_STORAGE_KEY);
+  } catch {
+    return;
+  }
+  if (stored) await openFolder(stored);
+}
+
+void restoreFolder();
