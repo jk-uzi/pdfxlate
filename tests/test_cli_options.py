@@ -79,8 +79,9 @@ def run_main(monkeypatch, tmp_path):
     """Run ``cli.main`` with config loading and the pipeline stubbed out."""
     rec = _Recorder()
     cfg = config_mod.AppConfig(
-        default_profile="p",
-        profiles={"p": {"model": "m"}},
+        default_provider="prov",
+        default_model="chat",
+        providers={"prov": {"models": {"chat": {"model": "m"}}}},
     )
     monkeypatch.setattr(cli_mod.paths, "ensure_dirs", lambda: None)
     monkeypatch.setattr(cli_mod.config_mod, "load", lambda path=None: cfg)
@@ -158,7 +159,11 @@ def test_build_translator_passes_ignore_cache(monkeypatch):
         return object()
 
     monkeypatch.setattr(api_mod, "build_adapter", fake_build_adapter)
-    cfg = config_mod.AppConfig(default_profile="p", profiles={"p": {"model": "m"}})
+    cfg = config_mod.AppConfig(
+        default_provider="prov",
+        default_model="chat",
+        providers={"prov": {"models": {"chat": {"model": "m"}}}},
+    )
     api_mod.build_translator(app_config=cfg, ignore_cache=True)
     assert captured["ignore_cache"] is True
     assert captured["cache_enabled"] is True
@@ -167,13 +172,17 @@ def test_build_translator_passes_ignore_cache(monkeypatch):
 def test_translate_forwards_ignore_cache_to_translator(monkeypatch, tmp_path):
     captured = {}
 
-    def fake_build_translator(profile_name=None, app_config=None, prompt=None, **kwargs):
+    def fake_build_translator(provider=None, model=None, app_config=None, prompt=None, **kwargs):
         captured.update(kwargs)
         return object()
 
     monkeypatch.setattr(api_mod, "build_translator", fake_build_translator)
     monkeypatch.setattr(api_mod.pipeline, "translate", lambda *a, **k: [])
-    cfg = config_mod.AppConfig(default_profile="p", profiles={"p": {"model": "m"}})
+    cfg = config_mod.AppConfig(
+        default_provider="prov",
+        default_model="chat",
+        providers={"prov": {"models": {"chat": {"model": "m"}}}},
+    )
     api_mod.translate(
         ["a.pdf"], mode="ultrafast", config=cfg, output=str(tmp_path), ignore_cache=True
     )

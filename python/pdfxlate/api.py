@@ -2,10 +2,11 @@
 
     from pdfxlate import translate
 
-    translate(["paper.pdf"], profile="deepseek", output="out/")
+    translate(["paper.pdf"], provider="deepseek", model="chat", output="out/")
 
-Everything is driven by a named profile from ``config.yaml``; the adapter is
-built from that profile so callers never touch provider internals.
+Everything is driven by the provider/model entries in ``config.yaml``; the
+adapter is built from the resolved entry so callers never touch provider
+internals.
 """
 
 from __future__ import annotations
@@ -26,22 +27,30 @@ ProgressFn = Optional[Callable[[str, int, int, str], None]]
 
 
 def build_translator(
-    profile_name: str | None = None,
+    provider: str | None = None,
+    model: str | None = None,
     app_config: config_mod.AppConfig | None = None,
     prompt: str | None = None,
     ignore_cache: bool = False,
+    profile: str | None = None,
 ) -> ModelAdapter:
-    """Construct the adapter for a named profile.
+    """Construct the adapter for a provider and one of its models.
+
+    ``profile`` is the pre-provider name for what is now a provider (optionally
+    naming a model alias); it is still accepted so existing callers keep
+    working.
 
     ``ignore_cache`` skips the cache for every :meth:`ModelAdapter.translate`
     call made by this adapter.  It is unrelated to ``cache.enabled``, which
     switches the cache off entirely.
     """
     cfg = app_config or config_mod.load()
-    profile = cfg.resolve_profile(profile_name)
+    if profile and provider is None:
+        provider = profile
+    resolved = cfg.resolve(provider, model)
     return build_adapter(
-        profile.provider,
-        profile,
+        resolved.kind,
+        resolved,
         cfg.translation.lang_in,
         cfg.translation.lang_out,
         prompt=prompt or cfg.translation.prompt,
@@ -52,7 +61,8 @@ def build_translator(
 
 def translate(
     files: list[str],
-    profile: str | None = None,
+    provider: str | None = None,
+    model: str | None = None,
     output: str | None = None,
     pages: Optional[list[int]] = None,
     mode: str | None = None,
@@ -65,25 +75,29 @@ def translate(
     vchar: str = "",
     skip_subset_fonts: bool | None = None,
     ignore_cache: bool = False,
+    profile: str | None = None,
 ) -> list[tuple[str, str]]:
     """Translate PDF files and write ``-mono``/``-dual`` outputs.
 
     Returns a list of ``(mono_path, dual_path)`` tuples, one per input file.
     ``ignore_cache`` forces every paragraph to be retranslated for this call,
-    bypassing cache reads and writes.
+    bypassing cache reads and writes.  ``profile`` is a deprecated alias for
+    ``provider``.
     """
     paths.ensure_dirs()
     cfg = config or config_mod.load(app_config_path)
-    translator = build_translator(profile, cfg, ignore_cache=ignore_cache)
+    translator = build_translator(
+        provider, model, app_config=cfg, ignore_cache=ignore_cache, profile=profile
+    )
 
     resolved_mode = mode or cfg.translation.mode
     ultrafast = resolved_mode == "ultrafast"
     resolved_thread = thread or cfg.translation.thread
     resolved_output = output or str(Path.cwd())
 
-    model = None
+    model_obj = None
     if not ultrafast:
-        model = _load_layout_model(cfg, progress)
+        model_obj = _load_layout_model(cfg, progress)
 
     return pipeline.translate(
         files,
@@ -94,7 +108,7 @@ def translate(
         vfont=vfont or "",
         vchar=vchar or "",
         cancellation_event=cancellation_event,
-        model=model,
+        model=model_obj,
         skip_subset_fonts=(
             cfg.translation.skip_subset_fonts
             if skip_subset_fonts is None
@@ -108,7 +122,8 @@ def translate(
 
 def translate_stream(
     stream: bytes,
-    profile: str | None = None,
+    provider: str | None = None,
+    model: str | None = None,
     pages: Optional[list[int]] = None,
     mode: str | None = None,
     thread: int | None = None,
@@ -118,15 +133,18 @@ def translate_stream(
     vfont: str = "",
     vchar: str = "",
     ignore_cache: bool = False,
+    profile: str | None = None,
 ) -> tuple[bytes, bytes]:
     """Translate an in-memory PDF; returns ``(mono_bytes, dual_bytes)``."""
     paths.ensure_dirs()
     cfg = config or config_mod.load()
-    translator = build_translator(profile, cfg, ignore_cache=ignore_cache)
+    translator = build_translator(
+        provider, model, app_config=cfg, ignore_cache=ignore_cache, profile=profile
+    )
 
     resolved_mode = mode or cfg.translation.mode
     ultrafast = resolved_mode == "ultrafast"
-    model = None if ultrafast else _load_layout_model(cfg, progress)
+    model_obj = None if ultrafast else _load_layout_model(cfg, progress)
 
     return pipeline.translate_stream(
         stream,
@@ -136,7 +154,7 @@ def translate_stream(
         vfont=vfont,
         vchar=vchar,
         cancellation_event=cancellation_event,
-        model=model,
+        model=model_obj,
         ultrafast=ultrafast,
         progress=progress,
         ocr_settings=cfg.ocr,

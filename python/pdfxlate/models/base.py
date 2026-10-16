@@ -123,6 +123,10 @@ class ModelAdapter(abc.ABC):
         return {
             "lang_in": self.lang_in,
             "lang_out": self.lang_out,
+            # The endpoint matters as much as the model name: one gateway may
+            # answer with a different implementation than another for the same
+            # model id, and providers now make that easy to mix up.
+            "base_url": getattr(self.profile, "base_url", None),
             "model": getattr(self.profile, "model", None),
             "temperature": getattr(self.profile, "temperature", None),
             "top_p": getattr(self.profile, "top_p", None),
