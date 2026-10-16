@@ -54,6 +54,14 @@ references/
 *.traineddata
 *.part
 
+# --- Translation output --------------------------------------------------
+# The engine writes `<name>-mono.pdf` / `<name>-dual.pdf` next to its output
+# directory. Those belong outside the repository, but a stale default once sent
+# them here, so the naming is excluded as a backstop. Nothing tracked uses these
+# suffixes, and the tests build their own PDFs in tmp_path.
+*-mono.pdf
+*-dual.pdf
+
 # --- Secrets -------------------------------------------------------------
 # config.yaml lives in the platform config dir, but keep local copies out of
 # the repository in case one is created here during testing.

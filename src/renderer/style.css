@@ -770,6 +770,50 @@ input[readonly] {
   color: #d1d9e0;
 }
 
+/*
+ * "Save a copy", top-right of the document.
+ *
+ * Deliberately the same chip and the same reveal rules as `.viewer-overlay`:
+ * one is paging, the other is saving, and having them fade in together and
+ * look alike is what makes them read as one set of controls rather than two
+ * unrelated widgets. Position is the only difference.
+ *
+ * Top-right rather than beside the paging chip because saving acts on the
+ * document while paging acts on the view, and because it keeps this clear of
+ * the reserved strip where the OS paints the window buttons.
+ */
+.viewer-saveas {
+  position: absolute;
+  right: 18px;
+  top: 18px;
+  display: flex;
+  align-items: center;
+  padding: 6px;
+  border: 1px solid #2c2f31;
+  border-radius: var(--radius);
+  background: rgba(38, 40, 43, 0.92);
+  opacity: 0;
+  transition: opacity 0.18s ease;
+}
+
+.viewer-saveas:hover,
+.viewer-saveas.is-visible {
+  opacity: 1;
+}
+
+/* The chip's own `.icon-btn` keeps its light-theme border, which reads as a
+   bright ring against the dark chip; the glyph carries the contrast instead. */
+.viewer-saveas .icon-btn {
+  border-color: transparent;
+  background: transparent;
+  color: #d1d9e0;
+}
+
+.viewer-saveas .icon-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+}
+
 .preview__frame {
   flex: 1 1 0;
   width: 100%;

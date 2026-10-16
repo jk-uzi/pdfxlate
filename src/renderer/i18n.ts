@@ -109,7 +109,7 @@ const EN: Table = {
   "options.threads": "Threads",
   "options.pages": "Pages (optional)",
   "options.output": "Output directory",
-  "options.outputPlaceholder": "(same folder as input)",
+  "options.outputPlaceholder": "(default folder in Documents)",
   "options.translate": "Translate",
   "options.cancel": "Cancel",
 
@@ -128,6 +128,7 @@ const EN: Table = {
   "preview.zoomIn": "Zoom in",
   "preview.fitWidth": "Fit width",
   "preview.fitHeight": "Fit height",
+  "preview.saveAs": "Save a copy",
   "preview.openFile": "Open in the default app",
   "preview.revealFile": "Show in folder",
   "preview.labelOriginal": "Original",
@@ -152,6 +153,9 @@ const EN: Table = {
   "log.providersFailed": "could not load providers: {error}",
   "log.engineFactsFailed": "could not read engine details: {error}",
   "log.pageCountFailed": "could not read the page count: {error}",
+  "log.defaultOutputFailed": "could not resolve the default output folder: {error}",
+  "log.savedAs": "saved a copy to {path}",
+  "log.saveAsFailed": "could not save a copy: {error}",
   "log.cancelFailed": "cancel failed: {error}",
   "log.unknownError": "unknown error",
 
@@ -255,7 +259,7 @@ const ZH: Table = {
   "options.threads": "并发线程",
   "options.pages": "页码范围（可选）",
   "options.output": "输出目录",
-  "options.outputPlaceholder": "（与输入文件同目录）",
+  "options.outputPlaceholder": "（默认在「文档」目录）",
   "options.translate": "开始翻译",
   "options.cancel": "取消",
 
@@ -273,6 +277,7 @@ const ZH: Table = {
   "preview.zoomIn": "放大",
   "preview.fitWidth": "适应宽度",
   "preview.fitHeight": "适应高度",
+  "preview.saveAs": "另存为",
   "preview.openFile": "用默认应用打开",
   "preview.revealFile": "在文件夹中显示",
   "preview.labelOriginal": "原文",
@@ -295,6 +300,9 @@ const ZH: Table = {
   "log.providersFailed": "无法加载服务商：{error}",
   "log.engineFactsFailed": "无法读取引擎信息：{error}",
   "log.pageCountFailed": "无法读取页数：{error}",
+  "log.defaultOutputFailed": "无法解析默认输出目录：{error}",
+  "log.savedAs": "已另存为 {path}",
+  "log.saveAsFailed": "另存为失败：{error}",
   "log.cancelFailed": "取消失败：{error}",
   "log.unknownError": "未知错误",
 

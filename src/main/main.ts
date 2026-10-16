@@ -1,6 +1,7 @@
 /** Application entry point: window lifecycle, IPC wiring, sidecar control. */
 
 import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from "electron";
+import { copyFile } from "node:fs/promises";
 import path from "node:path";
 
 import { Sidecar, type SidecarEvent } from "./sidecar";
@@ -43,7 +44,7 @@ type Locale = "en" | "zh";
  * from it: this half of the app compiles as CommonJS (tsconfig.node.json)
  * while the renderer is native ESM, and the renderer module also touches
  * browser-only globals (`document`, `localStorage`, `navigator`). Importing it
- * here would drag a browser-only dependency into the main process, so the four
+ * here would drag a browser-only dependency into the main process, so the few
  * strings this process shows are kept locally. Keys mirror the renderer's
  * `dialog.*` entries so the two tables stay easy to compare by eye.
  */
@@ -52,6 +53,7 @@ const DIALOG_STRINGS: Record<
   {
     selectPdf: string;
     selectOutput: string;
+    saveAs: string;
     engineErrorTitle: string;
     engineErrorHint: string;
   }
@@ -59,12 +61,14 @@ const DIALOG_STRINGS: Record<
   en: {
     selectPdf: "Select PDF files",
     selectOutput: "Select output directory",
+    saveAs: "Save a copy as",
     engineErrorTitle: "Could not start the translation engine",
     engineErrorHint: "If running from source, make sure the Python environment is set up:",
   },
   zh: {
     selectPdf: "选择 PDF 文件",
     selectOutput: "选择输出目录",
+    saveAs: "另存为",
     engineErrorTitle: "无法启动翻译引擎",
     engineErrorHint: "若从源码运行，请确认 Python 环境已配置：",
   },
@@ -141,10 +145,32 @@ function createWindow(): void {
 
   void mainWindow.loadFile(path.join(currentDir, "..", "renderer", "index.html"));
 
+  registerWheelForwarding(mainWindow);
+
   if (isDev) {
     mainWindow.webContents.openDevTools({ mode: "detach" });
     registerDevShortcuts(mainWindow);
   }
+}
+
+/**
+ * Tell the renderer that a wheel event happened anywhere in the window.
+ *
+ * Scrolling the preview cannot be noticed from the renderer: the PDF viewer is
+ * a separate process, and neither its wheel events nor its scroll position reach
+ * the page (its `postMessage` interface is not exposed in this build either).
+ * The main process does see a `mouseWheel` input event, but the payload carries
+ * no coordinates or delta, so it cannot say *where* the wheel happened.
+ *
+ * The renderer therefore combines this bare signal with its own knowledge of
+ * whether the pointer is over the preview — it does receive `mouseenter` /
+ * `mouseleave` for the iframe element — and reveals the overlay controls only
+ * when both hold. Only the notification travels; the decision stays in one place.
+ */
+function registerWheelForwarding(window: BrowserWindow): void {
+  window.webContents.on("input-event", (_event, input) => {
+    if (input.type === "mouseWheel") window.webContents.send("viewer:wheel");
+  });
 }
 
 /**
@@ -170,15 +196,50 @@ function registerDevShortcuts(window: BrowserWindow): void {
   });
 }
 
+/**
+ * Where translated PDFs go when the user has not chosen a directory.
+ *
+ * Resolved here rather than in Python because the OS may have relocated the
+ * Documents folder (Windows lets it point at another drive entirely), and
+ * `app.getPath("documents")` is the only thing that knows the real location.
+ * A Python-side `~/Documents` guess would silently write somewhere else.
+ *
+ * This exists to fix a real bug: with the field left blank, the engine wrote
+ * its output into its own working directory — the source tree in development,
+ * and the application install directory once packaged, where the write can
+ * simply fail.
+ */
+function defaultOutputDir(): string {
+  return path.join(app.getPath("documents"), "pdfxlate");
+}
+
+/**
+ * Fill in the output directory for `translate.start` when the renderer did not.
+ *
+ * Done at the application boundary so every caller gets it: the renderer shows
+ * this path in the UI, but a stale or omitted value must still not fall through
+ * to the engine's working directory.
+ */
+function withDefaultOutput(params: Record<string, unknown>): Record<string, unknown> {
+  const chosen = params.output;
+  if (typeof chosen === "string" && chosen.trim()) return params;
+  return { ...params, output: defaultOutputDir() };
+}
+
 function registerIpc(): void {
   ipcMain.handle("sidecar:request", async (_event, method: string, params: unknown) => {
     if (!sidecar) throw new Error("sidecar is not running");
-    return sidecar.request(method, (params ?? {}) as Record<string, unknown>);
+    const payload = (params ?? {}) as Record<string, unknown>;
+    const resolved = method === "translate.start" ? withDefaultOutput(payload) : payload;
+    return sidecar.request(method, resolved);
   });
 
   // Lets a late-loading renderer learn the current engine state instead of
   // depending on having caught the one-shot ready event.
   ipcMain.handle("sidecar:state", async () => engineState);
+
+  /** The directory shown as the default in the output field. */
+  ipcMain.handle("app:defaultOutputDir", async () => defaultOutputDir());
 
   ipcMain.handle("dialog:pickPdf", async (_event, locale?: string) => {
     const result = await dialog.showOpenDialog(mainWindow!, {
@@ -196,6 +257,31 @@ function registerIpc(): void {
     });
     return result.canceled ? null : result.filePaths[0];
   });
+
+  /**
+   * Copy one file to a location the user picks.
+   *
+   * The copy happens here rather than by handing the renderer a path, because
+   * the renderer is sandboxed and has no filesystem access. Returns the chosen
+   * path, or null when the dialog was cancelled — a cancelled save is a normal
+   * outcome, not an error.
+   */
+  ipcMain.handle(
+    "dialog:saveAs",
+    async (_event, source: string, suggestedName: string, locale?: string) => {
+      const strings = DIALOG_STRINGS[resolveLocale(locale)];
+      const result = await dialog.showSaveDialog(mainWindow!, {
+        title: strings.saveAs,
+        defaultPath: path.join(path.dirname(source), suggestedName),
+        filters: [{ name: "PDF", extensions: ["pdf"] }],
+      });
+      if (result.canceled || !result.filePath) return null;
+      // Overwrites an existing file, which is safe to do silently: the save
+      // dialog has already asked the user to confirm it.
+      await copyFile(source, result.filePath);
+      return result.filePath;
+    },
+  );
 
   ipcMain.handle("shell:reveal", async (_event, target: string) => {
     shell.showItemInFolder(target);

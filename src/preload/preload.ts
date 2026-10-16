@@ -70,6 +70,33 @@ const api = {
     ipcRenderer.invoke("sidecar:request", method, params),
 
   /**
+   * Where outputs go when the user has not picked a directory.
+   *
+   * The main process resolves it because only it can ask the OS: the Documents
+   * folder is frequently relocated, so a path built here or in Python would be
+   * a guess.
+   */
+  defaultOutputDir: (): Promise<string> => ipcRenderer.invoke("app:defaultOutputDir"),
+
+  /**
+   * Copy one file somewhere the user picks, via a native save dialog.
+   *
+   * Returns the chosen path, or null if the dialog was cancelled.
+   */
+  saveAs: (source: string, suggestedName: string, locale?: string): Promise<string | null> =>
+    ipcRenderer.invoke("dialog:saveAs", source, suggestedName, locale),
+
+  /**
+   * Fires on any wheel event in the window, with no position or delta.
+   *
+   * The renderer cannot see wheel events over the PDF viewer (it runs in
+   * another process), but the main process can, so the bare occurrence is
+   * forwarded and paired with the renderer's own pointer tracking. See
+   * `registerWheelForwarding` in main.ts for why the split falls here.
+   */
+  onWheel: (cb: () => void): (() => void) => subscribe("viewer:wheel", cb),
+
+  /**
    * Native "open files" dialog. `locale` is the renderer's active interface
    * language; the main process falls back to the OS locale when it is omitted.
    */

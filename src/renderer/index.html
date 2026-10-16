@@ -107,12 +107,7 @@
                 <label>
                   <span data-i18n="options.output"></span>
                   <div class="row row--tight">
-                    <input
-                      id="field-output"
-                      type="text"
-                      readonly
-                      data-i18n-placeholder="options.outputPlaceholder"
-                    />
+                    <input id="field-output" type="text" readonly />
                     <button id="btn-pick-output" class="btn btn--small">…</button>
                   </div>
                 </label>
@@ -225,6 +220,15 @@
             </div>
 
             <button id="btn-open-file" class="icon-btn" data-i18n-title="preview.openFile" disabled>↗</button>
+          </div>
+
+          <!--
+            "Save a copy" for whichever document is on screen. Top-right rather
+            than with the paging controls: it acts on the document, not on the
+            view. Hidden until wanted, like the overlay below it.
+          -->
+          <div class="viewer-saveas" id="viewer-saveas">
+            <button id="btn-save-as" class="icon-btn" data-i18n-title="preview.saveAs" disabled>⤓</button>
           </div>
         </div>
 

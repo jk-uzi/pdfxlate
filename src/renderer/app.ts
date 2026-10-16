@@ -91,6 +91,9 @@ interface PdfxlateApi {
   onEvent(cb: (event: SidecarEvent) => void): () => void;
   onLog(cb: (line: string) => void): () => void;
   request<T>(method: string, params?: Record<string, unknown>): Promise<T>;
+  defaultOutputDir(): Promise<string>;
+  saveAs(source: string, suggestedName: string, locale?: string): Promise<string | null>;
+  onWheel(cb: () => void): () => void;
   pickPdf(locale?: string): Promise<string[]>;
   pickOutputDir(locale?: string): Promise<string | null>;
   reveal(target: string): Promise<void>;
@@ -590,12 +593,12 @@ function makePane(file: string, labelKey: string, labelled: boolean): HTMLElemen
  */
 function renderPreview(): void {
   const host = $("preview-host");
-  // The overlay (pager / zoom / open) lives inside the host, so clearing the
-  // host would delete it along with the frames. Detach and re-append it: it is
-  // absolutely positioned, so its position in the flow does not matter.
-  const overlay = $("viewer-overlay");
+  // Both overlays live inside the host, so clearing it would delete them along
+  // with the frames. Detach and re-append them: they are absolutely
+  // positioned, so their place in the flow does not matter.
+  const overlays = VIEWER_OVERLAYS.map((id) => $(id));
   host.innerHTML = "";
-  host.append(overlay);
+  host.append(...overlays);
   const source = previewSource();
   if (!source) {
     const empty = document.createElement("div");
@@ -675,11 +678,39 @@ function updatePreviewControls(): void {
   $<HTMLButtonElement>("zoom-in").disabled =
     !hasFile || previewZoom === ZOOM_STEPS.at(-1)!;
   $<HTMLButtonElement>("btn-open-file").disabled = !hasFile;
+  $<HTMLButtonElement>("btn-save-as").disabled = !saveAsSource();
 
-  // The overlay is meaningless without a document; hide it outright rather than
-  // relying on the auto-hide timer, which only runs after an interaction.
-  $("viewer-overlay").classList.toggle("hidden", !hasFile);
+  // The overlays are meaningless without a document; hide them outright rather
+  // than relying on the auto-hide timer, which only runs after an interaction.
+  for (const id of VIEWER_OVERLAYS) $(id).classList.toggle("hidden", !hasFile);
 }
+
+/**
+ * The file "save a copy" should copy: whatever the preview is showing.
+ *
+ * In compare mode two documents are on screen at once and "the current one" is
+ * genuinely ambiguous, so it resolves to the translation — that is what this
+ * tool produces, and the source is unmodified and already on disk.
+ */
+function saveAsSource(): string | null {
+  if (viewMode === "translated" || viewMode === "compare") {
+    return previewTranslated() ?? previewSource();
+  }
+  return previewSource();
+}
+
+$("btn-save-as").addEventListener("click", async () => {
+  const file = saveAsSource();
+  if (!file) return;
+  const suggested = file.split(/[\\/]/).pop() ?? "output.pdf";
+  try {
+    const saved = await api.saveAs(file, suggested, getLocale());
+    // A cancelled dialog returns null; that is a normal outcome, not a failure.
+    if (saved) appendLog(t("log.savedAs", { path: saved }));
+  } catch (err) {
+    appendLog(t("log.saveAsFailed", { error: String(err) }));
+  }
+});
 
 function setViewMode(mode: ViewMode): void {
   if (mode !== "original" && !hasResults()) return;
@@ -697,23 +728,53 @@ for (const [id, mode] of [
 }
 
 /**
- * Show the viewer overlay for a moment, then let it fade.
+ * Show the viewer overlays for a moment, then let them fade.
  *
- * The overlay stays in the DOM at `opacity: 0` so CSS `:hover` can still reveal
- * it; this timer is the second, interaction-driven trigger — changing page or
- * zoom surfaces the controls without the pointer having to find them. Every
- * call restarts the clock so rapid clicks do not hide it mid-sequence.
+ * Both overlay chips (paging/zoom bottom-right, save top-right) stay in the DOM
+ * at `opacity: 0` so CSS `:hover` can still reveal them; this timer is the
+ * second, interaction-driven trigger — changing page, zoom, or scrolling
+ * surfaces the controls without the pointer having to find them. Every call
+ * restarts the clock so rapid interaction does not hide them mid-sequence.
  */
 let overlayFlashTimer: ReturnType<typeof setTimeout> | null = null;
 
+/** Every overlay chip that shares the reveal rule. */
+const VIEWER_OVERLAYS = ["viewer-overlay", "viewer-saveas"] as const;
+
 function flashViewerOverlay(): void {
-  const overlay = $("viewer-overlay");
-  overlay.classList.add("is-visible");
+  for (const id of VIEWER_OVERLAYS) $(id).classList.add("is-visible");
   if (overlayFlashTimer !== null) clearTimeout(overlayFlashTimer);
   overlayFlashTimer = setTimeout(() => {
-    overlay.classList.remove("is-visible");
+    for (const id of VIEWER_OVERLAYS) $(id).classList.remove("is-visible");
     overlayFlashTimer = null;
   }, 1600);
+}
+
+/**
+ * Whether the pointer is currently over the preview area.
+ *
+ * Needed because scroll gestures cannot be seen from here: the PDF viewer runs
+ * in another process, so its wheel events never reach this document. The main
+ * process sees the wheel but not where it happened, so it forwards a bare ping
+ * and this flag supplies the missing half. `mouseenter`/`mouseleave` on the
+ * frame's container do fire in this document, which is what makes the pairing
+ * possible at all.
+ */
+let pointerOverPreview = false;
+
+function trackPointerOverPreview(): void {
+  const host = $("preview-host");
+  host.addEventListener("mouseenter", () => {
+    pointerOverPreview = true;
+  });
+  host.addEventListener("mouseleave", () => {
+    pointerOverPreview = false;
+  });
+  // A wheel anywhere else in the window must not reveal controls that belong to
+  // the document, so the ping is ignored unless the pointer is over the preview.
+  api.onWheel(() => {
+    if (pointerOverPreview) flashViewerOverlay();
+  });
 }
 
 /** Switch to a fit mode (or back to fit-width) from the title-bar buttons. */
@@ -1217,11 +1278,57 @@ $("btn-save-model").addEventListener("click", async () => {
 
 // --- options ---------------------------------------------------------------
 
+/**
+ * The directory the engine writes to when the user has not chosen one.
+ *
+ * Held so the output field can show it and a job can pass it explicitly, which
+ * keeps what the UI promises and what the engine does in step. The main process
+ * also fills it in as a backstop, so an omitted value can never fall through to
+ * the engine's working directory.
+ */
+let defaultOutput: string | null = null;
+
+async function loadDefaultOutput(): Promise<void> {
+  try {
+    defaultOutput = await api.defaultOutputDir();
+  } catch (err) {
+    appendLog(t("log.defaultOutputFailed", { error: String(err) }));
+    return;
+  }
+  paintOutputPlaceholder();
+}
+
+/**
+ * Show the resolved default in the field's placeholder.
+ *
+ * The element has no `data-i18n-placeholder`, so this is its only writer; the
+ * real path beats a translated description, and `title` carries the whole path
+ * for when the field is too narrow to show even the abbreviated form.
+ */
+function paintOutputPlaceholder(): void {
+  const field = $<HTMLInputElement>("field-output");
+  if (defaultOutput) {
+    field.placeholder = abbreviatePath(defaultOutput);
+    field.title = defaultOutput;
+  } else {
+    // Resolution failed; the descriptive text beats a blank field implying
+    // there is no default at all.
+    field.placeholder = t("options.outputPlaceholder");
+  }
+}
+
+/** Trim a path to its last two segments for display. */
+function abbreviatePath(full: string): string {
+  const parts = full.split(/[\\/]/).filter(Boolean);
+  return parts.length <= 2 ? full : parts.slice(-2).join("\\");
+}
+
 $("btn-pick-output").addEventListener("click", async () => {
   const dir = await api.pickOutputDir(getLocale());
   if (dir) {
     outputDir = dir;
     $<HTMLInputElement>("field-output").value = dir;
+    $<HTMLInputElement>("field-output").title = dir;
   }
 });
 
@@ -1271,7 +1378,10 @@ $("btn-translate").addEventListener("click", async () => {
         files: selectedFiles,
         provider: currentProvider ?? undefined,
         model: currentModel ?? undefined,
-        output: outputDir ?? undefined,
+        // Pass the resolved default explicitly rather than leaving it undefined:
+        // what the field shows and what the engine writes must be the same
+        // thing. The main process still fills it in if this is ever missing.
+        output: outputDir ?? defaultOutput ?? undefined,
         pages: parsePages($<HTMLInputElement>("field-pages").value),
         mode,
         thread: Number($<HTMLInputElement>("field-thread").value) || undefined,
@@ -1397,3 +1507,5 @@ function appendLog(line: string): void {
 updateTranslateButton();
 updatePreviewControls();
 renderPreview();
+trackPointerOverPreview();
+void loadDefaultOutput();

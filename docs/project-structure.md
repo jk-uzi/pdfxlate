@@ -47,6 +47,9 @@ Python 3.12，venv 在 `python/.venv`，包以 editable 方式安装，改源码
 | 改任务/设置模式与设置项 | `src/renderer/app.ts` 的 `appMode` / `setAppMode()` / `paintSettingsMode()`，菜单与面板在 `index.html` |
 | 改侧栏折叠 | `src/renderer/app.ts` 的 `setSidebarCollapsed()` + `style.css` 的 `body.sidebar-collapsed` |
 | 改进度显示 | `src/renderer/app.ts` 的 `paintProgress()`，落点在 `index.html` 侧栏底部的 `.sidebar__status`（与设置图标同一行） |
+| 改默认输出目录 | `src/main/main.ts` 的 `defaultOutputDir()`（**必须走 `app.getPath("documents")`**，别在 Python 里拼路径） |
+| 改「另存为」存哪一份 | `src/renderer/app.ts` 的 `saveAsSource()`；对话框与拷贝在 `src/main/main.ts` 的 `dialog:saveAs` |
+| 改浮层显隐时机 | `src/renderer/app.ts` 的 `flashViewerOverlay()` + `VIEWER_OVERLAYS`；滚轮那条还需 `src/main/main.ts` 的 `registerWheelForwarding()` |
 | 改右侧 PDF 预览（视图/翻页/缩放） | `src/renderer/app.ts` 的 `renderPreview()` / `viewerUrl()` |
 | 改左侧栏分组 | `src/renderer/index.html` 的 `details.group` + `app.ts` 的 `expandGroup()` |
 | 改供应商/模型的界面编辑 | `src/renderer/app.ts`（供应商与模型两级下拉 + 字段） |
@@ -105,16 +108,16 @@ pdfxlate/
 │           └── text_spacing.py 44 行  中英混排间距（上游照搬）
 ├── src/
 │   ├── main/
-│   │   ├── main.ts          246 行  窗口 + 应用生命周期 + IPC（自建标题栏、原生对话框文案表）
+│   │   ├── main.ts          332 行  窗口 + 应用生命周期 + IPC（自建标题栏、默认输出目录、另存为、滚轮转发）
 │   │   └── sidecar.ts       204 行  Python 子进程管理 + JSON 行协议
 │   ├── preload/
-│   │   └── preload.ts       105 行  contextBridge，向渲染进程暴露 API
+│   │   └── preload.ts       132 行  contextBridge，向渲染进程暴露 API
 │   └── renderer/
-│       ├── index.html       364 行  界面结构（文案走 data-i18n* 属性；图标在构建时内联）
-│       ├── app.ts          1399 行  界面逻辑（任务/设置双模式、折叠、视图与缩放、进度、结果）
-│       ├── i18n.ts          491 行  中英文字符串表 + t()/applyStaticTranslations()
+│       ├── index.html       368 行  界面结构（文案走 data-i18n* 属性；图标在构建时内联）
+│       ├── app.ts          1511 行  界面逻辑（任务/设置双模式、折叠、视图与缩放、进度、另存为、结果）
+│       ├── i18n.ts          499 行  中英文字符串表 + t()/applyStaticTranslations()
 │       ├── icon.svg          49 行  应用标记的**唯一来源**（标题栏内联 + 打包图标）
-│       └── style.css        819 行  样式（含标题栏控件、查看器浮层、折叠与侧栏状态行）
+│       └── style.css        863 行  样式（含标题栏控件、查看器浮层、折叠与侧栏状态行）
 ├── assets/
 │   ├── icon.png               512×512，由 make_icon.py 从 icon.svg 生成后提交
 │   └── icon.ico               16–256 多尺寸，同上（Windows 用）
@@ -380,12 +383,33 @@ overlay 的位置由 OS 按这个值摆放，不一致时系统三键会在栏�
 **`src/preload/preload.ts`** — `contextBridge.exposeInMainWorld("pdfxlate", ...)`，
 在 `contextIsolation` 开启的前提下向渲染进程暴露：
 `request()`（转发到 sidecar）、`onEvent()` / `onLog()`（订阅事件）、
+`defaultOutputDir()` / `saveAs()`（见下）、`onWheel()`（滚轮通知，见下）、
 `pickPdf(locale?)` / `pickOutputDir(locale?)`（原生对话框，语言由渲染进程传入）、
 `reveal()` / `openPath()`（打开输出）、`fileUrl(path)`（绝对路径 → `file://` URL）。
 
 `fileUrl()` 是**纯函数、不走 IPC**：渲染进程在 `contextIsolation` 下没有 Node，
 拿不到 `pathToFileURL`，而 Windows 的盘符、反斜杠、空格与非 ASCII 文件名都必须
 由它处理（已实测中文名 + 空格的文件能正常打开）。
+
+**默认输出目录必须由主进程解析**（`app:defaultOutputDir` → `app.getPath("documents")/pdfxlate`）。
+不要在 Python 里拼 `~/Documents`：Windows 的「文档」常被重定向到别的盘，只有 Electron
+问得到真实位置。主进程还在转发 `translate.start` 时**兜底注入**这个路径，所以任何调用方
+漏传都不会退化成引擎的工作目录。
+
+**这修的是一个真 bug**：以前输出目录留空时，`api.py` 退回 `Path.cwd()`，而 sidecar 的工作
+目录是**开发时的 `python/`**、**打包后的安装目录**。于是产物被写进源码树（仓库里那几份
+`-mono`/`-dual` 就是这么来的），打包后往 `Program Files` 写还可能直接失败。`.gitignore`
+里加了 `*-mono.pdf` / `*-dual.pdf` 作兜底。
+
+**`onWheel()` 只通知"发生了滚轮"，不带坐标或增量**，因为主进程的 `input-event` 载荷
+就只有这些。原因：PDF 查看器是**另一个进程**，它里面的滚轮事件既不到父页面的监听器，
+查看器的 `postMessage` 接口在本版 Chromium 也没暴露。父页面**能**收到 iframe 元素的
+`mouseenter`/`mouseleave`，所以渲染进程把两者配对——**指针在预览区上方时为真**才显示控件。
+`postMessage` 那条路已实测无响应，别再试。
+
+**`saveAs()` 存的是"当前预览的那一份"**：原文视图存源文件，译文/对比视图存译文。对比模式
+下同时可见两份、说"当前份"本就有歧义，所以定死为译文（那是本工具的产出）。对话框在渲染
+进程之外，拷贝用 `copyFile` 在主进程完成（渲染进程是沙箱，没有文件系统）。
 
 **`src/renderer/app.ts`** — 界面逻辑，无前端框架，直接操作 DOM。
 两栏工作区，且**有任务 / 设置两种模式**（`appMode`）：
@@ -408,12 +432,26 @@ overlay 的位置由 OS 按这个值摆放，不一致时系统三键会在栏�
 之所以是净赚而不是搬家：标题栏右侧那 140px 本来就是给系统三键预留、**纯属空转**的
 空间。控件是拖拽条的**兄弟节点**，因此不在拖拽区内（拖拽区会静默吞点击）。
 
-**翻页、缩放、「用默认应用打开」放在 `#viewer-overlay`**，绝对定位在 `#preview-host`
-右下角，**内缩 18px**——查看器自己的竖向滚动条贴在最右侧，压住它下端会很难抓。
-它靠**两个条件**显示：CSS `:hover`（浮层保持 `opacity: 0` 但**留着布局盒与命中测试**，
-所以不需要额外热区、也没有死角），以及页面/缩放变化时 `flashViewerOverlay()` 加的
-`is-visible` 类（约 1.6s 后移除，每次调用**重置计时器**）。两者并存，鼠标停在上面时
-不会被计时器藏掉。无文档时由 `updatePreviewControls()` 整块 `hidden`。
+**两个浮层**：`#viewer-overlay`（翻页 / 缩放 / 「用默认应用打开」）在 `#preview-host`
+**右下角**，`#viewer-saveas`（另存为）在**右上角**。两个都**内缩 18px**——查看器自己的
+竖向滚动条贴在最右侧，压住它下端会很难抓。两者共用同一套 `.is-visible` / `:hover` 规则
+与同一个 `flashViewerOverlay()`，外观也一致，这样读起来是**一组控件**而不是两个无关部件。
+
+**三个显示条件**：① CSS `:hover`（浮层保持 `opacity: 0` 但**留着布局盒与命中测试**，
+所以不需要额外热区、也没有死角）；② 页面/缩放变化时 `flashViewerOverlay()` 加的
+`is-visible` 类（约 1.6s 后移除，每次调用**重置计时器**）；③ **滚轮**——见下。
+三者并存，鼠标停在上面时不会被计时器藏掉。无文档时由 `updatePreviewControls()` 整块
+`hidden`。
+
+**滚轮为什么需要主进程配合**：查看器在另一个进程里，其滚轮事件**不到父页面的监听器**，
+`postMessage` 接口在本版 Chromium 也没暴露（都实测过）。但主进程的 `input-event` 能
+看到 `mouseWheel`，只是**没有坐标也没有增量**；而父页面**能**收到 iframe 的
+`mouseenter`/`mouseleave`。于是主进程只转发"发生了一次滚轮"，渲染进程再配对
+`pointerOverPreview` 标志，**两者同时成立**才显示——否则在侧栏上滚滚轮也会弹出文档控件。
+
+**加新浮层时注意 `renderPreview()`**：它 `host.innerHTML = ""` 清空 `#preview-host`，
+浮层现在都住在里面，所以必须先把它们取出来再 `append` 回去（见 `VIEWER_OVERLAYS`）。
+漏掉这一步浮层会在第一次渲染时被永久删除——写这一轮时就踩过一次。
 
 **侧栏底部**：进度条与设置按钮**同一行**（进度条在左、设置只占一个方形图标位）。
 设置图标是**内联 SVG**（8 齿齿轮：一个粗描边圆得到齿盘与中心孔 + 8 个旋转小矩形当齿），
