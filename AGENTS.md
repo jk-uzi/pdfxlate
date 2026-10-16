@@ -33,6 +33,7 @@ python/pdfxlate/          Python 核心
   pdf/                    PDF 管线：pipeline / interp / layout / ocr / converter 等
                           （two_phase.py 是 MCP 用的两遍式收集/回填引擎）
 src/{main,preload,renderer}/   Electron 前端（主进程 / preload / 渲染进程）
+                              渲染进程为两栏：左侧设置栏 + 右侧 PDF 预览
 tests/                    pytest 测试
 scripts/                  copy-static.mjs（拷静态资源）、build.sh（一键构建）
 ```
