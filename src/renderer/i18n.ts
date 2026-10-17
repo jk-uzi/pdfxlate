@@ -155,6 +155,8 @@ const EN: Table = {
   "preview.emptyTitle": "No document open",
   "preview.emptyHint": "Drop a PDF here, or use “Choose files…” in the sidebar.",
   "tab.close": "Close",
+  "tab.scrollLeft": "Scroll tabs left",
+  "tab.scrollRight": "Scroll tabs right",
 
   "drop.notPdf": "Only PDF files can be opened; skipped {name}",
   "drop.noFolder": "No folder chosen, so the file was opened without being filed (choose a folder to keep dropped files).",
@@ -340,6 +342,8 @@ const ZH: Table = {
   "preview.emptyTitle": "尚未打开文档",
   "preview.emptyHint": "将 PDF 拖到此处，或用左侧的「选择文件…」。",
   "tab.close": "关闭",
+  "tab.scrollLeft": "向左滚动标签",
+  "tab.scrollRight": "向右滚动标签",
 
   "drop.notPdf": "只能打开 PDF，已跳过 {name}",
   "drop.noFolder": "尚未选择文件夹，文件已打开但未归档（选择文件夹后可自动归档拖入的文件）。",

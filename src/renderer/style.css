@@ -66,6 +66,11 @@ body {
 /*
  * Open documents, inline in the title bar.
  *
+ * Two levels on purpose: the outer box owns the arrows and the flex sizing,
+ * the inner strip is the part that scrolls. The arrows cannot live inside the
+ * scrolling element — they would scroll away with the very tabs they exist to
+ * bring into view.
+ *
  * `flex: 0 1 auto` is the whole trick: with no tabs it takes no width and the
  * drag strip owns the bar (so an empty title bar still drags the window the
  * whole way across), and as tabs accumulate it shrinks and scrolls instead of
@@ -75,21 +80,78 @@ body {
   flex: 0 1 auto;
   display: flex;
   align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+.tabbar__strip {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
   gap: 4px;
   min-width: 0;
   overflow-x: auto;
+  overflow-y: hidden;
   scrollbar-width: none;
 }
 
-.tabbar::-webkit-scrollbar {
+.tabbar__strip::-webkit-scrollbar {
   display: none;
 }
 
-.tab {
+/*
+ * The overflow arrows.
+ *
+ * `display: none` rather than `opacity: 0` when everything fits: an invisible
+ * arrow still occupies 22px of the strip, and could then be the reason the
+ * tabs no longer fit. Hiding it gives the width back, which only ever reduces
+ * the overflow — so the two states cannot oscillate.
+ */
+.tabbar__arrow {
   flex: 0 0 auto;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+
+.tabbar.is-overflowing .tabbar__arrow {
+  display: flex;
+}
+
+.tabbar__arrow:hover:not(:disabled) {
+  background: #eef0f3;
+  color: var(--text);
+}
+
+.tabbar__arrow:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.tabbar__arrow svg {
+  display: block;
+  width: 16px;
+  height: 16px;
+}
+
+.tab {
+  flex: 0 1 auto;
   display: flex;
   align-items: center;
   gap: 6px;
+  /* Shrinks as tabs accumulate, but only to this floor: below ~96px the name
+     is three or four characters and the tab stops being identifiable. Past
+     that the strip scrolls and the arrows take over. */
+  min-width: 96px;
   max-width: 210px;
   height: 32px;
   padding: 0 6px 0 11px;
@@ -99,11 +161,25 @@ body {
   font: inherit;
   font-size: 12.5px;
   color: var(--muted);
-  cursor: pointer;
+  cursor: grab;
+  /* A tab is a handle, not text: selecting the label while reordering would
+     leave a blue smear behind. */
+  user-select: none;
   /* Interactive controls must opt out of the window-drag behaviour; a drag
      region swallows clicks silently, so a tab left inside one would look
      present and never respond. */
   -webkit-app-region: no-drag;
+}
+
+.tab:active {
+  cursor: grabbing;
+}
+
+/* The tab being reordered. Faded rather than outlined: the gap it leaves in
+   the row is what shows where it came from, and the others close over it as
+   the pointer moves. */
+.tab.is-dragging {
+  opacity: 0.45;
 }
 
 .tab:hover {
@@ -119,6 +195,11 @@ body {
 }
 
 .tab__name {
+  /* `min-width: 0` is required for the ellipsis: without it a flex item
+     refuses to shrink below its content width and the name overflows the tab
+     instead of being cut with "…". */
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;

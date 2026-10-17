@@ -40,9 +40,44 @@
         <!-- icon-inline -->
       </button>
 
-      <!-- Populated from the open documents; empty until one is opened, in
-           which case it takes no width and the drag strip spans the bar. -->
-      <div class="tabbar" id="tabbar"></div>
+      <!--
+        Open documents, inline in the title bar.
+
+        Three parts: a left arrow, the scrolling strip, a right arrow. The
+        arrows are hidden until the strip overflows (app.ts toggles
+        `.is-overflowing`), so a bar with one or two tabs looks exactly as it
+        did before. They sit outside `#tabbar-strip` because anything inside a
+        scroll container scrolls away with its contents.
+
+        The strip is populated from the open documents; empty until one is
+        opened, in which case it takes no width and the drag strip spans the
+        bar.
+      -->
+      <div class="tabbar" id="tabbar">
+        <button
+          id="tabbar-prev"
+          class="tabbar__arrow"
+          data-i18n-title="tab.scrollLeft"
+          data-i18n-aria-label="tab.scrollLeft"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M15 5 8 12l7 7" fill="none" stroke="currentColor"
+                  stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </button>
+        <div class="tabbar__strip" id="tabbar-strip"></div>
+        <button
+          id="tabbar-next"
+          class="tabbar__arrow"
+          data-i18n-title="tab.scrollRight"
+          data-i18n-aria-label="tab.scrollRight"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M9 5l7 7-7 7" fill="none" stroke="currentColor"
+                  stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </button>
+      </div>
 
       <div class="titlebar__drag"></div>
 

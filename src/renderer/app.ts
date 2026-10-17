@@ -526,6 +526,9 @@ function paintSettingsMode(): void {
   $("tabbar").classList.toggle("hidden", inSettings);
   $("preview-host").classList.toggle("hidden", inSettings);
   $("settings-host").classList.toggle("hidden", !inSettings);
+  // The strip has no width while hidden, so the overflow state cannot be
+  // measured then; recompute once it is back on screen.
+  if (!inSettings) requestAnimationFrame(updateTabbarScroll);
 
   for (const button of document.querySelectorAll<HTMLElement>(".settings-menu__item")) {
     button.classList.toggle("is-active", button.dataset.section === settingsSection);
@@ -883,15 +886,33 @@ $("btn-pick-folder").addEventListener("click", async () => {
 
 // --- tabs ------------------------------------------------------------------
 
+/** How long a finished drag suppresses the click it would otherwise cause. */
+const DRAG_CLICK_GUARD_MS = 250;
+
+/** Set by a tab drag, so the click that follows `dragend` does not activate. */
+let tabDragEndedAt = 0;
+
+/** The path being dragged, so a drop can be matched against it. */
+let draggingTab: string | null = null;
+
 function renderTabs(): void {
-  const bar = $("tabbar");
-  bar.innerHTML = "";
+  const strip = $("tabbar-strip");
+  // Rebuilding the children discards the scroll position, which would send a
+  // strip scrolled to the end back to the first tab every time a document is
+  // activated or a locale changes. Carried across instead.
+  const previousScroll = strip.scrollLeft;
+  strip.innerHTML = "";
+
   for (const file of openTabs) {
     const tab = document.createElement("div");
     tab.className = "tab";
     tab.classList.toggle("is-active", activeTab === file);
     // The full path in the tooltip: two folders can hold the same file name.
     tab.title = file;
+    // The path is what identifies the tab across a reorder; the DOM order is
+    // only the user's preferred arrangement of it.
+    tab.dataset.path = file;
+    tab.draggable = true;
 
     const name = document.createElement("span");
     name.className = "tab__name";
@@ -901,6 +922,8 @@ function renderTabs(): void {
     close.className = "tab__close";
     close.textContent = "×";
     close.title = t("tab.close");
+    // A draggable child would start a tab drag instead of pressing the button.
+    close.draggable = false;
     close.addEventListener("click", (e) => {
       // Without this the click also lands on the tab underneath and re-selects
       // the document that is being closed.
@@ -910,12 +933,164 @@ function renderTabs(): void {
 
     // Clicking anywhere on the tab activates it, matching how tabs behave
     // elsewhere; the close button is the only part that acts differently.
-    tab.addEventListener("click", () => activateTab(file));
+    tab.addEventListener("click", () => {
+      // A drag ends with a click on the tab it started from; activating there
+      // would fight the reorder the user just performed.
+      if (Date.now() - tabDragEndedAt < DRAG_CLICK_GUARD_MS) return;
+      activateTab(file);
+    });
+
+    tab.addEventListener("dragstart", (e) => beginTabDrag(e, tab, file));
+    tab.addEventListener("dragend", () => endTabDrag(tab));
 
     tab.append(name, close);
-    bar.append(tab);
+    strip.append(tab);
+  }
+
+  strip.scrollLeft = previousScroll;
+  // Deferred: the widths the browser settles on are only known after layout,
+  // and both the overflow state and the active tab's visibility depend on them.
+  requestAnimationFrame(() => {
+    updateTabbarScroll();
+    revealActiveTab();
+  });
+}
+
+/**
+ * Start reordering a tab.
+ *
+ * The payload is a private MIME type rather than `text/plain`: the latter would
+ * also be accepted by anything that takes text drops — including the address
+ * bar of a browser window opened over this one — and dragging a tab out of the
+ * window should do nothing at all.
+ */
+function beginTabDrag(e: DragEvent, tab: HTMLElement, file: string): void {
+  draggingTab = file;
+  tab.classList.add("is-dragging");
+  e.dataTransfer?.setData("application/x-pdfxlate-tab", file);
+  // Copy, not move: a move cursor promises the tab will leave the bar.
+  if (e.dataTransfer) e.dataTransfer.effectAllowed = "copyMove";
+}
+
+/**
+ * Finish a reorder and adopt the new order.
+ *
+ * The order is read back from the DOM rather than tracked during the drag:
+ * `dragover` moves the element itself, so the DOM already is the arrangement
+ * the user sees, and re-deriving it would only give two sources of truth.
+ */
+function endTabDrag(tab: HTMLElement): void {
+  tab.classList.remove("is-dragging");
+  draggingTab = null;
+  tabDragEndedAt = Date.now();
+
+  const strip = $("tabbar-strip");
+  const order = Array.from(strip.querySelectorAll<HTMLElement>(".tab"))
+    .map((el) => el.dataset.path)
+    .filter((path): path is string => Boolean(path));
+  // Every open tab has a DOM node, so a length mismatch means the DOM was
+  // rewritten underneath us; keeping the previous order beats dropping tabs.
+  if (order.length !== openTabs.length) return;
+  if (order.every((path, i) => path === openTabs[i])) return;
+
+  openTabs = order;
+  // No re-render: the DOM already shows this order, and rebuilding it here
+  // would cancel the animation the browser is finishing.
+  renderFiles();
+  updateTabbarScroll();
+}
+
+/**
+ * Move a tab to the pointer's position while a reorder is in progress.
+ *
+ * The insertion point comes from each tab's midpoint, which is what makes the
+ * row feel like it is rearranging under the cursor rather than only updating on
+ * drop.
+ */
+function dragTabOver(e: DragEvent): void {
+  if (!draggingTab) return;
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+
+  const strip = $("tabbar-strip");
+  const dragged = strip.querySelector<HTMLElement>(".tab.is-dragging");
+  if (!dragged) return;
+
+  const siblings = Array.from(strip.querySelectorAll<HTMLElement>(".tab")).filter(
+    (el) => el !== dragged,
+  );
+  const after = siblings.find((el) => {
+    const box = el.getBoundingClientRect();
+    return e.clientX < box.left + box.width / 2;
+  });
+  if (after) strip.insertBefore(dragged, after);
+  else strip.append(dragged);
+}
+
+/**
+ * Show the arrows only when there is something to scroll to, and disable the
+ * one pointing at an end that has been reached.
+ *
+ * Called after every render, on scroll and on resize: all three change either
+ * the content width or the visible width.
+ */
+function updateTabbarScroll(): void {
+  const bar = $("tabbar");
+  const strip = $("tabbar-strip");
+  // A hidden strip (settings mode) has no width, and measuring it would report
+  // overflow for zero tabs.
+  if (!strip.clientWidth) {
+    bar.classList.remove("is-overflowing");
+    return;
+  }
+  const overflowing = strip.scrollWidth > strip.clientWidth + 1;
+  bar.classList.toggle("is-overflowing", overflowing);
+  // The arrows are `display: none` while everything fits, so their disabled
+  // state is only meaningful once they are shown.
+  if (!overflowing) return;
+  // 1px of slack: sub-pixel layout means the two ends rarely compare exactly.
+  $<HTMLButtonElement>("tabbar-prev").disabled = strip.scrollLeft <= 1;
+  $<HTMLButtonElement>("tabbar-next").disabled =
+    strip.scrollLeft >= strip.scrollWidth - strip.clientWidth - 1;
+}
+
+/** Scroll the strip by most of a screenful, the way tab bars elsewhere do. */
+function scrollTabs(direction: -1 | 1): void {
+  const strip = $("tabbar-strip");
+  const step = Math.max(120, Math.round(strip.clientWidth * 0.8));
+  strip.scrollBy({ left: direction * step, behavior: "smooth" });
+}
+
+/**
+ * Bring the active tab into view.
+ *
+ * Only scrolls when it is actually outside the strip: a tab that is already
+ * visible should not shift the row under the user's pointer.
+ */
+function revealActiveTab(): void {
+  const strip = $("tabbar-strip");
+  const active = strip.querySelector<HTMLElement>(".tab.is-active");
+  if (!active) return;
+  const stripBox = strip.getBoundingClientRect();
+  const tabBox = active.getBoundingClientRect();
+  if (tabBox.left < stripBox.left) {
+    strip.scrollLeft -= stripBox.left - tabBox.left;
+  } else if (tabBox.right > stripBox.right) {
+    strip.scrollLeft += tabBox.right - stripBox.right;
   }
 }
+
+$("tabbar-prev").addEventListener("click", () => scrollTabs(-1));
+$("tabbar-next").addEventListener("click", () => scrollTabs(1));
+$("tabbar-strip").addEventListener("scroll", updateTabbarScroll, { passive: true });
+$("tabbar-strip").addEventListener("dragover", dragTabOver);
+// The strip is also where a tab is dropped when the pointer is past the last
+// tab, and `drop` must be cancelled there too or the browser refuses it.
+$("tabbar-strip").addEventListener("drop", (e) => {
+  if (!draggingTab) return;
+  e.preventDefault();
+});
+window.addEventListener("resize", updateTabbarScroll);
 
 /** Open a document, or focus its tab if it is already open. */
 function openDocument(file: string): void {
@@ -1262,10 +1437,23 @@ function setFrameDroppable(droppable: boolean): void {
   }
 }
 
+/**
+ * Whether a drag carries files rather than one of the app's own drags.
+ *
+ * Reordering a tab also fires `dragenter` on the document, and without this
+ * test that would switch the viewer frame off and light up the drop outline —
+ * so dragging a tab across the window would look like a file about to be
+ * dropped, and dropping it there would run the file handler on no files.
+ */
+function isFileDrag(e: DragEvent): boolean {
+  return Array.from(e.dataTransfer?.types ?? []).includes("Files");
+}
+
 // Listened for on `document`, not on the host: with a document open the frame
 // swallows events aimed at the host, and this is the one event that still
 // reaches the parent, so it is where the frame has to be switched off.
-document.addEventListener("dragenter", () => {
+document.addEventListener("dragenter", (e) => {
+  if (!isFileDrag(e)) return;
   setFrameDroppable(false);
   previewHost.classList.add("preview__host--over");
 });
@@ -1278,10 +1466,12 @@ document.addEventListener("dragleave", (e) => {
   }
 });
 previewHost.addEventListener("dragover", (e) => {
+  if (!isFileDrag(e)) return;
   e.preventDefault();
   previewHost.classList.add("preview__host--over");
 });
 previewHost.addEventListener("drop", (e) => {
+  if (!isFileDrag(e)) return;
   e.preventDefault();
   setFrameDroppable(true);
   previewHost.classList.remove("preview__host--over");

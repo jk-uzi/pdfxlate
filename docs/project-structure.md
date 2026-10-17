@@ -54,6 +54,7 @@ Python 3.12，venv 在 `python/.venv`，包以 editable 方式安装，改源码
 | 改侧栏宽度 | `src/renderer/app.ts` 的 `applySidebarWidth()` / `clampSidebarWidth()` + `style.css` 的 `--sidebar-width`、`.sidebar__resizer` |
 | 改浮层显隐时机 | `src/renderer/app.ts` 的 `flashViewerOverlay()` + `VIEWER_OVERLAYS`；滚轮那条还需 `src/main/main.ts` 的 `registerWheelForwarding()` |
 | 改右侧 PDF 预览（标签/翻页/缩放） | `src/renderer/app.ts` 的 `renderPreview()` / `viewerUrl()` / `activateTab()` |
+| 改标签栏（宽度/箭头/拖动排序） | `src/renderer/app.ts` 的 `renderTabs()` / `updateTabbarScroll()` / `dragTabOver()` / `endTabDrag()` + `style.css` 的 `.tabbar` / `.tab` |
 | 改左侧文件列表（文件夹浏览/勾选） | `src/renderer/app.ts` 的 `openFolder()` / `renderFiles()`；目录列举在 `src/main/main.ts` 的 `app:listPdfs` |
 | 改拖放行为（复制/改名） | `src/renderer/app.ts` 的 `handleDropped()`；复制与改名在 `src/main/main.ts` 的 `app:importPdf` / `uniquePath()` |
 | 改左侧栏分组 | `src/renderer/index.html` 的 `details.group` + `app.ts` 的 `expandGroup()` |
@@ -119,11 +120,11 @@ pdfxlate/
 │   ├── preload/
 │   │   └── preload.ts       190 行  contextBridge，向渲染进程暴露 API
 │   └── renderer/
-│       ├── index.html       517 行  界面结构（文案走 data-i18n* 属性；图标在构建时内联）
-│       ├── app.ts          2178 行  界面逻辑（任务/设置双模式、折叠、标签页、文件夹浏览、拖放、缩放、进度、另存为、选项覆盖、侧栏拖拽、MCP 配置）
-│       ├── i18n.ts          517 行  中英文字符串表 + t()/applyStaticTranslations()
+│       ├── index.html       552 行  界面结构（文案走 data-i18n* 属性；图标在构建时内联）
+│       ├── app.ts          2368 行  界面逻辑（任务/设置双模式、折叠、标签页、文件夹浏览、拖放、缩放、进度、另存为、选项覆盖、侧栏拖拽、MCP 配置）
+│       ├── i18n.ts          575 行  中英文字符串表 + t()/applyStaticTranslations()
 │       ├── icon.svg          49 行  应用标记的**唯一来源**（标题栏内联 + 打包图标）
-│       └── style.css       1162 行  样式（含标题栏标签、查看器浮层、折叠与侧栏状态行、侧栏拖拽手柄）
+│       └── style.css       1243 行  样式（含标题栏标签、查看器浮层、折叠与侧栏状态行、侧栏拖拽手柄）
 ├── assets/
 │   ├── icon.png               512×512，由 make_icon.py 从 icon.svg 生成后提交
 │   └── icon.ico               16–256 多尺寸，同上（Windows 用）
@@ -487,6 +488,24 @@ PDF，它是空的，两个按钮就被禁用并提示"请先翻译"：程序**�
 - **标签栏在标题栏里**（`#tabbar`，标记与拖拽条之间）。省下一条独立标签栏的整条高度。
   `flex: 0 1 auto`：没标签时宽 0、拖拽条独占整条；标签多了才收缩滚动。
   **拖拽条必须保留 `min-width: 40px`**，否则标签铺满后窗口拖不动。
+- **标签宽度自适应，下限 96px、上限 210px**（`.tab { flex: 0 1 auto }`）。少时按内容宽度
+  最多 210px；多了按比例压缩，到 96px 就不再压，改由横向滚动接管。96px 是取舍点：再窄
+  文件名只剩三四个字符，标签就认不出来了。约 1000px 的标签区能放 10 个，再多交给箭头。
+- **溢出时出现左右箭头**（`updateTabbarScroll()`）。`#tabbar` 是外层、`#tabbar-strip` 才是
+  滚动容器——箭头若放在滚动容器内，会跟着标签一起滚走。只有
+  `scrollWidth > clientWidth` 时才加 `.is-overflowing`，箭头用 `display: none` 而非
+  `opacity: 0`：不可见的箭头仍占 22px，反而可能*造成*溢出，而隐藏只会释放宽度，两个状态
+  因此不会来回抖。到两端时对应箭头 `disabled`（留 1px 余量，亚像素布局下两端很少精确相等）。
+- **重建标签会丢掉滚动位置**，所以 `renderTabs()` 先存 `scrollLeft` 再恢复，并在下一帧
+  `revealActiveTab()` 把激活项滚进可视区（仅在确实不可见时滚，否则会在指针下抽动）。
+- **拖动标签排序**：`draggable` + 自定义 MIME `application/x-pdfxlate-tab`（**不写
+  `text/plain`**，否则拖出窗口时浏览器地址栏会接受它）。`dragover` 按各标签中点直接
+  `insertBefore` 实时预览；`dragend` 从 DOM 读回顺序写进 `openTabs`（DOM 已经是用户看到的
+  排列，再自己推一遍等于两个真相）。文字 `user-select: none`；`dragend` 后 250ms 内忽略
+  click，否则拖动结束会顺手激活那个标签。
+- **拖动标签不能触发 PDF 拖放**：`dragenter` 对任何拖动都会发生，于是 `isFileDrag()`
+  只认 `dataTransfer.types` 含 `"Files"` 的拖动。不加这层判断，把标签拖过预览区就会点亮
+  拖放边框、并在落点时对空文件列表走一遍 `handleDropped`。
 - **页号按标签各自记住**（`pageState: Map<path, {page, pages}>`）；**缩放是全局的**
   ——那是阅读偏好，每份文档不一样反而更糟。
 - 翻译完成后**产出自动开成标签**（mono + dual），替代原来的「结果」分组。
