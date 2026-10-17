@@ -1127,13 +1127,29 @@ body.sidebar-collapsed .sidebar {
  * over, and the button stays a fixed square. The bar is unlabelled, so the
  * text line sits under the row rather than beside it.
  */
+/* The bar is the only thing in the row, so it takes the full width. */
 .sidebar__status {
+  display: flex;
+  align-items: center;
+}
+
+.sidebar__status .progress {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/*
+ * Status text and the settings entry. `space-between` with a shrinking text
+ * block keeps the button pinned to the right edge: on a narrow sidebar the
+ * label is the thing that gives way, not the control.
+ */
+.sidebar__foot {
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
-.sidebar__status .progress {
+.sidebar__foot .sidebar__status-text {
   flex: 1 1 auto;
   min-width: 0;
 }
@@ -1146,6 +1162,54 @@ body.sidebar-collapsed .sidebar {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/*
+ * The settings entry.
+ *
+ * Its own class rather than a variant of `.btn--icon`: that one is shared with
+ * other icon buttons, and this is meant to read as a distinct, slightly
+ * recessed control at the end of the status line.
+ *
+ * `.btn.btn--settings` rather than `.btn--settings`: the generic `.btn` rule
+ * is declared further down the sheet with the same specificity, so a single
+ * class would lose the border-radius and padding to it.
+ */
+.btn.btn--settings {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+
+.btn.btn--settings:hover:not(:disabled) {
+  background: #eef0f3;
+  border-color: #cfd6dd;
+  color: var(--text);
+}
+
+.btn.btn--settings:active:not(:disabled) {
+  background: #e4e8ee;
+}
+
+.btn.btn--settings:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.btn--settings svg {
+  display: block;
+  width: 17px;
+  height: 17px;
 }
 
 /* --- collapsible groups -------------------------------------------------- */
@@ -1391,30 +1455,6 @@ input[readonly] {
 
 .btn--small {
   padding: 7px 10px;
-}
-
-/* Icon-only button: a fixed square so it does not stretch beside the progress
-   bar, with the padding dropped in favour of centring the glyph. */
-.btn--icon {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  width: 30px;
-  height: 30px;
-  color: var(--muted);
-}
-
-.btn--icon:hover:not(:disabled) {
-  color: var(--text);
-}
-
-/* Sized here rather than on the SVG element so the markup stays a bare shape. */
-.icon-gear {
-  display: block;
-  width: 18px;
-  height: 18px;
 }
 
 .icon-btn {

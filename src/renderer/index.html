@@ -223,44 +223,43 @@
           </div>
 
           <!--
-            Progress shares this row with the settings button: the bar takes the
-            width it needs and Settings collapses to a single icon. The bar
-            itself has no visible label, so the text line sits under the row.
+            The bar owns the full width now that the gear has moved down to the
+            status line: sharing a row with a 30px button cost the bar a third
+            of the sidebar.
           -->
           <div class="sidebar__status">
             <div class="progress">
               <div id="progress-bar" class="progress__bar"></div>
             </div>
+          </div>
+
+          <!-- Status text and the settings entry share the last line. -->
+          <div class="sidebar__foot">
+            <p id="progress-text" class="sidebar__status-text" data-i18n="progress.idle"></p>
             <button
               id="btn-open-settings"
-              class="btn btn--icon"
+              class="btn btn--settings"
               data-i18n-title="settings.open"
               data-i18n-aria-label="settings.open"
             >
-              <svg class="icon-gear" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                <!--
-                  A gear: a thick-stroked circle (which yields both the body and
-                  the centre hole from one element) plus eight short teeth.
-                  Drawn with `currentColor` so it follows the theme — an inline
-                  SVG is part of the document and inherits `color`, which an
-                  <img> reference could not. The teeth are deliberately stubby:
-                  thin strokes turn to mush at the 18px this renders at.
-                -->
-                <circle cx="12" cy="12" r="5.2" fill="none" stroke="currentColor" stroke-width="4" />
-                <g fill="currentColor">
-                  <rect x="10.9" y="0.6" width="2.2" height="4.6" rx="1.1" />
-                  <rect x="10.9" y="0.6" width="2.2" height="4.6" rx="1.1" transform="rotate(45 12 12)" />
-                  <rect x="10.9" y="0.6" width="2.2" height="4.6" rx="1.1" transform="rotate(90 12 12)" />
-                  <rect x="10.9" y="0.6" width="2.2" height="4.6" rx="1.1" transform="rotate(135 12 12)" />
-                  <rect x="10.9" y="0.6" width="2.2" height="4.6" rx="1.1" transform="rotate(180 12 12)" />
-                  <rect x="10.9" y="0.6" width="2.2" height="4.6" rx="1.1" transform="rotate(225 12 12)" />
-                  <rect x="10.9" y="0.6" width="2.2" height="4.6" rx="1.1" transform="rotate(270 12 12)" />
-                  <rect x="10.9" y="0.6" width="2.2" height="4.6" rx="1.1" transform="rotate(315 12 12)" />
-                </g>
+              <!--
+                A six-toothed gear as one stroked outline rather than a circle
+                plus eight rectangles: the assembled version turned to mush at
+                18px, because the teeth met the body at sharp corners.
+              -->
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path
+                  d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9v.09a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+                <circle cx="12" cy="12" r="2.6" fill="none" stroke="currentColor" stroke-width="1.6" />
               </svg>
             </button>
           </div>
-          <p id="progress-text" class="sidebar__status-text" data-i18n="progress.idle"></p>
         </div>
       </aside>
 

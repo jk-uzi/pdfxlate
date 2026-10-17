@@ -2151,3 +2151,70 @@ CDP 实测：勾选框与名称同行且在左、行高 32px；`flex-direction` 
 初始 `已选 0 / 6`（7 个上游 id 中 1 个已添加被锁定）；点全选后 `已选 6 / 6` 且全选框勾上；
 搜索 `glm` 后为 `已选 0 / 5`，全选后 `已选 5 / 5`；取消一项后 `已选 4 / 5` 且中间态生效。
 截图确认弹窗与模型列表的最终形态。
+
+## 侧栏底部重排、设置按钮重设计、修复拉取重复
+
+### 1. 设置按钮下移到「就绪」那一行
+
+原来 `.sidebar__status` 一行里挤着 `[进度条][齿轮]`，而「就绪」文字在**下一行**单独放着，
+进度条因此只能占侧栏宽度减去 30px 齿轮再加间隙。
+
+现在分成两行：
+
+```
+[进度条 ──────────────────────────────]   ← .sidebar__status，只剩进度条
+[就绪。                          [⚙]]   ← .sidebar__foot
+```
+
+进度条从 315px（340 − 12×2 padding − 30 按钮 − 8 间隙里的实际余量）变成占满
+`.sidebar__actions` 的内容宽度，实测 315px 全宽；齿轮与状态文字的 `top` 相差 5px 内、位于
+右侧。窄侧栏时 `.sidebar__status-text` 先截断（`flex: 1 1 auto` + `ellipsis`），按钮不被挤走。
+
+齿轮**留在侧栏**没有搬到 PDF 视图右上角——按交互里的选择，与最初那句「调整到 pdf 视图
+右上方」相反。第一张图（标题栏的图钉）按选择未改动。
+
+### 2. 设置按钮重设计
+
+- 尺寸 30×30 → **28×28**，圆角 6 → **8px**，底色 `var(--card)`，hover 转淡灰；
+- 图标从「粗描边圆 + 8 个矩形齿」换成**单条描边路径的六齿齿轮**（stroke 1.6、round 端点）。
+  原来那套在 18px 下齿与本体以直角相接，糊成一团；描边路径在同样尺寸下轮廓更清楚；
+- `:focus-visible` 用 `--accent` 描边，键盘可达。
+
+**踩到一个 CSS 优先级坑**：`.btn--settings` 原本写在 1174 行，而通用的 `.btn` 在 1414 行，
+同优先级下后者更晚，把 `width`/`border-radius`/`padding` 全盖回去了——第一次量出来是
+30×28、圆角 6px。改用 `.btn.btn--settings`（两个类）提高优先级后才是 28×28 / 8px。
+这与本轮和上一轮修的两个 `label { flex-direction: column }` 覆盖问题是同一类错误：
+**单类选择器在长样式表里靠位置取胜是不可靠的**。
+
+`.btn--icon` 与 `.icon-gear` 在改动后已无引用，一并删除，避免留死代码。
+
+### 3. 修复「拉取上游后同一模型出现两次」
+
+**根因**：`paintModelsOptions()` 判断「已添加」时用的是
+
+```ts
+new Set(Object.keys(provider?.models ?? {}))
+```
+
+`Object.keys` 拿到的是**别名**。模型行允许别名与 API id 不同（例如别名 `local-alias`、
+`model: deepseek-v4-pro`），而上游清单返回的是 **id**。于是 `has("deepseek-v4-pro")` 为
+false，弹窗把这个其实已经配好的模型当成新的，导入后 `models["deepseek-v4-pro"]` 与已有的
+`models["local-alias"]` 指向同一个 model，列表里就是两条。
+
+**两层修法**：
+
+1. 新增 `configuredModelIds(provider)`，用 `entry.model || alias` 收集**API id**，弹窗据此
+   判断「已添加」；
+2. `importSelectedModels()` 再加一道守卫，跳过任何 id 已存在的项——即使弹窗状态因某种原因
+   失效，也不会产生重复。
+
+**回归验证**：配置里写 `local-alias: {model: deepseek-v4-pro}`，mock 的 `/models` 返回
+`deepseek-v4-pro`。修改后弹窗中该项显示「已添加」、勾选且禁用；在只含 deepseek 的筛选下
+点「导入所选」，模型行数量保持 2 条不变。
+
+### 验证
+
+`pytest` 328 passed、`typecheck`、`check:i18n`（196 keys）、`build` 全绿。
+
+CDP 实测：进度条 315px 占满；齿轮 28×28、圆角 8px、单个 `path`（无 `rect`）、与状态文字同行
+且在右；重复检测如上。截图确认侧栏底部与按钮形态。

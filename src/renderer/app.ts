@@ -2636,12 +2636,28 @@ function setModelsDialogMessage(key: string, params?: Record<string, string>, er
   msg.className = error ? "msg msg--error" : "msg";
 }
 
+/**
+ * Which upstream ids this provider already has.
+ *
+ * The comparison must be against the **API model id**, not the alias. A model
+ * can be renamed after import (the alias changes, `model` keeps the id), and
+ * the alias map would then no longer contain the id — the dialog would offer it
+ * as new, and importing it created a second entry for the same model.
+ */
+function configuredModelIds(provider: string | null): Set<string> {
+  const models = provider ? draftProviders()[provider]?.models ?? {} : {};
+  const ids = new Set<string>();
+  for (const [alias, entry] of Object.entries(models)) {
+    ids.add(entry.model || alias);
+  }
+  return ids;
+}
+
 /** Render the checklist, filtered by the search box. */
 function paintModelsOptions(filter: string): void {
   const box = $("models-options");
   box.innerHTML = "";
-  const provider = editingProvider ? draftProviders()[editingProvider] : undefined;
-  const configured = new Set(Object.keys(provider?.models ?? {}));
+  const configured = configuredModelIds(editingProvider);
   const needle = filter.trim().toLowerCase();
   const visible = needle
     ? upstreamModels.filter((id) => id.toLowerCase().includes(needle))
@@ -2792,7 +2808,12 @@ async function importSelectedModels(): Promise<void> {
   const prov = draftProviders()[provider];
   if (!prov) return;
   if (!prov.models) prov.models = {};
+  // Second guard, on the value that actually matters. The dialog already hides
+  // ids that exist, but a stale dialog (or a future caller) must not be able to
+  // create a second entry pointing at the same API model.
+  const existingIds = configuredModelIds(provider);
   for (const id of chosen) {
+    if (existingIds.has(id)) continue;
     // The alias is the id itself: it is unique within the provider and is what
     // the row will show. The API id and the alias can be separated later in
     // the row editor.

@@ -21,7 +21,7 @@ Python 3.12，venv 在 `python/.venv`，包以 editable 方式安装，改源码
 | 调整发给模型的请求参数 | 对应适配器：`openai_compat.py` / `openai_responses.py` / `anthropic_messages.py`（`reasoning_effort` / `extra_body` / `stream` / `temperature`） |
 | 改重试策略 / 取消行为 | `pdf/converter.py` 的 `translate_segment()`（有界重试）+ `models/base.py` 的 `PERMANENT_TRANSLATION_ERRORS` |
 | 改「测试连接」 | `sidecar.py` 的 `method_providers_test` + `app.ts` 的 `testProvider()` |
-| 改「从上游拉取模型」 | `models/catalog.py` + `sidecar.py` 的 `method_providers_models` + `app.ts` 的 `openModelsDialog()` / `paintModelsOptions()` / `paintModelsCount()` |
+| 改「从上游拉取模型」 | `models/catalog.py` + `sidecar.py` 的 `method_providers_models` + `app.ts` 的 `openModelsDialog()` / `paintModelsOptions()` / `paintModelsCount()` / `configuredModelIds()` |
 | 改供应商改名 | `app.ts` 的 `renameProvider()` / `startRenamingProvider()` / `stopRenamingProvider()` |
 | 改翻译提示词 | `models/base.py` 的 `DEFAULT_PROMPT`，或配置里的 `translation.prompt` 指向模板文件 |
 | 改配置项 / 加新配置字段 | `config.py`（`Provider`、`ModelEntry`、`TranslationSettings` 等 pydantic 模型） |
@@ -56,6 +56,7 @@ Python 3.12，venv 在 `python/.venv`，包以 editable 方式安装，改源码
 | 改「另存为」存哪一份 | `src/renderer/app.ts` 的 `saveAsSource()`；对话框与拷贝在 `src/main/main.ts` 的 `dialog:saveAs` |
 | 改选项面板（模型/推理/语言，只影响本次） | `src/renderer/app.ts` 的 `optionValues` / `selectedModel()`；引擎侧覆盖在 `api.py` 的 `translate()` |
 | 改侧栏宽度 | `src/renderer/app.ts` 的 `applySidebarWidth()` / `clampSidebarWidth()` + `style.css` 的 `--sidebar-width`、`.sidebar__resizer` |
+| 改侧栏底部（进度条 / 状态 / 设置入口） | `index.html` 的 `.sidebar__status`（进度条）与 `.sidebar__foot`（状态文字 + `#btn-open-settings`），样式见 `style.css` 的 `.btn.btn--settings` |
 | 改浮层显隐时机 | `src/renderer/app.ts` 的 `flashViewerOverlay()` + `VIEWER_OVERLAYS` |
 | 改右侧 PDF 预览（标签/翻页/缩放） | `src/renderer/app.ts` 的 `renderPreview()` / `viewerUrl()` / `activateTab()` |
 | 改标签栏（宽度/箭头/拖动排序） | `src/renderer/app.ts` 的 `renderTabs()` / `updateTabbarScroll()` / `dragTabOver()` / `endTabDrag()` + `style.css` 的 `.tabbar` / `.tab` |
