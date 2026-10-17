@@ -408,131 +408,175 @@
 
         <!-- Settings detail: shown instead of the preview while in settings -->
         <div id="settings-host" class="settings-host hidden">
-          <section class="settings-panel" data-panel="model">
-            <h2 class="settings-panel__title" data-i18n="settings.sectionModel"></h2>
+          <!--
+            Model settings are the one section that is itself a two-column
+            layout: providers on the left, the selected provider's endpoint and
+            models on the right. The other three sections stay single-column
+            and centred (`.settings-panel`), which is why the split lives here
+            rather than on the host.
+          -->
+          <section class="settings-panel settings-panel--split" data-panel="model">
+            <div class="model-split">
+              <aside class="model-split__providers">
+                <div class="model-split__head">
+                  <span data-i18n="model.providerListTitle"></span>
+                  <button
+                    id="btn-add-provider"
+                    class="icon-btn icon-btn--bare"
+                    type="button"
+                    data-i18n-title="model.addProvider"
+                    data-i18n-aria-label="model.addProvider"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                      <path d="M12 5v14M5 12h14" />
+                    </svg>
+                  </button>
+                </div>
+
+                <!-- Inline rather than a modal: adding a provider is one field. -->
+                <div id="provider-add" class="add-inline hidden">
+                  <input
+                    id="new-provider-name"
+                    type="text"
+                    data-i18n-placeholder="model.newProviderPlaceholder"
+                  />
+                  <button id="btn-add-provider-confirm" class="btn btn--small btn--primary" data-i18n="model.add"></button>
+                </div>
+
+                <div id="provider-list" class="provider-list" role="listbox"></div>
+
+                <p class="hint model-split__hint" data-i18n="model.runHint"></p>
+              </aside>
+
+              <div class="model-split__detail">
+                <div id="provider-detail">
+                  <header class="provider-head">
+                    <svg class="provider-head__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                      <path d="M12 2.5 21 7v10l-9 4.5L3 17V7z" />
+                      <path d="M3 7l9 4.5L21 7M12 11.5V21.5" />
+                    </svg>
+                    <h2 id="provider-title" class="provider-head__title"></h2>
+                    <button
+                      id="btn-remove-provider"
+                      class="icon-btn icon-btn--bare icon-btn--danger"
+                      type="button"
+                      data-i18n-title="model.removeProvider"
+                      data-i18n-aria-label="model.removeProvider"
+                    >
+                      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                        <path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6" />
+                      </svg>
+                    </button>
+                  </header>
+
+                  <div class="grid grid--one model-fields">
+                    <label>
+                      <span data-i18n="model.baseUrl"></span>
+                      <input id="field-base-url" type="text" placeholder="https://api.example.com/v1" />
+                    </label>
+                    <label>
+                      <span data-i18n="model.kind"></span>
+                      <input id="field-kind" type="text" placeholder="openai_compat" />
+                    </label>
+                    <label>
+                      <span data-i18n="model.apiKey"></span>
+                      <input
+                        id="field-api-key"
+                        type="password"
+                        data-i18n-placeholder="model.apiKeyPlaceholder"
+                      />
+                    </label>
+                  </div>
+
+                  <div class="model-list__head">
+                    <span data-i18n="model.modelListTitle"></span>
+                    <button id="btn-add-model" class="btn btn--small btn--ghost" data-i18n="model.addModel"></button>
+                  </div>
+
+                  <div id="model-add" class="add-inline hidden">
+                    <input
+                      id="new-model-name"
+                      type="text"
+                      data-i18n-placeholder="model.newModelPlaceholder"
+                    />
+                    <button id="btn-add-model-confirm" class="btn btn--small btn--primary" data-i18n="model.add"></button>
+                  </div>
+
+                  <!-- Rows and the inline editor are built by app.ts: the row
+                       contents depend on the model's own settings. -->
+                  <div id="model-list" class="model-list" role="list"></div>
+
+                  <div class="row">
+                    <button id="btn-save-model" class="btn" data-i18n="model.save"></button>
+                    <span id="model-msg" class="msg"></span>
+                  </div>
+                </div>
+
+                <div id="provider-empty" class="provider-empty hidden">
+                  <p class="hint" data-i18n="model.noProviderSelected"></p>
+                  <button id="btn-add-provider-empty" class="btn btn--small" data-i18n="model.addProvider"></button>
+                </div>
+              </div>
+            </div>
 
             <!--
-              Two levels: a provider holds the endpoint and key once, and each
-              of its models carries its own settings. Nothing here says which
-              one to use — that is the Options panel's job.
+              One editor, moved under whichever row is expanded. A single
+              instance keeps every field id unique, so the existing
+              apply/commit helpers can keep addressing them by id.
             -->
-            <p class="hint" data-i18n="model.settingsHint"></p>
-
-            <h3 class="subhead" data-i18n="model.providerSection"></h3>
-            <div class="grid grid--form">
-              <label>
-                <span data-i18n="model.providerName"></span>
-                <select id="provider-select"></select>
-              </label>
-              <label>
-                <span data-i18n="model.kind"></span>
-                <input id="field-kind" type="text" placeholder="openai_compat" />
-              </label>
-              <label>
-                <span data-i18n="model.baseUrl"></span>
-                <input id="field-base-url" type="text" placeholder="https://api.example.com/v1" />
-              </label>
-              <label>
-                <span data-i18n="model.apiKey"></span>
-                <input
-                  id="field-api-key"
-                  type="password"
-                  data-i18n-placeholder="model.apiKeyPlaceholder"
-                />
-              </label>
-            </div>
-            <div class="row">
-              <input
-                id="new-provider-name"
-                type="text"
-                class="grow"
-                data-i18n-placeholder="model.newProviderPlaceholder"
-              />
-              <button id="btn-add-provider" class="btn btn--small" data-i18n="model.add"></button>
-              <button
-                id="btn-remove-provider"
-                class="btn btn--small btn--danger"
-                data-i18n="model.remove"
-              ></button>
-            </div>
-
-            <h3 class="subhead" data-i18n="model.modelSection"></h3>
-            <!--
-              The model being edited, not the model to use. Settings describes
-              what exists and how to reach it; which one a run uses is chosen in
-              Options. Same for the provider dropdown above.
-            -->
-            <p class="hint" data-i18n="model.editingHint"></p>
-            <div class="grid grid--form">
-              <label>
-                <span data-i18n="model.modelName"></span>
-                <select id="model-select"></select>
-              </label>
-              <label>
-                <span data-i18n="model.modelId"></span>
-                <input id="field-model-id" type="text" placeholder="model-name" />
-              </label>
-              <label>
-                <span data-i18n="model.contextLength"></span>
-                <input id="field-context-length" type="number" min="1" step="1024" />
-              </label>
-              <label>
-                <span data-i18n="model.maxTokens"></span>
-                <input
-                  id="field-max-tokens"
-                  type="number"
-                  min="1"
-                  data-i18n-placeholder="model.maxTokensAuto"
-                />
-              </label>
-              <label>
-                <span data-i18n="model.topP"></span>
-                <input id="field-top-p" type="number" step="0.05" min="0" max="1" />
-              </label>
-              <label>
-                <span data-i18n="model.reasoning"></span>
-                <select id="field-reasoning">
-                  <option value="" data-i18n="model.reasoningDefault"></option>
-                  <option value="low" data-i18n="model.reasoningLow"></option>
-                  <option value="medium" data-i18n="model.reasoningMedium"></option>
-                  <option value="high" data-i18n="model.reasoningHigh"></option>
-                </select>
-              </label>
-              <label>
-                <span data-i18n="model.temperature"></span>
-                <input id="field-temperature" type="number" step="0.1" min="0" max="2" value="0" />
-              </label>
-              <label class="check">
-                <input id="field-stream" type="checkbox" />
-                <span data-i18n="model.stream"></span>
-              </label>
-              <label class="field--wide">
-                <span data-i18n="model.extraBody"></span>
-                <input
-                  id="field-extra-body"
-                  type="text"
-                  placeholder='{"chat_template_kwargs":{"enable_thinking":true}}'
-                />
-              </label>
-            </div>
-            <div class="row">
-              <input
-                id="new-model-name"
-                type="text"
-                class="grow"
-                data-i18n-placeholder="model.newModelPlaceholder"
-              />
-              <button id="btn-add-model" class="btn btn--small" data-i18n="model.add"></button>
-              <button
-                id="btn-remove-model"
-                class="btn btn--small btn--danger"
-                data-i18n="model.remove"
-              ></button>
-            </div>
-
-            <div class="row">
-              <button id="btn-save-model" class="btn" data-i18n="model.save"></button>
-              <span id="model-msg" class="msg"></span>
+            <div id="model-editor" class="model-editor hidden">
+              <div class="grid grid--form">
+                <label>
+                  <span data-i18n="model.modelId"></span>
+                  <input id="field-model-id" type="text" placeholder="model-name" />
+                </label>
+                <label>
+                  <span data-i18n="model.contextLength"></span>
+                  <input id="field-context-length" type="number" min="1" step="1024" />
+                </label>
+                <label>
+                  <span data-i18n="model.maxTokens"></span>
+                  <input
+                    id="field-max-tokens"
+                    type="number"
+                    min="1"
+                    data-i18n-placeholder="model.maxTokensAuto"
+                  />
+                </label>
+                <label>
+                  <span data-i18n="model.topP"></span>
+                  <input id="field-top-p" type="number" step="0.05" min="0" max="1" />
+                </label>
+                <label>
+                  <span data-i18n="model.reasoning"></span>
+                  <select id="field-reasoning">
+                    <option value="" data-i18n="model.reasoningDefault"></option>
+                    <option value="low" data-i18n="model.reasoningLow"></option>
+                    <option value="medium" data-i18n="model.reasoningMedium"></option>
+                    <option value="high" data-i18n="model.reasoningHigh"></option>
+                  </select>
+                </label>
+                <label>
+                  <span data-i18n="model.temperature"></span>
+                  <input id="field-temperature" type="number" step="0.1" min="0" max="2" value="0" />
+                </label>
+                <label class="check">
+                  <input id="field-stream" type="checkbox" />
+                  <span data-i18n="model.stream"></span>
+                </label>
+                <label class="field--wide">
+                  <span data-i18n="model.extraBody"></span>
+                  <input
+                    id="field-extra-body"
+                    type="text"
+                    placeholder='{"chat_template_kwargs":{"enable_thinking":true}}'
+                  />
+                </label>
+              </div>
+              <div class="row">
+                <button id="btn-editor-save" class="btn btn--primary btn--small" data-i18n="model.saveChanges"></button>
+                <button id="btn-editor-close" class="btn btn--small btn--quiet" data-i18n="model.collapse"></button>
+              </div>
             </div>
           </section>
 

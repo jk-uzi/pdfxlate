@@ -1778,3 +1778,84 @@ JSON 字段跨满 760px、hint 窄于面板、四个设置页都居中、面板�
 复选框为 row 布局 / 13px / 不折行 / 对齐。截图确认版式。
 
 `typecheck`、`check:i18n`（163 keys）、`build`、`pytest`（208）全绿。
+
+## 设置 › 模型：改成「供应商列表 + 详情」两栏，并给模型加真正的启用开关
+
+设置页的模型面板原本是两个下拉（供应商 / 模型）+ 一长列平铺字段。目标版式参照
+ZCode 的模型设置：左边一列供应商，右边是选中供应商的接口信息和模型行列表。
+
+### 版式
+
+- **只有「模型」这一项是两栏**，侧栏（模型 / 外观 / 常规 / MCP）一行没动，
+  `外观 / 常规 / MCP` 仍是居中 760px 单栏。切换设置项时 `paintSettingsMode()` 给
+  `#settings-host` 加/去 `settings-host--split`。
+- 左列 `.model-split__providers` 固定 232px、独立滚动、右侧 1px 分隔线；
+  右列 `.model-split__detail` 占满剩余、独立滚动、内容限宽 720px。
+- 不新开第三栏的原因：窗口最小 1000px，减去 340px 侧栏后再三栏，详情只剩约 400px，
+  接口地址这类字段放不下。
+- 实测 1280×820：左列 232px、右列 708px、两列各自 `overflow-y: auto`、host 无内边距；
+  1024px 窗口下右列 452px，无横向溢出。
+
+### 供应商列表
+
+每行：方块图标 + 名称（省略号）+ 状态点。状态点**只反映配置，不做假的健康检查**
+（引擎里没有任何探测接口的逻辑）：绿 = 有地址且有密钥，琥珀 = 缺一个，灰 = 还没有模型。
+每个点带 `title` 说明含义。
+
+「+」展开一个内联输入行添加供应商；`confirm()` 后删除。都在标题栏，不再占一整行。
+
+### 详情与模型行
+
+- 头部：图标 + 供应商名 + 删除按钮（trash 图标，带确认）。
+- 接口地址 / 类型 / API 密钥三个字段**全宽纵向**排列（上一轮给模型页加的两列在这里撤掉）。
+  密钥框保留「留空即保持不变」的掩码语义。
+- 模型行：别名（粗体）、别名与模型 ID 不同时补灰色 ID、上下文长度徽章（`128K` / `1M`）、
+  有流式时再加一个徽章；右侧是编辑、删除、启用开关。
+- 点行或铅笔在**该行下方就地展开**编辑区（同一时刻只展开一个），内含原有全部字段和
+  「保存修改」。编辑区是**一个**元素，通过移动位置换行，因此字段 id 始终唯一，
+  `apply/commit` 系列不用重写。
+  - 踩到的坑：`renderModelList()` 先把编辑区 `remove()` 再重建列表，未展开时它就被
+    留在文档外，`getElementById` 全部返回 null（日志里表现为
+    `Cannot read properties of null (reading 'remove')`）。现在未展开时把它以隐藏状态
+    挂回列表末尾，并缓存元素引用。
+- 开关点击不冒泡到行，不会顺带展开/收起编辑区（实测 `expandedBefore === expandedAfter`）。
+
+### `enabled` 是真的启用/禁用，不是装饰
+
+`ModelEntry` 与 `ResolvedModel` 都加 `enabled: bool = True`（后者必须加：
+`_flatten` 会把 entry 的字段整体灌进去，而它 `extra="forbid"`）。语义：
+
+- 老配置没有这个键，默认启用，不需要迁移。
+- 无参 `resolve()` 取第一个**启用**的模型；全禁用时报 `No enabled models configured`。
+- 只给 provider 不给 model 时，同样取该 provider 第一个启用的模型。
+- **显式点名禁用模型报错**（`... is disabled; enable it in Settings first`）——
+  用户关掉它就是为了不被用，静默继续翻译更糟。
+- `all_models()` 默认仍返回全部（编辑器与 `--list-models` 要能看见并重新打开它），
+  新增 `only_enabled=True` 供选项面板和无参回退使用。
+- 选项面板过滤 `enabled === false`；记住的选项若正好被禁用，回退到第一个可用项。
+- `providers.list`、MCP 的 `list_providers` 都多返回 `enabled`（MCP 仍只读，没新增写工具）；
+  `--list-models` 给禁用项标 `(disabled)`，`used when unspecified` 标到第一个启用项。
+- 开关**立即保存**，不经过「保存」按钮：它是这一行唯一改变翻译可用范围的东西。
+
+### 验证
+
+`typecheck`（两个 tsconfig）、`check:i18n`（169 keys）、`build`、`pytest` **221 passed**
+（新增 `tests/test_config_enabled.py` 13 条）。
+
+CDP 实测（临时脚本，跑完即删）：
+
+- 进入设置 › 模型后 `settings-host--split` 存在，左列 232 / 右列 708，两列独立滚动；
+- 三个供应商行状态点为 ready / ready / incomplete，与配置一致；
+- 详情字段三条都是 660px 宽、纵向排列；
+- 模型行 `glm-4.5` 徽章为 `128K` + `流式返回`，`glm-4-flash` 有 `is-disabled` 且开关为关；
+- 点行展开后编辑区紧跟该行、只有一个可见编辑区，再点另一行仍只有一个；
+- 关掉 `hy4-preview-f` 后 `config.yaml` 写入 `enabled: false`，选项下拉从 4 项变 3 项，
+  再打开恢复 4 项；
+- 切到外观 / 常规时 `settings-host--split` 消失，面板回到 760px 居中（左右各 90px）；
+- 1000px 宽下右列 428px、无横向溢出；增删供应商/模型的 `confirm()` 文案正确。
+
+### 已知限制
+
+- 状态点不联网，因此「绿」只代表配置齐全，不代表密钥有效或服务可达。
+- 删除模型仍用原生 `confirm()`，和项目其它删除操作保持一致。
+- 前端仍无自动化测试；CDP 脚本不提交。

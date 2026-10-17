@@ -97,10 +97,12 @@ def test_providers_list_model_entry_fields(loaded):
         "top_p",
         "stream",
         "context_length",
+        "enabled",
     }
     assert chat["model"] == "deepseek-chat"
     assert chat["reasoning_effort"] == "high"
     assert chat["temperature"] == 0.0
+    assert chat["enabled"] is True
 
 
 def test_providers_list_nullable_fields(loaded):
@@ -115,6 +117,7 @@ def test_providers_list_nullable_fields(loaded):
         "top_p": None,
         "stream": False,
         "context_length": None,
+        "enabled": True,
     }
 
 

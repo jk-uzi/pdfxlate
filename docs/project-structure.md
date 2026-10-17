@@ -45,7 +45,7 @@ Python 3.12，venv 在 `python/.venv`，包以 editable 方式安装，改源码
 | 改 Electron 界面 | `src/renderer/app.ts` + `index.html` + `style.css` |
 | 改标题栏 / 窗口按钮 | `src/main/main.ts`（`titleBarOverlay` / `TITLEBAR_HEIGHT`）+ `style.css` 的 `--titlebar-height`，两处必须一致 |
 | 改应用图标 / 标记 | `src/renderer/icon.svg` 是唯一来源；改完跑 `npm run make:icon` 重新生成 `assets/`，标题栏靠构建期内联自动跟上 |
-| 改任务/设置模式与设置项 | `src/renderer/app.ts` 的 `appMode` / `setAppMode()` / `paintSettingsMode()`，菜单与面板在 `index.html`；设置页版式在 `style.css` 的 `.settings-panel` / `.grid--form` |
+| 改任务/设置模式与设置项 | `src/renderer/app.ts` 的 `appMode` / `setAppMode()` / `paintSettingsMode()`，菜单与面板在 `index.html`；设置页版式在 `style.css` 的 `.settings-panel` / `.grid--form`；模型页的两栏布局由 `.settings-host--split` + `.model-split` 提供 |
 | 改侧栏折叠 | `src/renderer/app.ts` 的 `setSidebarCollapsed()` + `style.css` 的 `body.sidebar-collapsed` |
 | 改进度显示 | `src/renderer/app.ts` 的 `paintProgress()`，落点在 `index.html` 侧栏底部的 `.sidebar__status`（与设置图标同一行） |
 | 改默认输出目录 | `src/main/main.ts` 的 `defaultOutputDir()`（**必须走 `app.getPath("documents")`**，别在 Python 里拼路径） |
@@ -58,7 +58,7 @@ Python 3.12，venv 在 `python/.venv`，包以 editable 方式安装，改源码
 | 改左侧文件列表（文件夹浏览/勾选） | `src/renderer/app.ts` 的 `openFolder()` / `renderFiles()`；目录列举在 `src/main/main.ts` 的 `app:listPdfs` |
 | 改拖放行为（复制/改名） | `src/renderer/app.ts` 的 `handleDropped()`；复制与改名在 `src/main/main.ts` 的 `app:importPdf` / `uniquePath()` |
 | 改左侧栏分组 | `src/renderer/index.html` 的 `details.group` + `app.ts` 的 `expandGroup()` |
-| 改供应商/模型的界面编辑 | `src/renderer/app.ts`（供应商与模型两级下拉 + 字段） |
+| 改供应商/模型的界面编辑 | `src/renderer/app.ts` 的 `renderProviderList()` / `renderModelList()` / `toggleModelEditor()` / `setModelEnabled()`；后端字段在 `config.py` 的 `ModelEntry`（含 `enabled`） |
 | 改界面文案 / 加一门语言 | `src/renderer/i18n.ts`（`en`/`zh` 两张表），静态文案用 `data-i18n*` 属性标注 |
 | 改原生对话框文案 | `src/main/main.ts` 的 `DIALOG_STRINGS`（主进程另有一份小表，原因见该处注释） |
 | 改前端构建配置 | `package.json`、`tsconfig.node.json`、`tsconfig.renderer.json` |
@@ -121,11 +121,11 @@ pdfxlate/
 │   ├── preload/
 │   │   └── preload.ts       190 行  contextBridge，向渲染进程暴露 API
 │   └── renderer/
-│       ├── index.html       597 行  界面结构（文案走 data-i18n* 属性；图标在构建时内联）
-│       ├── app.ts          2505 行  界面逻辑（任务/设置双模式、折叠、标签页、文件夹浏览、拖放、缩放、进度、另存为、选项覆盖、侧栏拖拽、MCP 配置）
-│       ├── i18n.ts          583 行  中英文字符串表 + t()/applyStaticTranslations()
+│       ├── index.html       641 行  界面结构（文案走 data-i18n* 属性；图标在构建时内联）
+│       ├── app.ts          2822 行  界面逻辑（任务/设置双模式、折叠、标签页、文件夹浏览、拖放、缩放、进度、另存为、选项覆盖、侧栏拖拽、供应商/模型两栏编辑器、MCP 配置）
+│       ├── i18n.ts          593 行  中英文字符串表 + t()/applyStaticTranslations()
 │       ├── icon.svg          49 行  应用标记的**唯一来源**（标题栏内联 + 打包图标）
-│       └── style.css       1382 行  样式（含标题栏标签、查看器浮层、折叠与侧栏状态行、侧栏拖拽手柄）
+│       └── style.css       1804 行  样式（含标题栏标签、查看器浮层、折叠与侧栏状态行、侧栏拖拽手柄、模型页两栏布局与开关）
 ├── assets/
 │   ├── icon.png               512×512，由 make_icon.py 从 icon.svg 生成后提交
 │   └── icon.ico               16–256 多尺寸，同上（Windows 用）
@@ -475,9 +475,16 @@ Chromium 内置扩展的**独立 `remote` WebContents**，OS 把滚轮路由给�
   常规），**右侧换成该设置项的表单**（此时不显示预览）。底部动作区**整体隐藏**；
   标题栏的**标签栏**也一并隐藏，因为它属于被设置表单顶替掉的那块区域。
 
-设置项三项：**模型**（供应商→模型两级编辑器，从任务侧栏**移进来**，避免两处编辑器
-状态打架）、**外观**（界面语言）、**常规**（引擎状态、版本、配置目录，加**引擎日志**
-——都是只读诊断）。标题栏清空后**引擎状态必须有地方显示**，就落在「常规」里。
+设置项四项：**模型**（右侧是「供应商列表 + 详情」两栏，见下）、**外观**（界面语言）、
+**常规**（引擎状态、版本、配置目录，加**引擎日志**——都是只读诊断）、**MCP**（给别的
+agent 用的接入配置）。标题栏清空后**引擎状态必须有地方显示**，就落在「常规」里。
+
+**只有「模型」这一项是两栏。** 它自己的内容分成左列供应商列表（图标 + 名称 + 状态点，
+固定 232px，独立滚动）和右列详情（供应商的接口地址 / 类型 / 密钥，加模型行列表，
+占满剩余宽度、内容限宽 720px）。切换设置项时 `paintSettingsMode()` 给
+`#settings-host` 加/去 `settings-host--split`，其它三项回到居中 760px 单栏。
+这样做而不是新开第三栏：窗口最小 1000px，减去 340px 侧栏后再分三栏，详情只剩 400px
+左右，字段放不下。
 
 ### 文档浏览与标签页（本轮重构）
 
@@ -527,13 +534,20 @@ PDF，它是空的，两个按钮就被禁用并提示"请先翻译"：程序**�
 |---|---|---|
 | 回答 | **有哪些模型可用、怎么连** | **这次用哪一个** |
 | 存哪 | `config.yaml`（永久） | localStorage（仅供本次/记住上次） |
-| 内容 | 供应商：`kind`/`base_url`/`api_key`；模型：模型 ID、上下文长度、最大输出、top_p、推理强度、温度、流式、extra_body | 选一个 `供应商 · 模型` |
+| 内容 | 供应商：`kind`/`base_url`/`api_key`；模型：模型 ID、上下文长度、最大输出、top_p、推理强度、温度、流式、extra_body、**是否启用** | 选一个 `供应商 · 模型` |
 
-**设置里的两个下拉是「编辑光标」，不是「这次用哪个」。** 它们曾经是同一个变量，导致在设置里
-浏览几下就会**静默改变下次翻译用的模型**——这正是要修的 bug。现在变量叫
-`editingProvider`/`editingModel`，名字即含义，且**翻译任务不再读它们**（只读选项面板的值）。
+**设置里的供应商列表和展开的模型行是「编辑光标」，不是「这次用哪个」。** 它们曾经是同一个
+变量，导致在设置里浏览几下就会**静默改变下次翻译用的模型**——这正是要修的 bug。现在变量叫
+`editingProvider`/`editingModel`/`expandedModel`，名字即含义，且**翻译任务不再读它们**
+（只读选项面板的值）。
 
-设置面板顶部各有一行 `.hint` 说明两者的分工，否则两个都能选模型的地方必然让人困惑。
+供应商列表底部的 `.hint` 说明两者的分工，否则两个都能选模型的地方必然让人困惑。
+
+**模型行的开关是真的启用/禁用**，不是装饰：`ModelEntry.enabled`（默认 `true`，老配置无需
+迁移）。关掉之后，无参 `resolve()` 跳过它、选项面板不列出它，**显式点名它则报错**
+（`... is disabled; enable it in Settings first`）——用户关掉就是为了不被用，静默继续翻译
+更糟。开关**点了立即保存**，不经过「保存」按钮：它是这一行唯一会改变翻译可用范围的东西，
+藏在保存后面太容易漏。
 
 ### `context_length`：存下来用来诊断，不替用户决定请求
 

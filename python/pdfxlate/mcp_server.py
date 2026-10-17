@@ -254,8 +254,8 @@ def build_server() -> MCPServer:
 
         Read-only. Returns each provider's kind, base_url, whether an API key
         is configured (has_api_key, never the key itself) and its models with
-        their alias, model id, reasoning_effort and temperature, plus the
-        configured default provider/model.
+        their alias, model id, reasoning_effort, temperature and whether the
+        user has enabled them.
         """
         cfg = _load_config()
         providers = {
@@ -268,6 +268,7 @@ def build_server() -> MCPServer:
                         "model": entry.model,
                         "reasoning_effort": entry.reasoning_effort,
                         "temperature": entry.temperature,
+                        "enabled": entry.enabled,
                     }
                     for alias, entry in provider.models.items()
                 },

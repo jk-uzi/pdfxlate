@@ -423,6 +423,428 @@ body {
   grid-column: 1 / -1;
 }
 
+/* --- settings › model: provider list + detail ---------------------------- */
+
+/*
+ * The model section is the one settings panel that is itself two columns, so
+ * it opts out of the centred single-column treatment. The host drops its
+ * padding and lets each column scroll on its own instead of scrolling the
+ * whole panel — that is what keeps the provider list in view while the detail
+ * side is long.
+ */
+.settings-host--split {
+  padding: 0;
+  overflow: hidden;
+  scrollbar-gutter: auto;
+}
+
+.settings-panel--split {
+  max-width: none;
+  margin: 0;
+  height: 100%;
+}
+
+.model-split {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+}
+
+.model-split__providers {
+  flex: 0 0 232px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 20px 10px 16px 16px;
+  border-right: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.model-split__detail {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 20px 24px 40px;
+}
+
+/*
+ * The detail column keeps a reading measure rather than stretching to the
+ * window edge; on a wide screen that leaves a calm right margin, on a narrow
+ * one it simply fills the column.
+ */
+.model-split__detail > * {
+  max-width: 720px;
+}
+
+.model-split__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 8px;
+  padding: 0 4px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.model-split__hint {
+  margin: 12px 4px 0;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+/* One provider per row: icon, name, status dot. */
+.provider-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.provider-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.provider-row:hover {
+  background: #e7ebf0;
+}
+
+.provider-row.is-active {
+  background: var(--card);
+  border-color: var(--border);
+  font-weight: 600;
+}
+
+.provider-row__icon {
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linejoin: round;
+  color: var(--muted);
+}
+
+.provider-row.is-active .provider-row__icon {
+  color: var(--accent);
+}
+
+.provider-row__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/*
+ * The dot reports what the config *says*, not reachability: there is no health
+ * check in the engine, and a dot that pretended to test the endpoint would be
+ * a lie. Green = endpoint and key present, amber = one of them missing,
+ * grey = the provider has no models yet.
+ */
+.provider-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #c6ccd4;
+}
+
+.provider-dot--ready {
+  background: #2da44e;
+}
+
+.provider-dot--incomplete {
+  background: #d29922;
+}
+
+/* --- settings › model: detail -------------------------------------------- */
+
+.provider-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 16px;
+}
+
+.provider-head__icon {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: var(--text);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+}
+
+.provider-head__title {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The endpoint fields read as one stack, so the whole column is one grid. */
+.model-fields {
+  gap: 12px;
+}
+
+.model-list__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 22px 0 8px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.model-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+  overflow: hidden;
+}
+
+.model-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+  cursor: pointer;
+}
+
+.model-row:first-child {
+  border-top: none;
+}
+
+.model-row:hover {
+  background: #f7f8fa;
+}
+
+.model-row.is-expanded {
+  background: #f7f8fa;
+}
+
+.model-row__name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* Shown only when the API id differs from the alias. */
+.model-row__id {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.model-row__badge {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 10.5px;
+  line-height: 1.6;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.model-row__spacer {
+  flex: 1 1 auto;
+}
+
+.model-row__actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* A model switched off stays listed but reads as inactive. */
+.model-row.is-disabled .model-row__name,
+.model-row.is-disabled .model-row__badge {
+  color: var(--muted);
+  opacity: 0.65;
+}
+
+.model-list__empty {
+  padding: 14px 12px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/*
+ * The switch. The real checkbox is visually hidden but still focusable, so
+ * keyboard users get the native control's behaviour; the track and knob are
+ * drawn by the label's pseudo-elements.
+ */
+.switch {
+  position: relative;
+  display: block;
+  flex: 0 0 auto;
+  width: 32px;
+  height: 18px;
+  margin-left: 4px;
+  cursor: pointer;
+}
+
+.switch input {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.switch__track {
+  display: block;
+  width: 32px;
+  height: 18px;
+  border-radius: 9px;
+  background: #d0d7de;
+  transition: background 0.15s ease;
+}
+
+.switch__track::after {
+  content: "";
+  display: block;
+  width: 14px;
+  height: 14px;
+  margin: 2px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  transition: transform 0.15s ease;
+}
+
+.switch input:checked + .switch__track {
+  background: var(--accent);
+}
+
+.switch input:checked + .switch__track::after {
+  transform: translateX(14px);
+}
+
+.switch input:focus-visible + .switch__track {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* The inline editor that opens under the row it belongs to. */
+.model-editor {
+  padding: 12px;
+  border-top: 1px solid var(--border);
+  background: #fbfcfd;
+}
+
+.model-editor .grid {
+  gap: 10px;
+}
+
+.model-editor .row {
+  margin-top: 10px;
+}
+
+.provider-empty {
+  padding-top: 40px;
+  text-align: center;
+}
+
+.provider-empty .hint {
+  margin-bottom: 12px;
+}
+
+/* Inline "name + add" row, used by both provider and model add buttons. */
+.add-inline {
+  display: flex;
+  gap: 6px;
+  margin: 0 4px 8px;
+}
+
+.add-inline input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.icon-btn--bare {
+  padding: 3px;
+  border-color: transparent;
+  background: none;
+  color: var(--muted);
+  line-height: 0;
+}
+
+.icon-btn--bare:hover:not(:disabled) {
+  background: #e7ebf0;
+  color: var(--text);
+}
+
+.icon-btn--bare svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.icon-btn--danger:hover:not(:disabled) {
+  background: #ffebe9;
+  color: var(--danger);
+}
+
+/* A borderless small button, for "add model" beside the list heading. */
+.btn--ghost {
+  border-color: transparent;
+  background: none;
+  color: var(--accent);
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.btn--ghost:hover:not(:disabled) {
+  background: #eaf1fd;
+}
+
 .facts {
   display: grid;
   grid-template-columns: max-content 1fr;

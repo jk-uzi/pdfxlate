@@ -144,9 +144,12 @@ def main(argv: list[str] | None = None) -> int:
             print("No models configured. Edit", paths.config_file())
             return 1
         print(f"config: {paths.config_file()}")
-        # There is no stored default: the first entry in the file is what an
-        # unspecified call reaches, so it is marked to make that visible.
-        first = pairs[0]
+        # There is no stored default: the first *enabled* entry in the file is
+        # what an unspecified call reaches, so it is marked to make that
+        # visible.  Disabled models stay in the listing — this is where you go
+        # to find the name of the one you switched off.
+        enabled_pairs = cfg.all_models(only_enabled=True)
+        first = enabled_pairs[0] if enabled_pairs else None
         # Group by provider so the provider → models nesting is visible.
         current: str | None = None
         for provider, alias in pairs:
@@ -154,6 +157,10 @@ def main(argv: list[str] | None = None) -> int:
                 current = provider
                 base_url = cfg.providers[provider].base_url or "(no base_url)"
                 print(f"  {provider} @ {base_url}:")
+            entry = cfg.providers[provider].models[alias]
+            if not entry.enabled:
+                print(f"    {alias}: {entry.model} (disabled)")
+                continue
             marker = " (used when unspecified)" if (provider, alias) == first else ""
             print(f"    {alias}{marker}: {cfg.resolve(provider, alias).model}")
         return 0

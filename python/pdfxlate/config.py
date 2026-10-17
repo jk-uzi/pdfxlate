@@ -138,6 +138,14 @@ class ModelEntry(BaseModel):
     """
 
     model: str | None = None
+    # Whether this model may be used for a run.
+    #
+    # Disabling is how a model is taken out of rotation without deleting its
+    # settings: the options dropdown and the no-argument fallback skip it, and
+    # naming it explicitly is an error rather than a silent translation with a
+    # model the user turned off.  Existing files have no such key and must keep
+    # working, so the default is enabled.
+    enabled: bool = True
     # Sampling knobs.  temperature defaults to 0 because random sampling
     # corrupts the {vN} formula placeholders the typesetter relies on.
     temperature: float = 0.0
@@ -204,6 +212,11 @@ class ResolvedModel(BaseModel):
     base_url: str | None = None
     api_key: str | None = None
     model: str
+    # Carried through from the entry so an adapter built from a resolved model
+    # can tell it was deliberately switched off.  `_flatten` dumps every entry
+    # field into this class, and it forbids unknown keys, so the field has to
+    # exist here as well as on ModelEntry.
+    enabled: bool = True
     temperature: float = 0.0
     top_p: float | None = None
     max_tokens: int | None = None
@@ -308,37 +321,60 @@ class AppConfig(BaseModel):
     ) -> ResolvedModel:
         """Return the flattened provider+model.
 
-        With nothing named, this falls back to the first provider's first model
-        so the CLI and MCP can still be called without arguments. That fallback
-        follows the order of the file, so reordering ``config.yaml`` changes
-        which model an unspecified call reaches — the price of having no stored
-        default.
+        With nothing named, this falls back to the first provider's first
+        *enabled* model so the CLI and MCP can still be called without
+        arguments. That fallback follows the order of the file, so reordering
+        ``config.yaml`` changes which model an unspecified call reaches — the
+        price of having no stored default.
         """
         if not self.providers:
             raise ValueError("No providers configured")
 
         if provider is None:
             # In config order, not sorted: the file is the user's ordering.
-            first_provider, first_model = self.all_models()[0]
-            return self._flatten(first_provider, first_model)
+            enabled = self.all_models(only_enabled=True)
+            if not enabled:
+                raise ValueError("No enabled models configured")
+            return self._flatten(*enabled[0])
 
         # A name that is not a provider but matches exactly one model alias is
         # an old-style ``profile`` reference; honour both halves at once.
         if model is None and provider not in self.providers:
             if found := self._find_provider_with_alias(provider):
-                return self._flatten(found[0], found[1])
+                self._require_enabled(*found)
+                return self._flatten(*found)
 
         pname = self.provider_for(provider)
         models = self.providers[pname].models
         if not models:
             raise ValueError(f"Provider {pname!r} has no models configured")
-        alias = model or next(iter(models))
+        if model is None:
+            # Provider named but not a model: the first enabled one is the
+            # natural stand-in, mirroring the no-argument fallback.
+            alias = next((a for a, e in models.items() if e.enabled), None)
+            if alias is None:
+                raise ValueError(f"Provider {pname!r} has no enabled models")
+        else:
+            alias = model
         if alias not in models:
             available = ", ".join(sorted(models)) or "(none)"
             raise ValueError(
                 f"Provider {pname!r} has no model {alias!r}; available: {available}"
             )
+        self._require_enabled(pname, alias)
         return self._flatten(pname, alias)
+
+    def _require_enabled(self, pname: str, alias: str) -> None:
+        """Refuse a model the user switched off.
+
+        Silent use would defeat the point of disabling it; the message says
+        which switch to turn back on.
+        """
+        if not self.providers[pname].models[alias].enabled:
+            raise ValueError(
+                f"Model {alias!r} of provider {pname!r} is disabled; "
+                "enable it in Settings first"
+            )
 
     def _flatten(self, pname: str, alias: str) -> ResolvedModel:
         prov = self.providers[pname]
@@ -352,12 +388,19 @@ class AppConfig(BaseModel):
             **entry.model_dump(),
         )
 
-    def all_models(self) -> list[tuple[str, str]]:
-        """Every ``(provider name, model alias)`` pair, in config order."""
+    def all_models(self, only_enabled: bool = False) -> list[tuple[str, str]]:
+        """Every ``(provider name, model alias)`` pair, in config order.
+
+        ``only_enabled`` drops models the user switched off; it is what the
+        options dropdown and the no-argument fallback want. The default keeps
+        every pair, because the editor and ``--list-models`` must still show a
+        disabled entry in order to switch it back on.
+        """
         return [
             (name, alias)
             for name, provider in self.providers.items()
-            for alias in provider.models
+            for alias, entry in provider.models.items()
+            if not only_enabled or entry.enabled
         ]
 
 

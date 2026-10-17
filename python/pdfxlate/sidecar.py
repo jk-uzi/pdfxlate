@@ -17,9 +17,9 @@ Methods: ``ping``, ``config.get``, ``config.save``, ``providers.list``,
 ``translate.start``, ``translate.cancel``, ``mcp.snippet``,
 ``mcp.installConfig``.
 ``providers.list`` reports the provider → models tree (each provider's ``kind``,
-``base_url``, ``has_api_key`` and per-model sampling settings); it deliberately
-never returns an ``api_key``.  There is no stored default model — which one a
-job uses is passed to ``translate.start``.  ``pdf.info`` is a read-only metadata
+``base_url``, ``has_api_key`` and per-model sampling settings, including
+``enabled``); it deliberately never returns an ``api_key``.  There is no stored
+default model — which one a job uses is passed to ``translate.start``.  ``pdf.info`` is a read-only metadata
 probe (page count) used by the preview toolbar; it never renders or modifies the
 document.  ``pdf.spread`` writes a *derived* copy with two pages side by side
 and returns its path, so the viewer can show facing pages in one scrollbar;
@@ -128,6 +128,7 @@ def method_providers_list(_params: dict) -> dict:
                         "top_p": entry.top_p,
                         "stream": entry.stream,
                         "context_length": entry.context_length,
+                        "enabled": entry.enabled,
                     }
                     for alias, entry in p.models.items()
                 },

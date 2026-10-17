@@ -24,6 +24,11 @@ interface ProviderModelSummary {
   model: string | null;
   reasoning_effort: string | null;
   temperature: number;
+  max_tokens: number | null;
+  top_p: number | null;
+  stream: boolean;
+  context_length: number | null;
+  enabled: boolean;
 }
 
 interface ProviderSummary {
@@ -52,6 +57,7 @@ interface ModelDraft {
   reasoning_effort?: string | null;
   context_length?: number | null;
   extra_body?: Record<string, unknown>;
+  enabled?: boolean;
 }
 
 /** The editor's working copy of one provider (endpoint + its models). */
@@ -190,6 +196,14 @@ let configLoaded = false;
  */
 let editingProvider: string | null = null;
 let editingModel: string | null = null;
+/**
+ * Which model's inline editor is open, or `null` for none.
+ *
+ * At most one is open at a time, and the editor is a single DOM element moved
+ * under the expanded row. That is what keeps every field id unique, so the
+ * existing apply/commit helpers can go on addressing fields by id.
+ */
+let expandedModel: string | null = null;
 
 // --- preview state ---------------------------------------------------------
 
@@ -499,8 +513,8 @@ onLocaleChange(() => {
   renderDownloadButton();
   paintProgress();
   paintProfileMessage();
-  renderProviderSelect();
-  renderModelSelect();
+  renderProviderList();
+  renderModelList();
   renderOptionModels();
   paintOptionSelects();
   paintOverlaysPinned();
@@ -551,11 +565,14 @@ function paintSettingsMode(): void {
   // The model editor is live in the settings panel; make sure it reflects the
   // cached config whenever the panel is (re)opened.
   if (inSettings && settingsSection === "model") {
-    renderProviderSelect();
-    renderModelSelect();
+    renderProviderList();
+    renderModelList();
     applyProviderFields();
     applyModelFields();
   }
+  // Only the model section is a two-column layout; the other three keep the
+  // centred single column, so the host's split styling follows the section.
+  $("settings-host").classList.toggle("settings-host--split", inSettings && settingsSection === "model");
   if (inSettings && settingsSection === "general") paintEngineFacts();
   // Built on open rather than at startup: it needs the real launch command,
   // which comes from the main process, and there is no reason to ask for it
@@ -1701,8 +1718,13 @@ async function refreshProviders(): Promise<void> {
     // the configured default, then to the first entry.
     editingProvider = pickProvider();
     editingModel = editingProvider ? pickModel(editingProvider) : null;
-    renderProviderSelect();
-    renderModelSelect();
+    // A reload can drop the model whose editor was open (deleted elsewhere, or
+    // just removed here), so the cursor has to follow the new draft.
+    if (expandedModel && !draftModelNames(editingProvider ?? "").includes(expandedModel)) {
+      expandedModel = null;
+    }
+    renderProviderList();
+    renderModelList();
     // The options panel lists the same pairs, and it reads from this cached
     // config, so it has to be rebuilt whenever the config is reloaded.
     renderOptionModels();
@@ -1733,57 +1755,324 @@ function pickModel(provider: string): string | null {
   return models[0] ?? null;
 }
 
-/** Rebuild the provider `<select>` from the draft config. */
-function renderProviderSelect(): void {
-  const select = $<HTMLSelectElement>("provider-select");
-  select.innerHTML = "";
+/**
+ * The provider list in the model section's left column.
+ *
+ * Replaces the old provider `<select>`: the list is the navigation for the
+ * detail column, so it has to show every provider at once rather than hide
+ * them behind a dropdown.
+ */
+function renderProviderList(): void {
+  const list = $("provider-list");
+  list.innerHTML = "";
   const names = draftProviderNames();
+
+  for (const name of names) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "provider-row";
+    row.setAttribute("role", "option");
+    row.dataset.provider = name;
+    if (name === editingProvider) {
+      row.classList.add("is-active");
+      row.setAttribute("aria-selected", "true");
+    }
+
+    const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    icon.setAttribute("class", "provider-row__icon");
+    icon.setAttribute("viewBox", "0 0 24 24");
+    icon.setAttribute("aria-hidden", "true");
+    for (const d of ["M12 2.5 21 7v10l-9 4.5L3 17V7z", "M3 7l9 4.5L21 7M12 11.5V21.5"]) {
+      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      path.setAttribute("d", d);
+      icon.append(path);
+    }
+
+    const label = document.createElement("span");
+    label.className = "provider-row__name";
+    label.textContent = name;
+    label.title = name;
+
+    const dot = document.createElement("span");
+    const state = providerState(name);
+    dot.className = `provider-dot provider-dot--${state}`;
+    dot.title = t(
+      state === "ready"
+        ? "model.statusReady"
+        : state === "incomplete"
+          ? "model.statusIncomplete"
+          : "model.statusEmpty",
+    );
+
+    row.append(icon, label, dot);
+    row.addEventListener("click", () => selectProvider(name));
+    list.append(row);
+  }
+
+  $("provider-empty").classList.toggle("hidden", names.length > 0);
+  $("provider-detail").classList.toggle("hidden", names.length === 0);
+}
+
+/**
+ * What the status dot means.
+ *
+ * It reports the config, not reachability: nothing in the engine probes the
+ * endpoint, so a dot claiming "online" would be invented. Green means the
+ * provider can actually be used (endpoint and key both present), amber means
+ * one is missing, grey means it has no models yet.
+ */
+function providerState(name: string): "ready" | "incomplete" | "empty" {
+  const provider = draftProviders()[name];
+  if (!provider) return "empty";
+  if (!provider.models || !Object.keys(provider.models).length) return "empty";
+  // The key is never sent back to the renderer, so a stored one is only
+  // visible through the summary's flag. A key typed in this session lives on
+  // the draft and counts immediately.
+  const hasKey = !!provider.api_key || !!cachedProviders?.providers[name]?.has_api_key;
+  return provider.base_url && hasKey ? "ready" : "incomplete";
+}
+
+/** Switch the detail column to another provider. */
+function selectProvider(name: string): void {
+  if (name === editingProvider) return;
+  // Preserve whatever is in the editor before the provider changes under it.
+  commitOpenEditor();
+  editingProvider = name;
+  editingModel = pickModel(name);
+  expandedModel = null;
+  renderProviderList();
+  renderModelList();
+  applyProviderFields();
+  applyModelFields();
+}
+
+/** Format a context window as a short badge value: 128K, 1M. */
+function formatContextBadge(tokens: number): string {
+  if (tokens >= 1_000_000) {
+    const millions = tokens / 1_000_000;
+    return `${Number.isInteger(millions) ? millions : millions.toFixed(1)}M`;
+  }
+  if (tokens >= 1000) return `${Math.round(tokens / 1000)}K`;
+  return String(tokens);
+}
+
+/**
+ * The single inline model editor.
+ *
+ * It is moved under whichever row is expanded, so it spends time detached from
+ * the document (while the list is rebuilt) — `getElementById` would then miss
+ * it. Holding the reference once avoids that.
+ */
+let modelEditorEl: HTMLElement | null = null;
+
+function modelEditor(): HTMLElement {
+  if (!modelEditorEl) modelEditorEl = $("model-editor");
+  return modelEditorEl;
+}
+
+/**
+ * Rebuild the model rows for the current provider.
+ *
+ * The inline editor is a single element that gets moved under whichever row is
+ * expanded, which is why the field ids stay unique and the apply/commit
+ * helpers can keep using them.
+ */
+function renderModelList(): void {
+  const list = $("model-list");
+  const editor = modelEditor();
+  // Detach first: the list is about to be emptied, which would otherwise take
+  // the editor (and any unsaved input in it) with it.
+  editor.remove();
+  list.innerHTML = "";
+
+  const names = editingProvider ? draftModelNames(editingProvider) : [];
   if (!names.length) {
-    const opt = document.createElement("option");
-    opt.value = "";
-    opt.textContent = t("model.noProviders");
-    select.append(opt);
-    select.disabled = true;
+    const empty = document.createElement("div");
+    empty.className = "model-list__empty";
+    empty.textContent = t("model.noModels");
+    list.append(empty);
     return;
   }
-  select.disabled = false;
-  for (const name of names) {
-    const opt = document.createElement("option");
-    opt.value = name;
-    // No "(default)" marker: nothing is the default, this is just which entry
-    // is open in the editor.
-    opt.textContent = name;
-    if (name === editingProvider) opt.selected = true;
-    select.append(opt);
+
+  for (const alias of names) {
+    const model = draftModel(editingProvider, alias) ?? {};
+    const row = document.createElement("div");
+    row.className = "model-row";
+    row.setAttribute("role", "listitem");
+    row.dataset.model = alias;
+    if (model.enabled === false) row.classList.add("is-disabled");
+    if (alias === expandedModel) row.classList.add("is-expanded");
+
+    const name = document.createElement("span");
+    name.className = "model-row__name";
+    name.textContent = alias;
+    name.title = alias;
+    row.append(name);
+
+    // The API id is only worth showing when it differs from the alias; when
+    // they match it would just repeat the row's own name.
+    const modelId = model.model ?? alias;
+    if (modelId && modelId !== alias) {
+      const id = document.createElement("span");
+      id.className = "model-row__id";
+      id.textContent = modelId;
+      id.title = modelId;
+      row.append(id);
+    }
+
+    if (typeof model.context_length === "number" && model.context_length > 0) {
+      const badge = document.createElement("span");
+      badge.className = "model-row__badge";
+      badge.textContent = formatContextBadge(model.context_length);
+      row.append(badge);
+    }
+    if (model.stream === true) {
+      const badge = document.createElement("span");
+      badge.className = "model-row__badge";
+      badge.textContent = t("model.stream");
+      row.append(badge);
+    }
+
+    const spacer = document.createElement("span");
+    spacer.className = "model-row__spacer";
+    row.append(spacer);
+
+    const actions = document.createElement("span");
+    actions.className = "model-row__actions";
+
+    const edit = iconButton("model.edit", "M4 20h4l10-10-4-4L4 16z M13 5l4 4");
+    edit.addEventListener("click", (event) => {
+      event.stopPropagation();
+      toggleModelEditor(alias);
+    });
+
+    const remove = iconButton("model.removeModel", "M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6");
+    remove.classList.add("icon-btn--danger");
+    remove.addEventListener("click", (event) => {
+      event.stopPropagation();
+      void removeModel(alias);
+    });
+
+    actions.append(edit, remove);
+
+    // The switch flips the stored flag immediately. It is the one control on
+    // this row that changes what a translation may use, so leaving it pending
+    // behind a Save button would be easy to miss.
+    const toggle = document.createElement("label");
+    toggle.className = "switch";
+    toggle.title = t("model.enabledHint");
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = model.enabled !== false;
+    checkbox.setAttribute("aria-label", t("model.enabledHint"));
+    const track = document.createElement("span");
+    track.className = "switch__track";
+    toggle.append(checkbox, track);
+    toggle.addEventListener("click", (event) => event.stopPropagation());
+    checkbox.addEventListener("change", () => {
+      void setModelEnabled(alias, checkbox.checked);
+    });
+
+    actions.append(toggle);
+    row.append(actions);
+
+    row.addEventListener("click", () => toggleModelEditor(alias));
+    list.append(row);
+  }
+
+  // Re-attach the editor. When nothing is expanded it goes back to the end of
+  // the list (hidden), rather than staying detached: an element outside the
+  // document cannot be found by id, and every field in it is addressed that
+  // way.
+  const expandedRow = expandedModel
+    ? list.querySelector<HTMLElement>(`.model-row[data-model="${cssEscape(expandedModel)}"]`)
+    : null;
+  if (expandedRow) {
+    editor.classList.remove("hidden");
+    expandedRow.after(editor);
+  } else {
+    expandedModel = null;
+    editor.classList.add("hidden");
+    list.append(editor);
   }
 }
 
-/** Rebuild the model `<select>` for the current provider. */
-function renderModelSelect(): void {
-  const select = $<HTMLSelectElement>("model-select");
-  select.innerHTML = "";
-  const names = editingProvider ? draftModelNames(editingProvider) : [];
-  if (!names.length) {
-    const opt = document.createElement("option");
-    opt.value = "";
-    opt.textContent = t("model.noModels");
-    select.append(opt);
-    select.disabled = true;
+/** Minimal attribute-selector escape: aliases are user text. */
+function cssEscape(value: string): string {
+  return value.replace(/["\\]/g, "\\$&");
+}
+
+/** A borderless icon button with a tooltip and an accessible name. */
+function iconButton(key: string, pathData: string): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "icon-btn icon-btn--bare";
+  button.title = t(key);
+  button.setAttribute("aria-label", t(key));
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", pathData);
+  svg.append(path);
+  button.append(svg);
+  return button;
+}
+
+/** Open the editor under `alias`, or close it when it is already open. */
+function toggleModelEditor(alias: string): void {
+  if (expandedModel === alias) {
+    commitOpenEditor();
+    expandedModel = null;
+    renderModelList();
     return;
   }
-  select.disabled = false;
-  for (const name of names) {
-    const opt = document.createElement("option");
-    opt.value = name;
-    opt.textContent = name;
-    if (name === editingModel) opt.selected = true;
-    select.append(opt);
-  }
+  // Keep edits from the model being left behind rather than discarding them;
+  // the draft is not persisted until Save, so this loses nothing.
+  commitOpenEditor();
+  expandedModel = alias;
+  editingModel = alias;
+  renderModelList();
+  applyModelFields();
+}
+
+/** Commit the open editor into the draft, if one is open and valid. */
+function commitOpenEditor(): void {
+  if (!expandedModel || !editingProvider) return;
+  commitModelFields(editingProvider, expandedModel);
+}
+
+/** Flip one model's enabled flag and persist it. */
+async function setModelEnabled(alias: string, enabled: boolean): Promise<void> {
+  const provider = editingProvider;
+  if (!provider) return;
+  // Commit first so a pending edit in the open editor is not overwritten by
+  // the reload that follows the save.
+  commitOpenEditor();
+  const entry = draftProviders()[provider]?.models?.[alias];
+  if (!entry) return;
+  entry.enabled = enabled;
+  await saveConfig("model.saved");
+}
+
+/** Remove one model, with the same confirmation the old button used. */
+async function removeModel(alias: string): Promise<void> {
+  const provider = editingProvider;
+  if (!provider) return;
+  if (!confirm(t("model.removeModelConfirm", { name: alias }))) return;
+  const prov = draftProviders()[provider];
+  if (prov?.models) delete prov.models[alias];
+  if (expandedModel === alias) expandedModel = null;
+  editingModel = pickModel(provider);
+  renderModelList();
+  applyModelFields();
+  await saveConfig("model.saved");
 }
 
 /** Fill the provider-level fields from the cached config, and mask the key. */
 function applyProviderFields(): void {
   const provider = draftProvider(editingProvider);
+  $("provider-title").textContent = editingProvider ?? "";
   $<HTMLInputElement>("field-kind").value = provider?.kind ?? "";
   $<HTMLInputElement>("field-base-url").value = provider?.base_url ?? "";
   // The key field always starts empty: the stored secret is never shown back,
@@ -1795,7 +2084,8 @@ function applyProviderFields(): void {
 
 /** Fill the model-level fields from the cached config. */
 function applyModelFields(): void {
-  const model = draftModel(editingProvider, editingModel);
+  if (!expandedModel) return;
+  const model = draftModel(editingProvider, expandedModel);
   $<HTMLInputElement>("field-model-id").value = model?.model ?? "";
   $<HTMLSelectElement>("field-reasoning").value = model?.reasoning_effort ?? "";
   $<HTMLInputElement>("field-temperature").value = String(model?.temperature ?? 0);
@@ -1875,21 +2165,6 @@ function paintApiKeyPlaceholder(): void {
   );
 }
 
-$("provider-select").addEventListener("change", (e) => {
-  editingProvider = (e.target as HTMLSelectElement).value || null;
-  // A model alias is only meaningful within its own provider, so start the new
-  // provider at its default (or first) model rather than carrying the old one.
-  editingModel = editingProvider ? pickModel(editingProvider) : null;
-  renderModelSelect();
-  applyProviderFields();
-  applyModelFields();
-});
-
-$("model-select").addEventListener("change", (e) => {
-  editingModel = (e.target as HTMLSelectElement).value || null;
-  applyModelFields();
-});
-
 /** Commit the provider-level fields into the draft config, in place. */
 function commitProviderFields(name: string): void {
   const providers = draftProviders();
@@ -1943,6 +2218,9 @@ function commitModelFields(provider: string, alias: string): void {
     stream: $<HTMLInputElement>("field-stream").checked,
     context_length: readOptionalInt("field-context-length"),
     extra_body: extraBody,
+    // The switch is not in the editor, so carry the stored flag through rather
+    // than letting a save reset it to the default.
+    enabled: existing.enabled !== false,
   };
   paintMaxTokensHint(readOptionalInt("field-context-length"));
 }
@@ -1994,6 +2272,19 @@ function setProfileMessage(
 }
 
 $("btn-add-provider").addEventListener("click", () => {
+  const box = $("provider-add");
+  box.classList.toggle("hidden");
+  if (!box.classList.contains("hidden")) {
+    $<HTMLInputElement>("new-provider-name").focus();
+  }
+});
+
+$("btn-add-provider-empty").addEventListener("click", () => {
+  $("provider-add").classList.remove("hidden");
+  $<HTMLInputElement>("new-provider-name").focus();
+});
+
+$("btn-add-provider-confirm").addEventListener("click", () => {
   const input = $<HTMLInputElement>("new-provider-name");
   const name = input.value.trim();
   if (!name) {
@@ -2011,13 +2302,19 @@ $("btn-add-provider").addEventListener("click", () => {
     models: {},
   };
   input.value = "";
+  $("provider-add").classList.add("hidden");
   editingProvider = name;
   editingModel = null;
-  renderProviderSelect();
-  renderModelSelect();
+  expandedModel = null;
+  renderProviderList();
+  renderModelList();
   applyProviderFields();
   applyModelFields();
   void saveConfig("model.saved");
+});
+
+$("new-provider-name").addEventListener("keydown", (event) => {
+  if ((event as KeyboardEvent).key === "Enter") $("btn-add-provider-confirm").click();
 });
 
 $("btn-remove-provider").addEventListener("click", () => {
@@ -2033,16 +2330,25 @@ $("btn-remove-provider").addEventListener("click", () => {
   // provider that was just deleted.
   editingProvider = null;
   editingModel = null;
+  expandedModel = null;
   editingProvider = pickProvider();
   editingModel = editingProvider ? pickModel(editingProvider) : null;
-  renderProviderSelect();
-  renderModelSelect();
+  renderProviderList();
+  renderModelList();
   applyProviderFields();
   applyModelFields();
   void saveConfig("model.saved");
 });
 
 $("btn-add-model").addEventListener("click", () => {
+  const box = $("model-add");
+  box.classList.toggle("hidden");
+  if (!box.classList.contains("hidden")) {
+    $<HTMLInputElement>("new-model-name").focus();
+  }
+});
+
+$("btn-add-model-confirm").addEventListener("click", () => {
   const name = $<HTMLInputElement>("new-model-name").value.trim();
   if (!name) {
     setProfileMessage("model.nameRequired", undefined, true);
@@ -2065,29 +2371,37 @@ $("btn-add-model").addEventListener("click", () => {
   // backend's own fill-in behaviour.
   prov.models[name] = { model: name, temperature: 0 };
   $<HTMLInputElement>("new-model-name").value = "";
+  $("model-add").classList.add("hidden");
   editingModel = name;
-  renderModelSelect();
+  expandedModel = name;
+  renderModelList();
   applyModelFields();
   void saveConfig("model.saved");
 });
 
-$("btn-remove-model").addEventListener("click", () => {
+$("new-model-name").addEventListener("keydown", (event) => {
+  if ((event as KeyboardEvent).key === "Enter") $("btn-add-model-confirm").click();
+});
+
+$("btn-editor-close").addEventListener("click", () => {
+  commitOpenEditor();
+  expandedModel = null;
+  renderModelList();
+});
+
+$("btn-editor-save").addEventListener("click", async () => {
   const provider = editingProvider;
-  const alias = editingModel;
-  if (!provider || !alias) {
-    setProfileMessage("model.noModel", undefined, true);
+  if (!provider) {
+    setProfileMessage("model.noProvider", undefined, true);
     return;
   }
-  if (!confirm(t("model.removeModelConfirm", { name: alias }))) return;
-  const providers = draftProviders();
-  const prov = providers[provider];
-  if (prov?.models) delete prov.models[alias];
-  // Re-pick from the mutated draft so the selection never points at a deleted
-  // model.
-  editingModel = pickModel(provider);
-  renderModelSelect();
-  applyModelFields();
-  void saveConfig("model.saved");
+  if (readExtraBody() === undefined) {
+    setProfileMessage("model.extraBodyInvalid", undefined, true);
+    return;
+  }
+  commitProviderFields(provider);
+  if (expandedModel) commitModelFields(provider, expandedModel);
+  await saveConfig("model.saved");
 });
 
 $("btn-save-model").addEventListener("click", async () => {
@@ -2103,7 +2417,7 @@ $("btn-save-model").addEventListener("click", async () => {
     return;
   }
   commitProviderFields(provider);
-  if (editingModel) commitModelFields(provider, editingModel);
+  if (expandedModel) commitModelFields(provider, expandedModel);
   await saveConfig("model.saved");
 });
 
@@ -2214,10 +2528,13 @@ function renderOptionModels(): void {
   const select = $<HTMLSelectElement>("opt-model");
   select.innerHTML = "";
 
-  const providers = cachedConfig?.providers ?? {};
+  const providers = (cachedConfig?.providers ?? {}) as Record<string, ProviderDraft>;
   const values: string[] = [];
   for (const [providerName, provider] of Object.entries(providers)) {
-    for (const alias of Object.keys(provider.models ?? {})) {
+    for (const [alias, entry] of Object.entries(provider.models ?? {})) {
+      // A disabled model is not offered: the backend refuses to resolve it, so
+      // listing it here would only turn into a failure at translate time.
+      if (entry?.enabled === false) continue;
       const opt = document.createElement("option");
       // `provider|model`: neither half may contain a pipe, so this round-trips
       // without needing a nested structure the DOM cannot carry.
