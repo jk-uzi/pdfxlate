@@ -148,7 +148,10 @@ class ModelEntry(BaseModel):
     enabled: bool = True
     # Sampling knobs.  temperature defaults to 0 because random sampling
     # corrupts the {vN} formula placeholders the typesetter relies on.
-    temperature: float = 0.0
+    # `None` means "leave it out of the request entirely", which is the only
+    # way to talk to reasoning models that reject the parameter.  The settings
+    # UI writes 0 for new models, so the safe default is what people get.
+    temperature: float | None = None
     top_p: float | None = None
     max_tokens: int | None = None
     stream: bool = False
@@ -217,7 +220,8 @@ class ResolvedModel(BaseModel):
     # field into this class, and it forbids unknown keys, so the field has to
     # exist here as well as on ModelEntry.
     enabled: bool = True
-    temperature: float = 0.0
+    # Same `None` semantics as ModelEntry: omitted from the request when unset.
+    temperature: float | None = None
     top_p: float | None = None
     max_tokens: int | None = None
     stream: bool = False

@@ -116,12 +116,25 @@ def test_streaming_accumulates_text_deltas_only(isolated_cache):
         mock.Mock(type="response.output_text.delta", delta="好"),
         mock.Mock(type="response.completed"),
     ]
-    manager = mock.MagicMock()
-    manager.__enter__.return_value = iter(events)
-    manager.__exit__.return_value = False
-    with mock.patch.object(adapter.client.responses, "stream", return_value=manager) as stream:
+    with mock.patch.object(
+        adapter.client.responses, "create", return_value=iter(events)
+    ) as create:
         assert adapter.do_translate("hello") == "你好"
-    assert "hello" in stream.call_args.kwargs["input"][0]["content"]
+    assert create.call_args.kwargs["stream"] is True
+    assert "hello" in create.call_args.kwargs["input"][0]["content"]
+
+
+def test_streaming_detects_incomplete(isolated_cache):
+    from pdfxlate.models.base import TruncatedResponseError
+
+    adapter = OpenAIResponsesAdapter(Profile(stream=True), "en", "zh")
+    events = [
+        mock.Mock(type="response.output_text.delta", delta="半句"),
+        mock.Mock(type="response.incomplete"),
+    ]
+    with mock.patch.object(adapter.client.responses, "create", return_value=iter(events)):
+        with pytest.raises(TruncatedResponseError):
+            adapter.do_translate("hello")
 
 
 def test_missing_base_url_raises(isolated_cache):

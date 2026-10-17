@@ -13,13 +13,17 @@ Event    (stdout): ``{"event": "progress", "job_id": "...", "stage": "...",
                      "current": 3, "total": 10, "message": "..."}``
 
 Methods: ``ping``, ``config.get``, ``config.save``, ``providers.list``,
-``assets.status``, ``assets.download``, ``pdf.info``, ``pdf.spread``,
-``translate.start``, ``translate.cancel``, ``mcp.snippet``,
+``providers.test``, ``assets.status``, ``assets.download``, ``pdf.info``,
+``pdf.spread``, ``translate.start``, ``translate.cancel``, ``mcp.snippet``,
 ``mcp.installConfig``.
 ``providers.list`` reports the provider → models tree (each provider's ``kind``,
 ``base_url``, ``has_api_key`` and per-model sampling settings, including
-``enabled``); it deliberately never returns an ``api_key``.  There is no stored
-default model — which one a job uses is passed to ``translate.start``.  ``pdf.info`` is a read-only metadata
+``enabled``); it deliberately never returns an ``api_key``.  ``providers.test``
+sends one tiny translation to a provider using values supplied by the caller
+(the unsaved draft in the settings panel) and reports the latency or the error,
+so a wrong API format is discovered before a long job starts; it never reads or
+writes the cache.  There is no stored default model — which one a job uses is
+passed to ``translate.start``.  ``pdf.info`` is a read-only metadata
 probe (page count) used by the preview toolbar; it never renders or modifies the
 document.  ``pdf.spread`` writes a *derived* copy with two pages side by side
 and returns its path, so the viewer can show facing pages in one scrollbar;
@@ -45,6 +49,7 @@ import json
 import logging
 import sys
 import threading
+import time
 import traceback
 import uuid
 from pathlib import Path
@@ -136,6 +141,106 @@ def method_providers_list(_params: dict) -> dict:
             for name, p in cfg.providers.items()
         },
     }
+
+
+#: How long a connection probe may take before the sidecar reports a timeout.
+#:
+#: The sidecar reads stdin in a single loop and handles one request at a time,
+#: so a probe that blocks also blocks every other call (including the progress
+#: of an already running job). The adapters retry transient failures eight
+#: times with backoff and allow 120 s per request, which can add up to minutes
+#: against an unreachable host; a user-initiated probe must not freeze the app
+#: that long. The worker thread is a daemon, so giving up on it here leaks
+#: nothing that outlives the process.
+_PROBE_TIMEOUT_SECONDS = 25
+
+#: Deliberately short, plain, and free of `{vN}` placeholders.
+_PROBE_TEXT = "Hello."
+
+
+def method_providers_test(params: dict) -> dict:
+    """Send one tiny translation to a provider and report what happened.
+
+    Takes the *draft* values from the settings panel rather than reloading the
+    config, so an edit can be tested before it is saved.  When the key is
+    blank (the UI never shows a stored one) it falls back to the saved key.
+
+    Goes through ``do_translate`` rather than ``translate``: no cache is read
+    or written, and the placeholder check has nothing to check.
+    """
+    from pdfxlate.models.base import build_adapter, registered
+
+    provider = str(params.get("provider") or "").strip()
+    kind = str(params.get("kind") or "").strip()
+    base_url = params.get("base_url")
+    model = str(params.get("model") or "").strip()
+    api_key = params.get("api_key")
+
+    if not kind:
+        raise ValueError("kind is required")
+    if kind not in registered():
+        raise ValueError(
+            f"unknown kind {kind!r}; the engine has: {', '.join(registered())}"
+        )
+    if not base_url:
+        raise ValueError("base_url is required")
+    if not model:
+        raise ValueError("model is required (the API id, not the alias)")
+
+    if not api_key:
+        # The renderer sends the saved key only as "present", never as text.
+        cfg = config_mod.load()
+        saved = cfg.providers.get(provider)
+        if saved is not None:
+            api_key = saved.api_key
+    if not api_key:
+        raise ValueError("api_key is required (none is saved for this provider)")
+
+    profile = config_mod.ResolvedModel(
+        kind=kind,
+        provider=provider,
+        alias=model,
+        base_url=str(base_url),
+        api_key=str(api_key),
+        model=model,
+        # Probe with the same knobs a real run would use, except that the
+        # response is never cached or typeset.
+        temperature=params.get("temperature"),
+        max_tokens=params.get("max_tokens"),
+        stream=False,
+    )
+    adapter = build_adapter(
+        kind,
+        profile,
+        "en",
+        "zh",
+        cache_enabled=False,
+    )
+
+    result: dict[str, Any] = {}
+
+    def probe() -> None:
+        started = time.monotonic()
+        try:
+            text = adapter.do_translate(_PROBE_TEXT)
+        except BaseException as exc:  # noqa: BLE001 - reported to the UI as-is
+            result["error"] = f"{type(exc).__name__}: {exc}"
+            return
+        result["latency_ms"] = int((time.monotonic() - started) * 1000)
+        result["sample"] = text[:120]
+
+    thread = threading.Thread(target=probe, name="provider-probe", daemon=True)
+    thread.start()
+    thread.join(_PROBE_TIMEOUT_SECONDS)
+    if thread.is_alive():
+        raise TimeoutError(
+            f"no answer within {_PROBE_TIMEOUT_SECONDS}s; check the base URL, "
+            "the network, and that the endpoint speaks this API format"
+        )
+    if "error" in result:
+        raise ValueError(result["error"])
+    return {"ok": True, **result}
+
 
 
 def method_assets_status(_params: dict) -> dict:
@@ -359,6 +464,10 @@ METHODS = {
     # name is *not* kept as an alias: its result shape changed too, so an old
     # caller would break either way and a silent alias would only hide that.
     "providers.list": method_providers_list,
+    # A one-shot probe: sends a tiny translation with the values currently in
+    # the settings panel, so a wrong API format or key is caught before a long
+    # job starts.  Never touches the cache.
+    "providers.test": method_providers_test,
     "assets.status": method_assets_status,
     "assets.download": method_assets_download,
     "pdf.info": method_pdf_info,

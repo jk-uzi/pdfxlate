@@ -18,7 +18,9 @@ Python 3.12，venv 在 `python/.venv`，包以 editable 方式安装，改源码
 | 我想…… | 去改 |
 |---|---|
 | 接入新的模型后端 | `python/pdfxlate/models/` 新建文件 + `@register` 装饰器（内置三个 `kind`：`openai_compat` / `openai_responses` / `anthropic_messages`） |
-| 调整发给模型的请求参数 | 对应适配器：`openai_compat.py` / `openai_responses.py` / `anthropic_messages.py`（`reasoning_effort` / `extra_body` / `stream`） |
+| 调整发给模型的请求参数 | 对应适配器：`openai_compat.py` / `openai_responses.py` / `anthropic_messages.py`（`reasoning_effort` / `extra_body` / `stream` / `temperature`） |
+| 改重试策略 / 取消行为 | `pdf/converter.py` 的 `translate_segment()`（有界重试）+ `models/base.py` 的 `PERMANENT_TRANSLATION_ERRORS` |
+| 改「测试连接」 | `sidecar.py` 的 `method_providers_test` + `app.ts` 的 `testProvider()` |
 | 改翻译提示词 | `models/base.py` 的 `DEFAULT_PROMPT`，或配置里的 `translation.prompt` 指向模板文件 |
 | 改配置项 / 加新配置字段 | `config.py`（`Provider`、`ModelEntry`、`TranslationSettings` 等 pydantic 模型） |
 | 改「一个供应商挂多个模型」的结构 | `config.py` 的 `Provider` / `ModelEntry` / `AppConfig.resolve()` |
@@ -101,14 +103,14 @@ pdfxlate/
 │       ├── mcp_config.py    246 行  把 MCP 条目写进各 agent 配置（备份/合并/校验）
 │       ├── models/
 │       │   ├── __init__.py     23 行  导出翻译层公开符号
-│       │   ├── base.py       243 行  ModelAdapter 基类 + 注册表
-│       │   ├── openai_compat.py 115 行  OpenAI Chat Completions 适配器
-│       │   ├── openai_responses.py 114 行  OpenAI Responses 适配器
-│       │   └── anthropic_messages.py 221 行  Anthropic Messages 适配器
+│       │   ├── base.py       326 行  ModelAdapter 基类 + 注册表 + 永久错误分类
+│       │   ├── openai_compat.py 128 行  OpenAI Chat Completions 适配器
+│       │   ├── openai_responses.py 136 行  OpenAI Responses 适配器
+│       │   └── anthropic_messages.py 247 行  Anthropic Messages 适配器
 │       └── pdf/
 │           ├── __init__.py      1 行
 │           ├── pipeline.py   580 行  管线编排：解析→版面→翻译→排版
-│           ├── converter.py  643 行  排版回填 + 字号适配（移植上游 converter.py）
+│           ├── converter.py  699 行  排版回填 + 字号适配 + 有界段落重试（移植上游 converter.py）
 │           ├── interp.py     366 行  内容流解释器（上游照搬）
 │           ├── layout.py     187 行  DocLayout-YOLO ONNX 版面检测
 │           ├── ocr.py        161 行  OCR 段落重建与排版
@@ -134,7 +136,10 @@ pdfxlate/
 ├── tests/
 │   ├── test_translation.py   232 行  缓存、占位符、推理标签剥离、注册表、缓存开关、超窗口告警
 │   ├── test_openai_compat.py 137 行  适配器参数透传、校验、提示词渲染
-│   ├── test_openai_responses.py 134 行  Responses 形状映射、流式增量、空回复
+│   ├── test_openai_responses.py 146 行  Responses 形状映射、流式增量、截断、空回复
+│   ├── test_adapters_http.py 359 行  三个适配器打真实本地 HTTP 服务（含 SSE）
+│   ├── test_translate_segment.py 111 行  有界重试、取消、永久错误不重试
+│   ├── test_sidecar_provider_test.py 172 行  providers.test 探针
 │   ├── test_anthropic_messages.py 227 行  Messages 端点拼接、请求体、SSE、错误分级
 │   ├── test_config_providers.py 349 行  供应商→模型 schema、resolve、迁移（含已移除字段）、env 引用
 │   ├── test_typesetting.py   172 行  字号适配纯函数（放不下时的缩字逻辑）
@@ -277,6 +282,33 @@ vLLM / Ollama / OpenRouter 等。一等支持 `reasoning_effort`、`extra_body`
 - **不发 `reasoning_effort`**：Anthropic 用 `thinking.budget_tokens` 表达，
   无法从 low/medium/high 推出一个预算。要开 thinking 请在 `extra_body` 里写
   `{"thinking": {...}}`。
+
+### 失败语义：什么会重试，什么不会
+
+三件事必须分清，否则一个必然失败的任务会永远挂着：
+
+1. **适配器内部**（`do_translate` 上的 tenacity）只重试 429 / 连接错误 / 5xx，8 次指数退避。
+2. **段落级**（`converter.translate_segment`）在外面再加最多 3 次尝试，每次之间有 1s、2s
+   退避。**永久错误直接抛出、不重试**：`PlaceholderLossError`、`TruncatedResponseError`、
+   `EmptyTranslationError`（见 `base.PERMANENT_TRANSLATION_ERRORS`）。同样的输入对同一个
+   模型必然同样失败，再试只是把错误信息推迟。
+   - 历史：这里原本是 `@retry(wait=wait_fixed(1))`，tenacity 默认 `stop_never` +
+     `retry_if_exception_type(Exception)`，即**任何异常每秒重试一次、永不停止**。选错协议
+     返回 404 就会让整个任务永久卡死；而且取消标志只在翻页时检查，点取消也停不下来。
+   - 现在 `translate_segment` 在**每次尝试前**检查 `cancellation_event`。它打断不了正在
+     进行的 HTTP 请求（做不到），但能保证重试循环及时退出。
+3. **空回复与截断**不算译文：`base.translate` 在写缓存前就抛 `EmptyTranslationError`；三个
+   适配器各自检查 `finish_reason == "length"` / `status == "incomplete"` /
+   `stop_reason == "max_tokens"`。以前这两种情况会被当成正常结果排版，页面上留下半句话
+   或一块空白，没有任何提示。
+
+**`temperature` 是可选参数**：`None` 表示**请求里根本不带这个字段**，这是使用拒绝该参数的
+推理模型（o 系列、gpt-5 等）的唯一办法。设置页新建模型时仍写入 `0`（保护 `{vN}` 占位符），
+只有用户主动清空输入框才不发送。
+
+**排版质量与协议无关**：三个适配器都只返回一个字符串，之后走完全相同的解析、版面检测、
+字号适配与回填流程。影响成品的是译文内容本身（截断、空串、占位符丢失），而这三项由上面
+第 2、3 条统一处理。
 
 ### PDF 管线
 

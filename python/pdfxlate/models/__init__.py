@@ -2,8 +2,11 @@
 
 from pdfxlate.models.base import (
     DEFAULT_PROMPT,
+    PERMANENT_TRANSLATION_ERRORS,
+    EmptyTranslationError,
     ModelAdapter,
     PlaceholderLossError,
+    TruncatedResponseError,
     build_adapter,
     get_adapter,
     register,
@@ -13,8 +16,11 @@ from pdfxlate.models.base import (
 
 __all__ = [
     "DEFAULT_PROMPT",
+    "PERMANENT_TRANSLATION_ERRORS",
+    "EmptyTranslationError",
     "ModelAdapter",
     "PlaceholderLossError",
+    "TruncatedResponseError",
     "build_adapter",
     "get_adapter",
     "register",

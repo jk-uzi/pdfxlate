@@ -50,7 +50,7 @@ interface ProvidersResponse {
  */
 interface ModelDraft {
   model?: string | null;
-  temperature?: number;
+  temperature?: number | null;
   top_p?: number | null;
   max_tokens?: number | null;
   stream?: boolean;
@@ -2106,6 +2106,9 @@ function applyProviderFields(): void {
   const provider = draftProvider(editingProvider);
   $("provider-title").textContent = editingProvider ?? "";
   paintProviderKind(provider?.kind ?? "");
+  // A probe result belongs to the provider it was run against, so switching
+  // providers clears it rather than showing a stale "OK".
+  setProviderTestMessage("");
   $<HTMLInputElement>("field-base-url").value = provider?.base_url ?? "";
   // The key field always starts empty: the stored secret is never shown back,
   // only the `has_api_key` flag the summary reports.
@@ -2120,7 +2123,12 @@ function applyModelFields(): void {
   const model = draftModel(editingProvider, expandedModel);
   $<HTMLInputElement>("field-model-id").value = model?.model ?? "";
   $<HTMLSelectElement>("field-reasoning").value = model?.reasoning_effort ?? "";
-  $<HTMLInputElement>("field-temperature").value = String(model?.temperature ?? 0);
+  // Blank means "do not send temperature at all", which is the only way to
+  // use models that reject the parameter. A stored 0 still shows as 0.
+  $<HTMLInputElement>("field-temperature").value =
+    model?.temperature === null || model?.temperature === undefined
+      ? ""
+      : String(model.temperature);
   // Empty means "unset", which is different from 0 for these: leaving them
   // blank lets the API apply its own default.
   $<HTMLInputElement>("field-max-tokens").value =
@@ -2244,7 +2252,9 @@ function commitModelFields(provider: string, alias: string): void {
     ...existing,
     model: $<HTMLInputElement>("field-model-id").value || alias,
     reasoning_effort: $<HTMLSelectElement>("field-reasoning").value || null,
-    temperature: Number($<HTMLInputElement>("field-temperature").value) || 0,
+    // Blank is `null`, i.e. omitted from the request. `|| 0` here would turn
+    // "leave it to the API" into an explicit 0 and break reasoning models.
+    temperature: readOptionalFloat("field-temperature"),
     max_tokens: readOptionalInt("field-max-tokens"),
     top_p: topP,
     stream: $<HTMLInputElement>("field-stream").checked,
@@ -2347,6 +2357,86 @@ $("btn-add-provider-confirm").addEventListener("click", () => {
 
 $("new-provider-name").addEventListener("keydown", (event) => {
   if ((event as KeyboardEvent).key === "Enter") $("btn-add-provider-confirm").click();
+});
+
+/**
+ * Probe the provider currently open in the editor.
+ *
+ * Sends the *draft* endpoint and kind, not the saved ones, so a change can be
+ * checked before it is committed.  The key is only ever sent when the user has
+ * just typed one; otherwise the engine falls back to the stored key it already
+ * has.
+ */
+async function testProvider(button: HTMLButtonElement): Promise<void> {
+  const provider = editingProvider;
+  if (!provider) {
+    setProviderTestMessage("model.noProvider", undefined, true);
+    return;
+  }
+  commitProviderFields(provider);
+  const draft = draftProvider(provider);
+  const model = draftModelNames(provider)[0];
+  if (!model) {
+    setProviderTestMessage("model.testNoModel", undefined, true);
+    return;
+  }
+  const apiKey = $<HTMLInputElement>("field-api-key").value;
+
+  button.disabled = true;
+  button.textContent = t("model.testing");
+  setProviderTestMessage("model.testing");
+  try {
+    const result = await api.request<{ latency_ms: number; sample: string }>(
+      "providers.test",
+      {
+        provider,
+        kind: draft?.kind ?? "openai_compat",
+        base_url: draft?.base_url ?? "",
+        api_key: apiKey || null,
+        model: draft?.models?.[model]?.model || model,
+        temperature: draft?.models?.[model]?.temperature ?? null,
+        max_tokens: draft?.models?.[model]?.max_tokens ?? null,
+      },
+    );
+    setProviderTestMessage("model.testOk", {
+      ms: String(result.latency_ms),
+      sample: result.sample,
+    });
+  } catch (err) {
+    setProviderTestMessage("model.testFailed", { error: cleanError(err) }, true);
+  } finally {
+    button.disabled = false;
+    button.textContent = t("model.test");
+  }
+}
+
+/**
+ * Trim Electron's transport wrapping off an error message.
+ *
+ * An `ipcRenderer.invoke` rejection arrives as
+ * `Error: Error invoking remote method 'sidecar:request': Error: ValueError: …`.
+ * Only the last, concrete part is useful to a person looking at a settings
+ * panel, and the repeats read like a stack trace.
+ */
+function cleanError(err: unknown): string {
+  const raw = String(err);
+  const marker = raw.lastIndexOf("Error: ");
+  return marker >= 0 ? raw.slice(marker + "Error: ".length) : raw;
+}
+
+function setProviderTestMessage(
+  key: string,
+  params?: Record<string, string>,
+  error = false,
+): void {
+  const msg = $("provider-test-msg");
+  // An empty key is how the message is cleared.
+  msg.textContent = key ? t(key, params) : "";
+  msg.className = error ? "msg msg--error" : "msg";
+}
+
+$("btn-test-provider").addEventListener("click", (event) => {
+  void testProvider(event.currentTarget as HTMLButtonElement);
 });
 
 $("btn-remove-provider").addEventListener("click", () => {

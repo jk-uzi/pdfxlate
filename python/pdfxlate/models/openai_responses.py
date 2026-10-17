@@ -27,7 +27,7 @@ from tenacity import (
     wait_exponential,
 )
 
-from pdfxlate.models.base import ModelAdapter, register
+from pdfxlate.models.base import ModelAdapter, TruncatedResponseError, register
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +56,10 @@ class OpenAIResponsesAdapter(ModelAdapter):
         self.extra_body = profile.extra_body or {}
 
         # Same knobs as the chat adapter, mapped onto this API's names below.
-        self.options: dict[str, Any] = {"temperature": profile.temperature}
+        # temperature is omitted when unset, for models that reject it.
+        self.options: dict[str, Any] = {}
+        if profile.temperature is not None:
+            self.options["temperature"] = profile.temperature
         if profile.top_p is not None:
             self.options["top_p"] = profile.top_p
         if profile.max_tokens is not None:
@@ -98,16 +101,35 @@ class OpenAIResponsesAdapter(ModelAdapter):
     )
     def do_translate(self, text: str) -> str:
         if self.stream:
+            # `create(stream=True)` yields the raw event stream.  The SDK's
+            # `stream()` helper additionally runs a state machine that requires
+            # `response.created`, `output_item.added` and friends in order; the
+            # only events this adapter needs are the text deltas and the final
+            # `incomplete`, so the raw stream is both simpler and less likely to
+            # break on a provider that emits a slightly reduced event set.
             parts: list[str] = []
-            with self.client.responses.stream(**self._request_kwargs(text)) as stream:
-                for event in stream:
-                    # Only the visible answer: reasoning-summary deltas are a
-                    # different event type and must not be typeset.
-                    if event.type == "response.output_text.delta":
-                        parts.append(event.delta)
+            incomplete = False
+            for event in self.client.responses.create(
+                stream=True, **self._request_kwargs(text)
+            ):
+                # Only the visible answer: reasoning-summary deltas are a
+                # different event type and must not be typeset.
+                if event.type == "response.output_text.delta":
+                    parts.append(event.delta)
+                elif event.type == "response.incomplete":
+                    incomplete = True
+            if incomplete:
+                raise TruncatedResponseError(getattr(self.profile, "max_tokens", None), text)
             return "".join(parts).strip()
 
         response = self.client.responses.create(**self._request_kwargs(text))
+        # `incomplete` is how this API reports "ran out of output budget";
+        # the reason says whether it was the token cap or a content filter.
+        if getattr(response, "status", None) == "incomplete":
+            details = getattr(response, "incomplete_details", None)
+            reason = getattr(details, "reason", None)
+            if reason in (None, "max_output_tokens"):
+                raise TruncatedResponseError(getattr(self.profile, "max_tokens", None), text)
         content = response.output_text
         if not content:
             raise ValueError(f"empty response from model: {response!r}")

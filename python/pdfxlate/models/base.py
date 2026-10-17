@@ -89,6 +89,48 @@ class PlaceholderLossError(RuntimeError):
         )
 
 
+class TruncatedResponseError(RuntimeError):
+    """Raised when the model stopped because it hit the output token limit.
+
+    A half sentence is worse than a visible failure: it typesets cleanly and
+    nobody notices until the paper is read.  Retrying the same paragraph with
+    the same limit cannot help, so the converter treats this as permanent.
+    """
+
+    def __init__(self, limit: int | None, text: str) -> None:
+        self.limit = limit
+        self.text = text
+        hint = (
+            f" Raise max_tokens for this model (currently {limit})."
+            if limit
+            else " Raise max_tokens for this model."
+        )
+        super().__init__(
+            "the model hit its output token limit and the translation was cut "
+            f"off; input={text[:120]!r}.{hint}"
+        )
+
+
+class EmptyTranslationError(RuntimeError):
+    """Raised when a model returns nothing for a non-empty paragraph.
+
+    Left alone this is silent: the typesetter has already cleared the original
+    text, so the page ends up with a blank gap and no warning.
+    """
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+        super().__init__(f"the model returned an empty translation for {text[:120]!r}")
+
+
+#: Failures that the same input will reproduce forever, so retrying is pointless.
+PERMANENT_TRANSLATION_ERRORS: tuple[type[BaseException], ...] = (
+    PlaceholderLossError,
+    TruncatedResponseError,
+    EmptyTranslationError,
+)
+
+
 class ModelAdapter(abc.ABC):
     """Base class for every translation backend."""
 
@@ -167,6 +209,11 @@ class ModelAdapter(abc.ABC):
         self._warn_if_over_context(text)
         response = self.do_translate(text)
         cleaned = strip_reasoning(response)
+        # An empty answer is not a translation. Catching it here is the only
+        # place that sees every adapter, and it has to happen before the cache
+        # write so a blank is never cached as if it were an answer.
+        if not cleaned:
+            raise EmptyTranslationError(text)
         self._check_placeholders(text, cleaned)
 
         if not self.no_cache:

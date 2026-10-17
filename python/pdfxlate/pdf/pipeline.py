@@ -112,6 +112,7 @@ def translate_patch(
         layout,
         noto_name,
         noto,
+        cancellation_event=cancellation_event,
     )
 
     assert device is not None

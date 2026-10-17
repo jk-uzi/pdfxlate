@@ -1920,3 +1920,106 @@ CDP 实测：`#field-kind` 是 `SELECT`，三个选项与标签正确；分别�
 - Anthropic 的 thinking 需要用户自己在 `extra_body` 里写，界面上没有专门字段。
 - Responses 适配器依赖服务端真的实现了 `/responses`；不少 OpenAI 兼容网关只有
   chat/completions，选错会在请求时报 404。
+
+## 让三个协议真正可靠：修三处行为缺陷 + 「测试连接」
+
+上一轮把「类型」改成三选一下拉并实现了三个适配器。之后被问到「这三个协议真的能完美调用
+吗」，核查后发现：**字段映射是对的，但有三处行为缺陷会让长任务出问题，而且它们与协议
+无关，三个适配器一视同仁。**
+
+### 缺陷一：永久错误无限重试，且无法取消
+
+`converter.py` 的段落 worker 原本是：
+
+```python
+@retry(wait=wait_fixed(1))
+def worker(s): ...
+```
+
+tenacity 的默认值是 `stop_never` + `retry_if_exception_type(Exception)`（核对过
+`tenacity/retry.py:113` 与 `__init__.py:262-264`）。后果：
+
+- 选错协议 → 404、key 错 → 401、模型总丢 `{vN}` → 每秒重试一次，**永不停止**；
+- 取消标志只在翻页循环和 OCR 循环里检查，**不在 worker 里**，所以点取消也停不下来，
+  只能杀进程。
+
+改成模块级 `translate_segment()`：最多 3 次尝试（1s、2s 退避），**每次尝试前检查
+`cancellation_event`**，并把三类永久错误直接抛出、不重试（`PERMANENT_TRANSLATION_ERRORS`：
+占位符丢失、截断、空回复）——同样的输入必然同样失败，重试只是推迟错误信息。
+`TranslateConverter` 新增 `cancellation_event` 参数，由 `translate_patch()` 传入。
+
+**实测**：一个指向不存在路径的 provider，单页 6 段 PDF，**4.0 秒后中止**并报
+`Anthropic API error (HTTP 404)`，日志里能看到 3 次尝试的边界。改动前这会永久挂起。
+
+### 缺陷二：截断与空回复被当成正常结果
+
+三个适配器都不检查终止原因，空回复也会被接受并写进缓存。排版阶段原文已被清空，于是页面
+上留下**半句话或一块空白，没有任何提示**。
+
+- `base.translate()` 在写缓存前抛 `EmptyTranslationError`；
+- `openai_compat` 检查 `finish_reason == "length"`（流式在最后一个 chunk 上取）；
+- `openai_responses` 检查 `status == "incomplete"`，流式监听 `response.incomplete`；
+- `anthropic_messages` 检查 `stop_reason == "max_tokens"`，流式取 `message_delta` 里的
+  `stop_reason`。
+
+### 缺陷三：`temperature` 无条件发送
+
+三个适配器都固定带 `temperature`（默认 0）。o 系列、gpt-5 这类模型会直接拒绝该参数 →
+400 → 又回到缺陷一。
+
+`ModelEntry.temperature` / `ResolvedModel.temperature` 改为 `float | None = None`，
+三个适配器改成 `if ... is not None` 才发送。**默认行为不变**：设置页新建模型仍写 `0`，
+配置模板也仍是 `0`，只有用户主动清空输入框才不发送（输入框加了对应 placeholder）。
+实测：清空后保存，`config.yaml` 里不出现该键；请求体里也没有 `temperature`。
+
+### 顺带：Anthropic 的 Session 改为线程本地
+
+`requests.Session` 没有线程安全保证，而管线用 4–16 个线程共用一个适配器实例。改成
+`threading.local()` 惰性创建，与 `cache.py` 的做法一致。测试用 3 个线程各取一次
+`adapter.session`，断言拿到的是三个不同对象。
+
+### 新功能：测试连接
+
+`sidecar.providers.test`：拿**设置页当前草稿值**（接口地址、kind、模型）发一次极短的翻译，
+返回延迟与模型回声，或把 HTTP 状态原样透出。这样选错协议、key 失效、地址写错都能在长任务
+开始前发现，而不用等第一段译文卡住。
+
+- 走 `do_translate` 而不是 `translate`：**不读不写缓存**，也没有 `{vN}` 可校验；
+- 界面从不回显密钥，所以 `api_key` 为空时回落到 `config.load()` 里已存的那把；
+- **超时处理**：sidecar 是单线程 stdin 循环，而适配器内部有 8 次重试 + 120s 连接超时，
+  坏端点能挂几分钟。探针放在 daemon 线程里 `join(25)`，超时就返回「超时」，stdin 循环
+  最多卡 25 秒（用户主动点击的代价）。
+
+界面在供应商标题行右侧、删除按钮左边加了「测试连接」按钮，点击时禁用并显示「测试中…」，
+结果写进同行的 `.msg` 槽位（成功绿、失败红）。错误串会剥掉 Electron 的三层前缀
+（`Error: Error invoking remote method 'sidecar:request': Error: …`），只留最后一层。
+
+### 补上验证缺口：真实 HTTP 测试
+
+之前所有适配器测试都 mock SDK 对象，**没有任何一条真正发过 HTTP 请求**。新增
+`tests/test_adapters_http.py`：用标准库 `ThreadingHTTPServer` 起一个本地服务，同时实现
+三种形状，让三个适配器走真实 socket。覆盖 URL 拼接（含 `/v1` 与不带两种）、
+`Authorization` / `x-api-key` / `anthropic-version` 头、请求体字段、SSE 解析、截断检测、
+temperature 省略。不需要 key，也不需要网络。
+
+写这批测试时发现一个真实约束：SDK 的 `responses.stream()` 带状态机，要求
+`response.created` → `output_item.added` → … → `completed` 严格按序，只发 delta 会
+`RuntimeError`。翻译只需要 delta 和最终的 `incomplete`，因此改用
+`client.responses.create(stream=True)` 读**原始事件流**，耦合更少、对精简事件集的网关也更宽容。
+
+### 验证
+
+`pytest` **288 passed**（新增：`test_adapters_http.py` 17 条、`test_translate_segment.py` 7 条、
+`test_sidecar_provider_test.py` 8 条）、`typecheck`、`check:i18n`（178 keys）、`build` 全绿。
+
+CDP 实测：按钮存在且文案为「测试连接」；成功时绿字显示 `连接正常 — 62 ms，模型返回「你好」`；
+失败时红字（`msg msg--error`）显示 `连接失败：Anthropic API error (HTTP 404): not found`；
+点击期间按钮禁用、文案变「测试中…」；切换供应商时旧结果被清空；请求体里确认未配置
+temperature 时该字段不存在。
+
+### 仍然存在的限制
+
+- 取消只能打断重试循环，**打断不了正在进行的 HTTP 请求**——这是网络层的性质，不是漏做。
+- 测试连接只验证「这个协议、这个地址、这把钥匙能不能通」，不验证译文质量。
+- 截断检测依赖各 API 正确返回终止原因；有的自建网关不返回 `finish_reason`，那种情况下
+  无法识别截断。

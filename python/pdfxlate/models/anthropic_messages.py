@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from typing import Any, Iterator
 
 import requests
@@ -31,7 +32,7 @@ from tenacity import (
     wait_exponential,
 )
 
-from pdfxlate.models.base import ModelAdapter, register
+from pdfxlate.models.base import ModelAdapter, TruncatedResponseError, register
 
 logger = logging.getLogger(__name__)
 
@@ -69,17 +70,28 @@ class AnthropicMessagesAdapter(ModelAdapter):
         self.extra_body = profile.extra_body or {}
         self.max_tokens = self._resolve_max_tokens(profile)
 
-        # A Session reuses the TLS connection: a long document issues hundreds
-        # of calls, and a fresh handshake each time is pure latency.
-        self.session = requests.Session()
-        self.session.headers.update(
-            {
-                "x-api-key": profile.api_key,
-                "anthropic-version": ANTHROPIC_VERSION,
-                "content-type": "application/json",
-            }
-        )
+        # One session *per thread*.  `requests.Session` is not documented as
+        # thread-safe, and the pipeline shares one adapter across 4–16 worker
+        # threads; a thread-local session keeps the connection reuse without
+        # sharing its connection pool across threads.
+        self._local = threading.local()
         self.url = messages_url(profile.base_url)
+
+    @property
+    def session(self) -> requests.Session:
+        """The calling thread's session, created on first use."""
+        session = getattr(self._local, "session", None)
+        if session is None:
+            session = requests.Session()
+            session.headers.update(
+                {
+                    "x-api-key": self.profile.api_key,
+                    "anthropic-version": ANTHROPIC_VERSION,
+                    "content-type": "application/json",
+                }
+            )
+            self._local.session = session
+        return session
 
     @staticmethod
     def _resolve_max_tokens(profile: Any) -> int:
@@ -102,6 +114,7 @@ class AnthropicMessagesAdapter(ModelAdapter):
             "messages": self.build_messages(text),
         }
         if getattr(self.profile, "temperature", None) is not None:
+            # Omitted when unset, for models that reject the parameter.
             body["temperature"] = self.profile.temperature
         if getattr(self.profile, "top_p", None) is not None:
             body["top_p"] = self.profile.top_p
@@ -128,19 +141,32 @@ class AnthropicMessagesAdapter(ModelAdapter):
     def do_translate(self, text: str) -> str:
         body = self._body(text)
         if self.stream:
-            return self._translate_streaming(body)
+            return self._translate_streaming(body, text)
 
         response = self.session.post(self.url, json=body, timeout=120.0)
         self._raise_for_status(response)
         payload = response.json()
+        if payload.get("stop_reason") == "max_tokens":
+            raise TruncatedResponseError(self.max_tokens, text)
         return _join_text_blocks(payload.get("content") or []).strip()
 
-    def _translate_streaming(self, body: dict[str, Any]) -> str:
+    def _translate_streaming(self, body: dict[str, Any], text: str) -> str:
         body = {**body, "stream": True}
+        stop_reason = None
+        parts: list[str] = []
         with self.session.post(self.url, json=body, timeout=120.0, stream=True) as response:
             self._raise_for_status(response)
-            parts = [_delta_text(event) for event in _sse_events(response.iter_lines())]
-        return "".join(part for part in parts if part).strip()
+            for event in _sse_events(response.iter_lines()):
+                delta = _delta_text(event)
+                if delta:
+                    parts.append(delta)
+                # `message_delta` carries the final stop_reason; it is the only
+                # streamed signal that the answer was cut off.
+                if event.get("type") == "message_delta":
+                    stop_reason = (event.get("delta") or {}).get("stop_reason") or stop_reason
+        if stop_reason == "max_tokens":
+            raise TruncatedResponseError(self.max_tokens, text)
+        return "".join(parts).strip()
 
     @staticmethod
     def _raise_for_status(response: requests.Response) -> None:

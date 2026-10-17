@@ -112,7 +112,8 @@ def test_providers_list_nullable_fields(loaded):
     assert bare["models"]["m"] == {
         "model": "m",
         "reasoning_effort": None,
-        "temperature": 0.0,
+        # Unset means "do not send it", which is not the same as 0.0.
+        "temperature": None,
         "max_tokens": None,
         "top_p": None,
         "stream": False,

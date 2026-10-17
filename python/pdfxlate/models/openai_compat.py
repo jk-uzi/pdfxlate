@@ -26,7 +26,7 @@ from tenacity import (
     wait_exponential,
 )
 
-from pdfxlate.models.base import ModelAdapter, register
+from pdfxlate.models.base import ModelAdapter, TruncatedResponseError, register
 
 logger = logging.getLogger(__name__)
 
@@ -54,8 +54,12 @@ class OpenAICompatAdapter(ModelAdapter):
         self.reasoning_effort = profile.reasoning_effort
         self.extra_body = profile.extra_body or {}
 
-        # Sampling options assembled once and reused per request.
-        self.options: dict[str, Any] = {"temperature": profile.temperature}
+        # Sampling options assembled once and reused per request.  temperature
+        # is omitted when unset: some reasoning models reject it outright, and
+        # leaving the field blank in Settings is how that is expressed.
+        self.options: dict[str, Any] = {}
+        if profile.temperature is not None:
+            self.options["temperature"] = profile.temperature
         if profile.top_p is not None:
             self.options["top_p"] = profile.top_p
         if profile.max_tokens is not None:
@@ -104,12 +108,21 @@ class OpenAICompatAdapter(ModelAdapter):
         )
         if self.stream:
             parts = []
+            finish_reason = None
             for chunk in response:
-                if chunk.choices and chunk.choices[0].delta.content:
-                    parts.append(chunk.choices[0].delta.content)
+                if chunk.choices:
+                    choice = chunk.choices[0]
+                    if choice.delta.content:
+                        parts.append(choice.delta.content)
+                    # The reason arrives on the last chunk, often with an empty
+                    # delta, so it has to be read on every chunk and kept.
+                    finish_reason = choice.finish_reason or finish_reason
             content = "".join(parts)
         else:
             if not response.choices:
                 raise ValueError(f"empty response from model: {response!r}")
+            finish_reason = response.choices[0].finish_reason
             content = response.choices[0].message.content or ""
+        if finish_reason == "length":
+            raise TruncatedResponseError(getattr(self.profile, "max_tokens", None), text)
         return content.strip()

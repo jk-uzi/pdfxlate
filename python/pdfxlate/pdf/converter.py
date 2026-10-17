@@ -1,7 +1,9 @@
 import concurrent.futures
 import logging
 import re
+import time
 import unicodedata
+from asyncio import CancelledError
 from collections import namedtuple
 from time import perf_counter
 from enum import Enum
@@ -13,12 +15,62 @@ from pdfminer.pdffont import PDFCIDFont, PDFUnicodeNotDefined
 from pdfminer.pdfinterp import PDFGraphicState, PDFResourceManager
 from pdfminer.utils import apply_matrix_pt, mult_matrix
 from pymupdf import Font
-from tenacity import retry, wait_fixed
 
-from pdfxlate.models.base import ModelAdapter
+from pdfxlate.models.base import PERMANENT_TRANSLATION_ERRORS, ModelAdapter
 from pdfxlate.pdf.text_spacing import add_cjk_latin_spacing
 
 log = logging.getLogger(__name__)
+
+#: How many times one paragraph is attempted before the job gives up.
+#:
+#: The adapters already retry transient network/HTTP failures eight times with
+#: exponential backoff, so this is the outer bound on top of that.  It used to
+#: be unbounded (tenacity's default ``stop_never``), which meant a permanent
+#: failure — a wrong protocol returning 404, a bad key returning 401, a model
+#: that always drops a formula placeholder — retried once a second forever and
+#: could not even be cancelled, because the cancellation flag was only checked
+#: between pages.
+MAX_SEGMENT_ATTEMPTS = 3
+
+
+def translate_segment(
+    translator: ModelAdapter,
+    text: str,
+    cancellation_event=None,
+    max_attempts: int = MAX_SEGMENT_ATTEMPTS,
+) -> str:
+    """Translate one paragraph, retrying a bounded number of times.
+
+    Permanent failures are re-raised immediately: the same input against the
+    same model will fail the same way, so another attempt only delays the
+    error message.  Everything else gets ``max_attempts`` tries with a short
+    linear backoff.
+
+    The cancellation flag is checked before each attempt.  It cannot interrupt
+    an in-flight HTTP request — nothing can — but it stops the loop between
+    attempts, which is what made a stuck paragraph impossible to cancel.
+    """
+    last_error: BaseException | None = None
+    for attempt in range(1, max_attempts + 1):
+        if cancellation_event is not None and cancellation_event.is_set():
+            raise CancelledError("task cancelled")
+        try:
+            return translator.translate(text)
+        except PERMANENT_TRANSLATION_ERRORS:
+            raise
+        except Exception as exc:  # noqa: BLE001 - re-raised below when exhausted
+            last_error = exc
+            if attempt == max_attempts:
+                break
+            log.warning(
+                "paragraph translation failed (attempt %d/%d), retrying: %s",
+                attempt,
+                max_attempts,
+                exc,
+            )
+            time.sleep(attempt)
+    assert last_error is not None
+    raise last_error
 
 
 class PDFConverterEx(PDFConverter):
@@ -218,6 +270,7 @@ class TranslateConverter(PDFConverterEx):
         layout={},
         noto_name: str = "",
         noto: Font = None,
+        cancellation_event=None,
     ) -> None:
         super().__init__(rsrcmgr)
         self.vfont = vfont
@@ -229,6 +282,9 @@ class TranslateConverter(PDFConverterEx):
         self.perf = None
         self.translation_pool = None
         self.translation_futures = None
+        # Checked between retry attempts, so a job stuck on a failing paragraph
+        # can still be cancelled.
+        self.cancellation_event = cancellation_event
         # The translator is injected rather than constructed from a service
         # string: any object with translate()/lang_out satisfies the contract.
         self.translator = translator
@@ -412,13 +468,13 @@ class TranslateConverter(PDFConverterEx):
         # B. 段落翻译
         log.debug("\n==========[SSTACK]==========\n")
 
-        @retry(wait=wait_fixed(1))
         def worker(s: str):  # 多线程翻译
             if not s.strip() or re.match(r"^\{v\d+\}$", s):  # 空白和公式不翻译
                 return s
             try:
-                new = self.translator.translate(s)
-                return new
+                return translate_segment(
+                    self.translator, s, cancellation_event=self.cancellation_event
+                )
             except BaseException as e:
                 if log.isEnabledFor(logging.DEBUG):
                     log.exception(e)
