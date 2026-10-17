@@ -111,6 +111,7 @@ pdfxlate/
 │           ├── layout.py     187 行  DocLayout-YOLO ONNX 版面检测
 │           ├── ocr.py        161 行  OCR 段落重建与排版
 │           ├── two_phase.py  489 行  两遍式段落收集/回填（MCP 用）
+│           ├── spread.py     160 行  双栏：把页对合成一个派生 PDF（矢量，不栅格化）
 │           ├── ultrafast.py  101 行  免模型快速路径
 │           └── text_spacing.py 44 行  中英混排间距（上游照搬）
 ├── src/
@@ -121,10 +122,10 @@ pdfxlate/
 │   │   └── preload.ts       190 行  contextBridge，向渲染进程暴露 API
 │   └── renderer/
 │       ├── index.html       552 行  界面结构（文案走 data-i18n* 属性；图标在构建时内联）
-│       ├── app.ts          2368 行  界面逻辑（任务/设置双模式、折叠、标签页、文件夹浏览、拖放、缩放、进度、另存为、选项覆盖、侧栏拖拽、MCP 配置）
+│       ├── app.ts          2494 行  界面逻辑（任务/设置双模式、折叠、标签页、文件夹浏览、拖放、缩放、进度、另存为、选项覆盖、侧栏拖拽、MCP 配置）
 │       ├── i18n.ts          575 行  中英文字符串表 + t()/applyStaticTranslations()
 │       ├── icon.svg          49 行  应用标记的**唯一来源**（标题栏内联 + 打包图标）
-│       └── style.css       1243 行  样式（含标题栏标签、查看器浮层、折叠与侧栏状态行、侧栏拖拽手柄）
+│       └── style.css       1248 行  样式（含标题栏标签、查看器浮层、折叠与侧栏状态行、侧栏拖拽手柄）
 ├── assets/
 │   ├── icon.png               512×512，由 make_icon.py 从 icon.svg 生成后提交
 │   └── icon.ico               16–256 多尺寸，同上（Windows 用）
@@ -138,6 +139,7 @@ pdfxlate/
 │   ├── test_mcp_server.py    600 行  MCP 工具、stdio 握手、两遍式端到端与确定性护栏
 │   ├── test_mcp_config.py   239 行  写入 agent 配置：合并/幂等/备份/坏文件不动
 │   ├── test_sidecar_mcp_flag.py 159 行  --mcp 真的能起一个 MCP 握手
+│   ├── test_pdf_spread.py    152 行  双栏派生文档：页对、宽度、缓存、坏文件
 │   ├── test_per_job_overrides.py 136 行  按次覆盖语言/推理；调用方配置对象不被改动
 │   └── test_assets_fonts.py  113 行  语言→字体映射、status() 兼容性
 └── scripts/
@@ -598,16 +600,27 @@ config.yaml**——与同面板的页码、线程数、模式一致。存进 loc
 
 ### 双栏（左右两页）
 
-Chromium 内置查看器**没有**双页模式的 URL 参数（`spread` / `two-page` 都不认），所以
-双栏是自己实现的：`renderPreview()` 在 `#preview-host` 里放一个 `.preview__pages`
-行容器，双栏时放**两个** iframe（当前页 + 下一页），各占一半宽。
+Chromium 内置查看器**没有**双页模式的 URL 参数（`spread` / `two-page` 都不认）。
+**也不能拼两个 iframe**：查看器是独立进程，每个 frame 有自己的滚动条，而父页面
+**读不到它的滚动位置**，两条滚动条永远无法同步——那就不是"一个文档的左右对照"，
+而是把同一份 PDF 开了两遍。
 
-- `spreadMode` 是**全局**开关，与缩放同理（阅读偏好，不按标签记）。
-- `state.page` 始终表示**左页**，所以关掉双栏会停在屏幕上真实存在的那一页。
-- 翻页步长变 2（`stepPage()` 里的 `stride`），否则同一页会连续出现在两个视图里。
-- 末页是奇数时只渲染一页（`spreadPages()` 返回单元素）。
-- 页号标签显示 `3–4 / 20`；"下一页"的禁用边界按"左页 + 1"判断。
-- `zoom=page-width` 是**相对每个 iframe 自己的视口**，所以两页各自缩放到半宽，正好装下。
+所以做法是**把两页合成一个派生文档**，再用现有的单个查看器显示：一个文档、一条滚动条。
+
+- 引擎侧 `python/pdfxlate/pdf/spread.py` 的 `build_spread()`：每两页并排画到一张新页
+  （左 = 第 2k−1 页，右 = 第 2k 页）。用 `show_pdf_page()` 贴的是 **Form XObject**，
+  **不栅格化**——文字仍可选中、可搜索。
+- 输出在 `cache_dir()/spread/<sha1>.pdf`，键是「绝对路径 + 大小 + mtime」，所以改过的
+  文件不会命中旧缓存。7 天未用的自动清理。写入先落 `.part` 再 rename。
+- 边栏 `pdf.spread` 返回 `{path, pages, spreads}`。
+- 渲染侧 `renderPreview()` **永远只建一个 iframe**；双栏时 `src` 指向派生文件，页码用
+  `ceil(page / 2)`（源页 3 在第 2 张合成页上）。
+- `spreadFiles: Map<源路径, 派生路径>` 是会话缓存；`toggleSpread()` 是**异步**的——
+  首次需要生成，失败则保持原状并在日志里说明，绝不"切了但显示错的"。
+- `state.page` 始终是**左页**，所以关掉双栏停在屏幕上真实存在的那一页。
+- 翻页步长 2；页号显示 `3–4 / 20`；"下一页"边界按"左页 + 1"。
+- 末页奇数时右侧留白，**但宽度不变**：若把它做窄，查看器会把这一页放大到两倍宽，
+  翻到最后一页时会突然跳一下。
 
 **第四个条件：标题栏的图钉按钮**（`#btn-toggle-overlays`）可以把三个浮层**钉住常显**，
 给不想每次去"找"控件的人用。实现只有**一个类 + 一条 CSS**（`body.overlays-pinned` 把三块

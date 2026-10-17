@@ -1152,27 +1152,13 @@ body.overlays-pinned .viewer-saveas {
 }
 
 /*
- * The page area. One child in normal mode, two side by side in spread mode.
+ * The page area.
  *
- * The wrapper exists so the frames can be laid out as a row without also
- * changing how the host positions the overlays: the overlays are absolute
- * children of the host, not of this row.
+ * Always one frame, including in spread mode: the facing pages are combined
+ * into a single derived document by the engine, so the viewer owns one
+ * scrollbar. Two frames would each scroll independently and could not be kept
+ * in step — the viewer runs out of process and never reports its scroll offset.
  */
-.preview__pages {
-  flex: 1 1 auto;
-  min-width: 0;
-  min-height: 0;
-  display: flex;
-  gap: 0;
-}
-
-.preview__pages--spread {
-  gap: 1px;
-  /* A hairline between the pages, so two documents of the same paper colour do
-     not read as one wide page. */
-  background: #3f4245;
-}
-
 .preview__frame {
   flex: 1 1 0;
   width: 100%;
@@ -1180,10 +1166,6 @@ body.overlays-pinned .viewer-saveas {
   min-width: 0;
   border: 0;
   display: block;
-}
-
-.preview__pages--spread .preview__frame {
-  width: 50%;
 }
 
 .preview__empty {

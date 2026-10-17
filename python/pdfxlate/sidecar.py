@@ -13,14 +13,18 @@ Event    (stdout): ``{"event": "progress", "job_id": "...", "stage": "...",
                      "current": 3, "total": 10, "message": "..."}``
 
 Methods: ``ping``, ``config.get``, ``config.save``, ``providers.list``,
-``assets.status``, ``assets.download``, ``pdf.info``, ``translate.start``,
-``translate.cancel``, ``mcp.snippet``, ``mcp.installConfig``.
+``assets.status``, ``assets.download``, ``pdf.info``, ``pdf.spread``,
+``translate.start``, ``translate.cancel``, ``mcp.snippet``,
+``mcp.installConfig``.
 ``providers.list`` reports the provider → models tree (each provider's ``kind``,
 ``base_url``, ``has_api_key`` and per-model sampling settings); it deliberately
 never returns an ``api_key``.  There is no stored default model — which one a
 job uses is passed to ``translate.start``.  ``pdf.info`` is a read-only metadata
 probe (page count) used by the preview toolbar; it never renders or modifies the
-document.  ``mcp.snippet`` / ``mcp.installConfig`` help point an AI agent at this
+document.  ``pdf.spread`` writes a *derived* copy with two pages side by side
+and returns its path, so the viewer can show facing pages in one scrollbar;
+the source is never modified.  ``mcp.snippet`` / ``mcp.installConfig`` help
+point an AI agent at this
 install: the first returns config text to paste, the second adds our entry to one
 agent's own config file (backing it up first, and touching nothing else in it).
 
@@ -207,6 +211,34 @@ def method_pdf_info(params: dict) -> dict:
     return {"pages": pages, "path": str(path.resolve())}
 
 
+def method_pdf_spread(params: dict) -> dict:
+    """Write a facing-pages copy of one PDF and return where it landed.
+
+    The renderer cannot lay out PDF pages itself (the viewer is an
+    out-of-process plugin with its own scrollbar, so two frames cannot be kept
+    in step).  Combining the pages here gives the viewer a single document with
+    one scrollbar, which is what a facing-page view needs.
+
+    The result is cached on disk and keyed by the source's path, size and mtime,
+    so repeated requests for the same file cost nothing.  The source is only
+    read.
+    """
+    from pdfxlate.pdf.spread import build_spread
+
+    if "path" not in params:
+        raise ValueError("missing required parameter: path")
+    raw = params["path"]
+    if not isinstance(raw, (str, Path)) or not str(raw).strip():
+        raise ValueError(f"path must be a non-empty string, got {raw!r}")
+
+    spread_path, source_pages, spread_pages = build_spread(raw)
+    return {
+        "path": str(spread_path),
+        "pages": source_pages,
+        "spreads": spread_pages,
+    }
+
+
 def method_translate_start(params: dict) -> dict:
     """Run a translation job, streaming progress events."""
     from pdfxlate.api import translate
@@ -329,6 +361,7 @@ METHODS = {
     "assets.status": method_assets_status,
     "assets.download": method_assets_download,
     "pdf.info": method_pdf_info,
+    "pdf.spread": method_pdf_spread,
     "translate.start": method_translate_start,
     "translate.cancel": method_translate_cancel,
     # Helping the user point an agent at this install.

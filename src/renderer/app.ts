@@ -1121,6 +1121,22 @@ function activateTab(file: string): void {
   if (!pageState.has(file)) void refreshPageCount();
   updatePreviewControls();
   renderPreview();
+  // In spread mode this document may never have been combined into a spread
+  // file. Built after the first paint so switching tabs stays instant: until it
+  // arrives the pane shows a placeholder, not the wrong document.
+  if (spreadMode) void prepareSpreadFor(file);
+}
+
+/** Build a spread for `file` if needed, then repaint if it is still current. */
+async function prepareSpreadFor(file: string): Promise<void> {
+  try {
+    await ensureSpread(file);
+  } catch (err) {
+    appendLog(t("preview.spreadFailed", { error: String(err) }));
+    return;
+  }
+  // The tab may have changed while the engine was working.
+  if (activeTab === file && spreadMode) renderPreview();
 }
 
 function closeTab(file: string): void {
@@ -1128,6 +1144,10 @@ function closeTab(file: string): void {
   if (index < 0) return;
   openTabs.splice(index, 1);
   pageState.delete(file);
+  // The derived file is still on disk and cheap to reuse, but this map is only
+  // a session cache; dropping the entry keeps it from growing with every file
+  // ever opened.
+  spreadFiles.delete(file);
   if (activeTab === file) {
     // Prefer the tab to the right, which is where the one being closed was
     // pointing; fall back to the left, then to nothing open at all.
@@ -1214,10 +1234,38 @@ function spreadPages(state: { page: number; pages: number }): number[] {
 }
 
 /**
+ * Derived spread documents, keyed by source path.
+ *
+ * Building one rewrites every page, so the result is kept for the session and
+ * the engine also caches it on disk. Cleared on locale change? No — the path
+ * does not depend on language; it is dropped when a tab closes.
+ */
+const spreadFiles = new Map<string, string>();
+
+/**
+ * Make sure a spread document exists for `file`, returning its path.
+ *
+ * Rejects rather than falling back to the source: showing the single-page
+ * document in spread mode would look like the toggle silently failed.
+ */
+async function ensureSpread(file: string): Promise<string> {
+  const cached = spreadFiles.get(file);
+  if (cached) return cached;
+  const result = await api.request<{ path: string }>("pdf.spread", { path: file });
+  spreadFiles.set(file, result.path);
+  return result.path;
+}
+
+/**
  * Repaint the preview for the active tab, page and zoom.
  *
- * The frames are built fresh rather than having their `src` updated: changing
- * the fragment of an already-loaded viewer frame does NOT navigate, so replacing
+ * Always exactly one frame, including in spread mode: the facing pages are
+ * combined into a derived document by the engine, so there is one viewer and
+ * one scrollbar. Two frames would each own a scrollbar and could not be kept in
+ * step — the viewer runs out of process and does not report its scroll offset.
+ *
+ * The frame is built fresh rather than having its `src` updated: changing the
+ * fragment of an already-loaded viewer frame does NOT navigate, so replacing
  * the element is the only way to move to another page or zoom level.
  */
 function renderPreview(): void {
@@ -1243,24 +1291,38 @@ function renderPreview(): void {
     return;
   }
 
-  // One wrapper whether there is one page or two, so the layout rule that puts
-  // the pages side by side is the only thing spread mode changes.
-  const row = document.createElement("div");
-  row.className = "preview__pages";
-  row.classList.toggle("preview__pages--spread", spreadMode);
-
   const state = stateFor(source);
-  const pages = spreadMode ? spreadPages(state) : [state.page];
-  for (const page of pages) {
-    const frame = document.createElement("iframe");
-    frame.className = "preview__frame";
-    frame.src = viewerUrl(source, page);
-    // A drag may be in flight; a freshly built frame must not become droppable
-    // again underneath it.
-    if (!frameDroppable) frame.style.pointerEvents = "none";
-    row.append(frame);
+  const spreadPath = spreadMode ? spreadFiles.get(source) : undefined;
+  if (spreadMode && !spreadPath) {
+    // The file has not been built yet. `toggleSpread` and `activateTab` build it
+    // before asking for a repaint, so this is only a transient state; showing
+    // the source meanwhile is better than an empty pane.
+    paintEmpty(t("preview.spreadPending"));
+    return;
   }
-  host.append(row);
+
+  const frame = document.createElement("iframe");
+  frame.className = "preview__frame";
+  // In spread mode the derived document has one page per pair, so the page
+  // number is halved (and rounded up: source page 3 lives on spread page 2).
+  const page = spreadPath ? Math.ceil(state.page / 2) : state.page;
+  frame.src = viewerUrl(spreadPath ?? source, page);
+  // A drag may be in flight; a freshly built frame must not become droppable
+  // again underneath it.
+  if (!frameDroppable) frame.style.pointerEvents = "none";
+  host.append(frame);
+}
+
+/** A one-line placeholder inside the preview host. */
+function paintEmpty(text: string): void {
+  const host = $("preview-host");
+  const empty = document.createElement("div");
+  empty.className = "preview__empty";
+  const title = document.createElement("p");
+  title.className = "preview__empty-title";
+  title.textContent = text;
+  empty.append(title);
+  host.append(empty);
 }
 
 /** Enable/disable the viewer controls and paint the page and zoom readouts. */
@@ -1402,19 +1464,39 @@ $("page-next").addEventListener("click", () => stepPage(1));
 /**
  * Turn the two-page spread on or off.
  *
+ * Async because the first time a document is shown this way, the engine has to
+ * build the derived file. The mode is only switched after that succeeds: a
+ * toggle that flipped and then showed the single-page document would look
+ * broken, so a failure leaves the view as it was and says why in the log.
+ *
  * `page` always means the left page of the spread, so switching off lands on a
  * page that is genuinely on screen rather than on the right-hand one, which
  * would be indistinguishable from skipping forward.
  */
-function toggleSpread(): void {
-  if (!previewSource()) return;
-  spreadMode = !spreadMode;
+async function toggleSpread(): Promise<void> {
+  const file = previewSource();
+  if (!file) return;
+  if (!spreadMode) {
+    const button = $<HTMLButtonElement>("spread-toggle");
+    button.disabled = true;
+    try {
+      await ensureSpread(file);
+    } catch (err) {
+      appendLog(t("preview.spreadFailed", { error: String(err) }));
+      return;
+    } finally {
+      button.disabled = false;
+    }
+    spreadMode = true;
+  } else {
+    spreadMode = false;
+  }
   updatePreviewControls();
   renderPreview();
   flashViewerOverlay();
 }
 
-$("spread-toggle").addEventListener("click", toggleSpread);
+$("spread-toggle").addEventListener("click", () => void toggleSpread());
 
 function stepZoom(delta: number): void {
   // From either fit mode, the first press lands on the step nearest to 100% so
