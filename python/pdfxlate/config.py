@@ -82,7 +82,15 @@ def _restore_env_refs(data: dict, refs: dict[str, str]) -> dict:
 
     Keeps a secret that lives only in the environment out of the file, while
     still writing a value the user explicitly typed into the UI.
+
+    The lookup is by dotted path, which assumes the structure is unchanged
+    since the file was read. It is not: renaming a provider or reordering
+    entries in the UI changes those paths, and a path-only restore would then
+    silently write the expanded secret to disk. So anything the path lookup
+    could not place falls back to a value match — any remaining string that
+    equals an expanded ``${VAR}`` is rewritten as the reference.
     """
+    unmatched = dict(refs)
     for dotted, template in refs.items():
         parts = dotted.replace("]", "").replace("[", ".").split(".")
         target: Any = data
@@ -101,7 +109,41 @@ def _restore_env_refs(data: dict, refs: dict[str, str]) -> dict:
                     target[int(leaf)] = template
                 else:
                     target[leaf] = template
+                unmatched.pop(dotted, None)
+    if unmatched:
+        _restore_by_value(data, unmatched)
     return data
+
+
+def _restore_by_value(node: Any, refs: dict[str, str]) -> None:
+    """Rewrite any remaining value that equals an expanded ``${VAR}``.
+
+    Mutates ``node`` in place. Only the values are compared, never the keys, so
+    a provider renamed from ``old`` to ``new`` still gets its key written back
+    as ``${DEEPSEEK_API_KEY}``.
+    """
+    expanded = {_expand(template): template for template in refs.values()}
+    # Longest first: if two variables expand to the same secret, any of them is
+    # equally correct, but taking the longer template first is stable.
+    pairs = sorted(expanded.items(), key=lambda item: len(item[1]), reverse=True)
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if isinstance(value, str):
+                for secret, template in pairs:
+                    if value == secret:
+                        node[key] = template
+                        break
+            else:
+                _restore_by_value(value, refs)
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            if isinstance(value, str):
+                for secret, template in pairs:
+                    if value == secret:
+                        node[index] = template
+                        break
+            else:
+                _restore_by_value(value, refs)
 
 
 def _strip_trailing_slash(v: str | None) -> str | None:
@@ -178,6 +220,14 @@ class Provider(BaseModel):
     kind: str = "openai_compat"
     base_url: str | None = None
     api_key: str | None = None
+    # Whether this provider takes part in a run at all.
+    #
+    # Same idea as ModelEntry.enabled, one level up: switching a provider off
+    # removes every one of its models from the options list and from the
+    # no-argument fallback, and naming one explicitly is an error.  Kept
+    # separate from deleting because a provider that is merely not in use
+    # right now should not lose its key.
+    enabled: bool = True
     models: dict[str, ModelEntry] = Field(default_factory=dict)
 
     model_config = {"extra": "forbid"}
@@ -345,10 +395,12 @@ class AppConfig(BaseModel):
         # an old-style ``profile`` reference; honour both halves at once.
         if model is None and provider not in self.providers:
             if found := self._find_provider_with_alias(provider):
+                self._require_provider_enabled(found[0])
                 self._require_enabled(*found)
                 return self._flatten(*found)
 
         pname = self.provider_for(provider)
+        self._require_provider_enabled(pname)
         models = self.providers[pname].models
         if not models:
             raise ValueError(f"Provider {pname!r} has no models configured")
@@ -367,6 +419,13 @@ class AppConfig(BaseModel):
             )
         self._require_enabled(pname, alias)
         return self._flatten(pname, alias)
+
+    def _require_provider_enabled(self, pname: str) -> None:
+        """Refuse a provider the user switched off, before looking at models."""
+        if not self.providers[pname].enabled:
+            raise ValueError(
+                f"Provider {pname!r} is disabled; enable it in Settings first"
+            )
 
     def _require_enabled(self, pname: str, alias: str) -> None:
         """Refuse a model the user switched off.
@@ -396,13 +455,16 @@ class AppConfig(BaseModel):
         """Every ``(provider name, model alias)`` pair, in config order.
 
         ``only_enabled`` drops models the user switched off; it is what the
-        options dropdown and the no-argument fallback want. The default keeps
-        every pair, because the editor and ``--list-models`` must still show a
+        options dropdown and the no-argument fallback want. A disabled
+        *provider* drops all of its models too — switching the provider off is
+        meant to take the whole group out of rotation. The default keeps every
+        pair, because the editor and ``--list-models`` must still show a
         disabled entry in order to switch it back on.
         """
         return [
             (name, alias)
             for name, provider in self.providers.items()
+            if not only_enabled or provider.enabled
             for alias, entry in provider.models.items()
             if not only_enabled or entry.enabled
         ]

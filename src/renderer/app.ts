@@ -35,6 +35,7 @@ interface ProviderSummary {
   kind: string;
   base_url: string | null;
   has_api_key: boolean;
+  enabled: boolean;
   models: Record<string, ProviderModelSummary>;
 }
 
@@ -65,6 +66,7 @@ interface ProviderDraft {
   kind?: string;
   base_url?: string | null;
   api_key?: string | null;
+  enabled?: boolean;
   models?: Record<string, ModelDraft>;
 }
 
@@ -1777,6 +1779,9 @@ function renderProviderList(): void {
       row.classList.add("is-active");
       row.setAttribute("aria-selected", "true");
     }
+    // A switched-off provider still needs to be reachable in the list — this
+    // is the only place to switch it back on — so it is dimmed, not removed.
+    if (draftProviders()[name]?.enabled === false) row.classList.add("is-off");
 
     const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     icon.setAttribute("class", "provider-row__icon");
@@ -2104,7 +2109,11 @@ function paintProviderKind(kind: string): void {
 /** Fill the provider-level fields from the cached config, and mask the key. */
 function applyProviderFields(): void {
   const provider = draftProvider(editingProvider);
+  // A rename in progress belongs to the provider it was started on.
+  stopRenamingProvider(false);
   $("provider-title").textContent = editingProvider ?? "";
+  $("provider-title").classList.toggle("hidden", !editingProvider);
+  $<HTMLInputElement>("field-provider-enabled").checked = provider?.enabled !== false;
   paintProviderKind(provider?.kind ?? "");
   // A probe result belongs to the provider it was run against, so switching
   // providers clears it rather than showing a stale "OK".
@@ -2439,6 +2448,143 @@ $("btn-test-provider").addEventListener("click", (event) => {
   void testProvider(event.currentTarget as HTMLButtonElement);
 });
 
+// --- renaming a provider ---------------------------------------------------
+
+/**
+ * Rename a provider, keeping everything that refers to it in step.
+ *
+ * Providers are keyed by name in the config document, so this is a key move
+ * rather than a field edit. Plain `delete` + assign would drop the entry to the
+ * end of the object, and the file order decides which model an unspecified call
+ * reaches — so the rebuild preserves position.
+ */
+async function renameProvider(oldName: string, rawName: string): Promise<boolean> {
+  const newName = rawName.trim();
+  if (!newName) {
+    setProfileMessage("model.nameRequired", undefined, true);
+    return false;
+  }
+  if (newName === oldName) return true;
+
+  const providers = draftProviders();
+  if (providers[newName]) {
+    setProfileMessage("model.providerExists", { name: newName }, true);
+    return false;
+  }
+  if (!providers[oldName]) return false;
+
+  const rebuilt: Record<string, ProviderDraft> = {};
+  for (const [name, value] of Object.entries(providers)) {
+    rebuilt[name === oldName ? newName : name] = value;
+  }
+  if (cachedConfig) cachedConfig.providers = rebuilt;
+
+  editingProvider = newName;
+  // The saved choice in the options panel names the old provider.
+  if (optionValues.model.startsWith(`${oldName}|`)) {
+    storeOption("model", optionValues.model.replace(`${oldName}|`, `${newName}|`));
+  }
+  // A key typed but not yet saved lived on the draft, so it moved with it;
+  // `has_api_key` comes from the summary keyed by the on-disk name.
+  const summary = cachedProviders?.providers;
+  if (summary && summary[oldName] && !summary[newName]) {
+    summary[newName] = summary[oldName];
+    delete summary[oldName];
+  }
+
+  renderProviderList();
+  renderModelList();
+  renderOptionModels();
+  applyProviderFields();
+  applyModelFields();
+  await saveConfig("model.saved");
+  return true;
+}
+
+/** Put the header into rename mode. */
+function startRenamingProvider(): void {
+  const name = editingProvider;
+  if (!name) return;
+  const input = $<HTMLInputElement>("provider-name-input");
+  input.value = name;
+  input.classList.remove("hidden");
+  $("provider-title").classList.add("hidden");
+  input.focus();
+  input.select();
+}
+
+/**
+ * Leave rename mode. With `commit`, the typed name is applied first; the field
+ * stays open if the name is rejected, so the message and the text are visible
+ * together.
+ */
+function stopRenamingProvider(commit: boolean): void {
+  const input = $<HTMLInputElement>("provider-name-input");
+  if (input.classList.contains("hidden")) return;
+  const target = editingProvider;
+  const value = input.value;
+  input.classList.add("hidden");
+  $("provider-title").classList.remove("hidden");
+  if (!commit || !target) return;
+  void renameProvider(target, value).then((ok) => {
+    if (!ok) {
+      // Reopen with the rejected text so it can be corrected.
+      input.value = value;
+      input.classList.remove("hidden");
+      $("provider-title").classList.add("hidden");
+      input.focus();
+    }
+  });
+}
+
+$("btn-rename-provider").addEventListener("click", () => startRenamingProvider());
+
+$("provider-name-input").addEventListener("keydown", (event) => {
+  const key = (event as KeyboardEvent).key;
+  if (key === "Enter") {
+    event.preventDefault();
+    stopRenamingProvider(true);
+  } else if (key === "Escape") {
+    event.preventDefault();
+    stopRenamingProvider(false);
+  }
+});
+
+$("provider-name-input").addEventListener("blur", () => {
+  // Clicking elsewhere means "done", which is what the field looks like. The
+  // reject path reopens the field, so a blur caused by that does not loop.
+  if (!$("provider-name-input").classList.contains("hidden")) stopRenamingProvider(true);
+});
+
+/**
+ * Switch a whole provider on or off.
+ *
+ * Saved immediately, like the per-model switch: it changes what a run may use,
+ * and leaving it pending behind the Save button is easy to miss.
+ */
+async function setProviderEnabled(enabled: boolean): Promise<void> {
+  const name = editingProvider;
+  if (!name) return;
+  commitProviderFields(name);
+  const provider = draftProviders()[name];
+  if (!provider) return;
+  provider.enabled = enabled;
+  renderProviderList();
+  renderProviderModelsState();
+  await saveConfig("model.saved");
+}
+
+/** Repaint the parts of the UI that depend on a provider being enabled. */
+function renderProviderModelsState(): void {
+  renderOptionModels();
+  const provider = draftProvider(editingProvider);
+  $<HTMLInputElement>("field-provider-enabled").checked = provider?.enabled !== false;
+}
+
+$("field-provider-enabled").addEventListener("change", (event) => {
+  void setProviderEnabled((event.target as HTMLInputElement).checked);
+});
+
 $("btn-remove-provider").addEventListener("click", () => {
   const name = editingProvider;
   if (!name) {
@@ -2468,6 +2614,161 @@ $("btn-add-model").addEventListener("click", () => {
   if (!box.classList.contains("hidden")) {
     $<HTMLInputElement>("new-model-name").focus();
   }
+});
+
+// --- importing models from the upstream catalogue --------------------------
+
+/**
+ * Model ids offered by the current provider, or empty before the fetch.
+ *
+ * Kept outside the DOM so the search box can re-filter without re-requesting
+ * the catalogue.
+ */
+let upstreamModels: string[] = [];
+
+function setModelsDialogMessage(key: string, params?: Record<string, string>, error = false): void {
+  const msg = $("models-dialog-msg");
+  msg.textContent = key ? t(key, params) : "";
+  msg.className = error ? "msg msg--error" : "msg";
+}
+
+/** Render the checklist, filtered by the search box. */
+function paintModelsOptions(filter: string): void {
+  const box = $("models-options");
+  box.innerHTML = "";
+  const provider = editingProvider ? draftProviders()[editingProvider] : undefined;
+  const configured = new Set(Object.keys(provider?.models ?? {}));
+  const needle = filter.trim().toLowerCase();
+  const visible = needle
+    ? upstreamModels.filter((id) => id.toLowerCase().includes(needle))
+    : upstreamModels;
+
+  if (!visible.length) {
+    const empty = document.createElement("div");
+    empty.className = "models-options__empty";
+    empty.textContent = t("model.fetchNoMatch");
+    box.append(empty);
+    return;
+  }
+
+  for (const id of visible) {
+    const row = document.createElement("label");
+    row.className = "models-option";
+    const already = configured.has(id);
+
+    const tick = document.createElement("input");
+    tick.type = "checkbox";
+    tick.value = id;
+    if (already) {
+      // Shown, ticked and locked: importing it again would only replace the
+      // settings the user may have tuned.
+      tick.checked = true;
+      tick.disabled = true;
+      row.classList.add("is-present");
+    }
+
+    const label = document.createElement("span");
+    label.className = "models-option__id";
+    label.textContent = id;
+    label.title = id;
+
+    row.append(tick, label);
+    if (already) {
+      const tag = document.createElement("span");
+      tag.className = "models-option__tag";
+      tag.textContent = t("model.fetchAlreadyAdded");
+      row.append(tag);
+    }
+    box.append(row);
+  }
+}
+
+async function openModelsDialog(button: HTMLButtonElement): Promise<void> {
+  const provider = editingProvider;
+  if (!provider) {
+    setProfileMessage("model.noProvider", undefined, true);
+    return;
+  }
+  commitProviderFields(provider);
+  const draft = draftProvider(provider);
+  upstreamModels = [];
+
+  const dialog = $<HTMLDialogElement>("models-dialog");
+  $<HTMLInputElement>("models-search").value = "";
+  $("models-options").innerHTML = "";
+  setModelsDialogMessage("model.fetching");
+  dialog.showModal();
+
+  button.disabled = true;
+  button.textContent = t("model.fetching");
+  try {
+    const result = await api.request<{ models: string[] }>("providers.models", {
+      provider,
+      kind: draft?.kind ?? "openai_compat",
+      base_url: draft?.base_url ?? "",
+      api_key: $<HTMLInputElement>("field-api-key").value || null,
+    });
+    upstreamModels = result.models;
+    setModelsDialogMessage(
+      upstreamModels.length ? "" : "model.fetchEmpty",
+      undefined,
+      false,
+    );
+    paintModelsOptions("");
+    $<HTMLInputElement>("models-search").focus();
+  } catch (err) {
+    setModelsDialogMessage("model.fetchFailed", { error: cleanError(err) }, true);
+  } finally {
+    button.disabled = false;
+    button.textContent = t("model.fetchModels");
+  }
+}
+
+$("btn-fetch-models").addEventListener("click", (event) => {
+  void openModelsDialog(event.currentTarget as HTMLButtonElement);
+});
+
+$("models-search").addEventListener("input", (event) => {
+  paintModelsOptions((event.target as HTMLInputElement).value);
+});
+
+/** Import the ticked ids as new models, aliased to their own id. */
+async function importSelectedModels(): Promise<void> {
+  const provider = editingProvider;
+  const box = $("models-options");
+  if (!provider || !box) return;
+  const chosen = [...box.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')]
+    .filter((tick) => tick.checked && !tick.disabled)
+    .map((tick) => tick.value);
+  if (!chosen.length) {
+    setModelsDialogMessage("model.fetchNoneSelected", undefined, true);
+    return;
+  }
+
+  const prov = draftProviders()[provider];
+  if (!prov) return;
+  if (!prov.models) prov.models = {};
+  for (const id of chosen) {
+    // The alias is the id itself: it is unique within the provider and is what
+    // the row will show. The API id and the alias can be separated later in
+    // the row editor.
+    prov.models[id] = { model: id, temperature: 0 };
+  }
+  $<HTMLDialogElement>("models-dialog").close();
+  renderModelList();
+  renderOptionModels();
+  await saveConfig("model.saved");
+}
+
+$("models-dialog").addEventListener("close", () => {
+  // `close` fires for the Escape key and the Cancel button alike; only the
+  // Import button runs the import, so nothing else is needed here.
+  upstreamModels = [];
+});
+
+$("btn-models-import").addEventListener("click", (event) => {
+  event.preventDefault();
+  void importSelectedModels();
 });
 
 $("btn-add-model-confirm").addEventListener("click", () => {
@@ -2653,6 +2954,8 @@ function renderOptionModels(): void {
   const providers = (cachedConfig?.providers ?? {}) as Record<string, ProviderDraft>;
   const values: string[] = [];
   for (const [providerName, provider] of Object.entries(providers)) {
+    // A disabled provider takes its whole group out of rotation.
+    if (provider.enabled === false) continue;
     for (const [alias, entry] of Object.entries(provider.models ?? {})) {
       // A disabled model is not offered: the backend refuses to resolve it, so
       // listing it here would only turn into a failure at translate time.
@@ -2661,7 +2964,12 @@ function renderOptionModels(): void {
       // `provider|model`: neither half may contain a pipe, so this round-trips
       // without needing a nested structure the DOM cannot carry.
       opt.value = `${providerName}|${alias}`;
-      opt.textContent = `${providerName} · ${alias}`;
+      // The label shows the API id, because that is what the user recognises;
+      // the value keeps the alias, which is what `resolve()` expects. Two
+      // aliases can point at one id, so the alias goes in the tooltip.
+      const modelId = entry?.model || alias;
+      opt.textContent = `${providerName} / ${modelId}`;
+      opt.title = `${providerName} / ${modelId}` + (alias !== modelId ? `（${alias}）` : "");
       select.append(opt);
       values.push(opt.value);
     }

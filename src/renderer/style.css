@@ -606,6 +606,149 @@ body {
   white-space: nowrap;
 }
 
+/*
+ * The rename field replaces the title in place. Same font, padding and border
+ * as the h2 it stands in for, so the header does not jump when it appears.
+ */
+.provider-head__input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 16px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  background: #fff;
+}
+
+/* A provider switched off stays listed but reads as inactive. */
+.provider-row.is-off .provider-row__name {
+  color: var(--muted);
+}
+
+.provider-row.is-off .provider-row__icon {
+  opacity: 0.5;
+}
+
+.model-list__actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.model-row.is-off .model-row__name {
+  color: var(--muted);
+}
+
+/* --- settings › model: upstream model picker ----------------------------- */
+
+.models-dialog {
+  width: min(560px, calc(100vw - 80px));
+  max-height: min(620px, calc(100vh - 120px));
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+  color: var(--text);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.28);
+}
+
+.models-dialog::backdrop {
+  background: rgba(31, 35, 40, 0.4);
+}
+
+.models-dialog__body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: inherit;
+  padding: 18px 20px;
+}
+
+.models-dialog__title {
+  margin: 0;
+  font-size: 15px;
+}
+
+.models-dialog__search {
+  width: 100%;
+}
+
+/* The list scrolls, the title and actions do not. */
+.models-options {
+  flex: 1 1 auto;
+  min-height: 120px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.models-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-top: 1px solid var(--border);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.models-option:first-child {
+  border-top: none;
+}
+
+.models-option:hover {
+  background: #f7f8fa;
+}
+
+.models-option input {
+  flex: 0 0 auto;
+  width: auto;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.models-option__id {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+/* Already configured: shown, ticked, and not changeable. */
+.models-option.is-present {
+  color: var(--muted);
+  cursor: default;
+}
+
+.models-option.is-present .models-option__id {
+  opacity: 0.75;
+}
+
+.models-option__tag {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: #eaeef2;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+.models-options__empty {
+  padding: 14px 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.models-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 /* The endpoint fields read as one stack, so the whole column is one grid. */
 .model-fields {
   gap: 12px;

@@ -21,6 +21,8 @@ Python 3.12，venv 在 `python/.venv`，包以 editable 方式安装，改源码
 | 调整发给模型的请求参数 | 对应适配器：`openai_compat.py` / `openai_responses.py` / `anthropic_messages.py`（`reasoning_effort` / `extra_body` / `stream` / `temperature`） |
 | 改重试策略 / 取消行为 | `pdf/converter.py` 的 `translate_segment()`（有界重试）+ `models/base.py` 的 `PERMANENT_TRANSLATION_ERRORS` |
 | 改「测试连接」 | `sidecar.py` 的 `method_providers_test` + `app.ts` 的 `testProvider()` |
+| 改「从上游拉取模型」 | `models/catalog.py` + `sidecar.py` 的 `method_providers_models` + `app.ts` 的 `openModelsDialog()` |
+| 改供应商改名 | `app.ts` 的 `renameProvider()` / `startRenamingProvider()` / `stopRenamingProvider()` |
 | 改翻译提示词 | `models/base.py` 的 `DEFAULT_PROMPT`，或配置里的 `translation.prompt` 指向模板文件 |
 | 改配置项 / 加新配置字段 | `config.py`（`Provider`、`ModelEntry`、`TranslationSettings` 等 pydantic 模型） |
 | 改「一个供应商挂多个模型」的结构 | `config.py` 的 `Provider` / `ModelEntry` / `AppConfig.resolve()` |
@@ -106,7 +108,8 @@ pdfxlate/
 │       │   ├── base.py       326 行  ModelAdapter 基类 + 注册表 + 永久错误分类
 │       │   ├── openai_compat.py 128 行  OpenAI Chat Completions 适配器
 │       │   ├── openai_responses.py 136 行  OpenAI Responses 适配器
-│       │   └── anthropic_messages.py 247 行  Anthropic Messages 适配器
+│       │   ├── anthropic_messages.py 247 行  Anthropic Messages 适配器
+│       │   └── catalog.py   146 行  上游模型清单（GET .../models）
 │       └── pdf/
 │           ├── __init__.py      1 行
 │           ├── pipeline.py   580 行  管线编排：解析→版面→翻译→排版
@@ -125,11 +128,11 @@ pdfxlate/
 │   ├── preload/
 │   │   └── preload.ts       190 行  contextBridge，向渲染进程暴露 API
 │   └── renderer/
-│       ├── index.html       641 行  界面结构（文案走 data-i18n* 属性；图标在构建时内联）
-│       ├── app.ts          2822 行  界面逻辑（任务/设置双模式、折叠、标签页、文件夹浏览、拖放、缩放、进度、另存为、选项覆盖、侧栏拖拽、供应商/模型两栏编辑器、MCP 配置）
-│       ├── i18n.ts          593 行  中英文字符串表 + t()/applyStaticTranslations()
+│       ├── index.html       720 行  界面结构（文案走 data-i18n* 属性；图标在构建时内联）
+│       ├── app.ts          3252 行  界面逻辑（任务/设置双模式、折叠、标签页、文件夹浏览、拖放、缩放、进度、另存为、选项覆盖、侧栏拖拽、供应商/模型两栏编辑器、MCP 配置）
+│       ├── i18n.ts          641 行  中英文字符串表 + t()/applyStaticTranslations()
 │       ├── icon.svg          49 行  应用标记的**唯一来源**（标题栏内联 + 打包图标）
-│       └── style.css       1804 行  样式（含标题栏标签、查看器浮层、折叠与侧栏状态行、侧栏拖拽手柄、模型页两栏布局与开关）
+│       └── style.css       1947 行  样式（含标题栏标签、查看器浮层、折叠与侧栏状态行、侧栏拖拽手柄、模型页两栏布局与开关）
 ├── assets/
 │   ├── icon.png               512×512，由 make_icon.py 从 icon.svg 生成后提交
 │   └── icon.ico               16–256 多尺寸，同上（Windows 用）
@@ -140,6 +143,9 @@ pdfxlate/
 │   ├── test_adapters_http.py 359 行  三个适配器打真实本地 HTTP 服务（含 SSE）
 │   ├── test_translate_segment.py 111 行  有界重试、取消、永久错误不重试
 │   ├── test_sidecar_provider_test.py 172 行  providers.test 探针
+│   ├── test_catalog.py      171 行  上游模型清单：URL、两种信封、翻页、错误
+│   ├── test_sidecar_catalog.py 113 行  providers.models 探针
+│   ├── test_config_env_refs.py 142 行  **改名前后的密钥不落明文**
 │   ├── test_anthropic_messages.py 227 行  Messages 端点拼接、请求体、SSE、错误分级
 │   ├── test_config_providers.py 349 行  供应商→模型 schema、resolve、迁移（含已移除字段）、env 引用
 │   ├── test_typesetting.py   172 行  字号适配纯函数（放不下时的缩字逻辑）
@@ -282,6 +288,55 @@ vLLM / Ollama / OpenRouter 等。一等支持 `reasoning_effort`、`extra_body`
 - **不发 `reasoning_effort`**：Anthropic 用 `thinking.budget_tokens` 表达，
   无法从 low/medium/high 推出一个预算。要开 thinking 请在 `extra_body` 里写
   `{"thinking": {...}}`。
+
+### 供应商（不只是模型）也有 enable/disable
+
+`Provider.enabled`（默认 `true`，老配置无需迁移）。关掉之后：
+
+- `all_models(only_enabled=True)` 跳过它的**全部**模型，因此选项面板不列出、无参 `resolve()`
+  也不会回退到它；
+- **显式点名**该供应商或它的任一模型 → 报错 `Provider ... is disabled`；
+- `providers.list` / MCP `list_providers` 都多返回一个 `enabled`；
+- 左栏该行加 `is-off`（名称与图标变灰），但仍然留在列表里——那是唯一能重新打开它的地方。
+
+删除与关闭是两件事：关闭保留地址和密钥，删除才真的丢掉。界面因此同时保留垃圾桶与开关。
+
+### 供应商改名与密钥安全
+
+供应商在配置里是**以名称为键**的，改名 = 换键。`renameProvider()` 重建对象并**保留原位置**
+（用 `delete` + 赋值会把它挪到末尾，而文件顺序决定无参调用落到哪个模型）。同时改写：
+`editingProvider`、localStorage 里形如 `provider|alias` 的选项、`cachedProviders` 摘要的键。
+
+**这里有一个会泄露密钥的坑**：`config.save` 收到的是渲染进程回传的 `config.get` 文档，其中的
+`api_key` 已经是**展开后**的字面值；`_restore_env_refs` 原本靠**路径**
+`providers.<名字>.api_key` 把 `${VAR}` 写回去。改名后该路径不存在，密钥就会**以明文落盘**。
+
+`_restore_env_refs` 现在有两段：先按路径还原（行为不变），路径对不上的部分再走一次
+**按值匹配**的兜底——任何等于某个 `${VAR}` 展开值的字符串都改回模板引用。这覆盖了改名、
+条目重排，也覆盖了落在任意嵌套位置的同一个密钥。代价是：如果用户恰好把一个手写字面值填成
+与某个环境变量完全相同，它也会被替换成引用——两个方向都会在下次加载时展开成同一个值，而不
+替换则意味着明文写盘，所以这个方向的错误更轻。`tests/test_config_env_refs.py` 钉住了这条。
+
+### 从上游拉取模型
+
+`models/catalog.py` — `list_models(kind, base_url, api_key)` 只问「这个端点自称有哪些模型」，
+与翻译适配器分开：两者关心的东西不同，合在一起会让适配器多背一个与请求无关的端点。
+
+- `openai_compat` / `openai_responses`：`{base}/models`，`Authorization: Bearer`，
+  读 `{"data": [{"id": ...}]}`；也接受裸数组（部分网关如此）。
+- `anthropic_messages`：`{base}/v1/models`（已以 `/v1` 结尾时不重复拼），
+  `x-api-key` + `anthropic-version`，按 `has_more` / `last_id` 翻页，上限 10 页，
+  游标不前进时立即停止。
+
+结果排序去重。失败抛 `CatalogError`，消息带 HTTP 状态与 URL——选错 API 格式在这里读作
+`HTTP 404 from .../models`，与翻译请求报错时同样直接。
+
+**不自动填 `context_length`**：各家 `/models` 返回的元数据差异太大，猜一个数字比留空更糟；
+留空时「最大输出」的 placeholder 只是 1/4 窗口的建议值，不会被写进配置。
+
+界面上：模型列表标题行的「从上游拉取」打开原生 `<dialog>`，带搜索框（OpenRouter 这类有几百
+个 id）；**已配置的项勾选且禁用**并标「已添加」，避免导入时覆盖用户调好的参数。导入的别名
+取 id 本身，之后可在行编辑里把别名与 API id 分开。
 
 ### 失败语义：什么会重试，什么不会
 
@@ -592,7 +647,7 @@ PDF，它是空的，两个按钮就被禁用并提示"请先翻译"：程序**�
 |---|---|---|
 | 回答 | **有哪些模型可用、怎么连** | **这次用哪一个** |
 | 存哪 | `config.yaml`（永久） | localStorage（仅供本次/记住上次） |
-| 内容 | 供应商：`kind`/`base_url`/`api_key`；模型：模型 ID、上下文长度、最大输出、top_p、推理强度、温度、流式、extra_body、**是否启用** | 选一个 `供应商 · 模型` |
+| 内容 | 供应商：`kind`/`base_url`/`api_key`/**是否启用**；模型：模型 ID、上下文长度、最大输出、top_p、推理强度、温度、流式、extra_body、**是否启用** | 选一个 `供应商 / 模型 ID` |
 
 **设置里的供应商列表和展开的模型行是「编辑光标」，不是「这次用哪个」。** 它们曾经是同一个
 变量，导致在设置里浏览几下就会**静默改变下次翻译用的模型**——这正是要修的 bug。现在变量叫

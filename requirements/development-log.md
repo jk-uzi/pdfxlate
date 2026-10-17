@@ -2023,3 +2023,86 @@ temperature 时该字段不存在。
 - 测试连接只验证「这个协议、这个地址、这把钥匙能不能通」，不验证译文质量。
 - 截断检测依赖各 API 正确返回终止原因；有的自建网关不返回 `finish_reason`，那种情况下
   无法识别截断。
+
+## 供应商改名、供应商级开关、上游模型拉取
+
+三件事一起做，因为都落在模型设置页的同一块区域。
+
+### 1. 供应商改名
+
+标题行加了铅笔按钮，点进去 `h2` 就地换成同字号输入框（自动聚焦全选），Enter/失焦提交，
+Esc 取消。空名或重名会写 `#model-msg` 并重新打开输入框，免得用户看不到自己输错的内容。
+
+供应商在配置里是**以名称为键**的，所以改名是换键：
+
+- **保留原位置顺序**——用 `delete` + 赋值会把条目挪到末尾，而文件顺序决定无参调用落到
+  哪个模型（`config.resolve()` 的文档里写明了这一点）；
+- 同步 `editingProvider`、`cachedProviders` 摘要的键、localStorage 里形如
+  `provider|alias` 的选项值。
+
+**顺带堵了一个会泄露密钥的洞。** `config.save` 收到的是渲染进程回传的 `config.get` 文档，
+那里的 `api_key` 已经是展开后的字面值；`_restore_env_refs` 原本靠路径
+`providers.<名字>.api_key` 把 `${VAR}` 写回去。改名后路径不存在，**密钥会以明文落盘**。
+现在路径还原之外多了一段**按值匹配**的兜底：任何等于某个 `${VAR}` 展开值的字符串都改回模板。
+这同时覆盖了改名、条目重排，以及同一个密钥出现在 `extra_body` 等嵌套位置的情况。
+代价是"用户手写一个恰好等于环境变量值的字面量"也会被替换——两个方向加载后展开结果相同，
+而不替换意味着明文写盘，所以这个方向的错误更轻。`tests/test_config_env_refs.py` 6 条钉住。
+
+### 2. 供应商级开关
+
+原来放删除图标的地方，现在同时有垃圾桶和开关（按你的要求保留删除）。
+
+`Provider.enabled`（默认 `true`，无需迁移）。关掉后 `all_models(only_enabled=True)` 跳过它
+的**全部**模型，所以选项面板不列出、无参 `resolve()` 不回退到它；**显式点名**则报
+`Provider ... is disabled`。左栏该行加 `is-off`（名称图标变灰）但仍留在列表里——那是唯一
+能重新打开它的地方。开关点了立即保存，与模型开关一致。
+
+删除与关闭是两件事：关闭保留地址和密钥，删除才真的丢掉。
+
+### 3. 选项面板显示「供应商 / 模型 ID」
+
+`renderOptionModels()` 的文本从 `供应商 · 别名` 改成 `供应商 / 模型 ID`（发给 API 的真实 id）。
+`value` 仍是 `provider|alias`，因为 `resolve()` 认别名；两个别名指向同一 id 时，别名放在
+`title` 里以备分辨。
+
+### 4. 从上游拉取模型并勾选导入
+
+新增 `models/catalog.py`，刻意**不放在适配器里**：这是"端点自称有哪些模型"，与翻译是两个
+关注点，合在一起会让适配器多背一个与请求路径无关的端点。
+
+- `openai_compat` / `openai_responses`：`{base}/models` + `Authorization: Bearer`，
+  读 `{"data": [...]}`，也接受裸数组；
+- `anthropic_messages`：`{base}/v1/models`（已以 `/v1` 结尾不重复拼）+ `x-api-key` +
+  `anthropic-version`，按 `has_more`/`last_id` 翻页（上限 10 页，游标不前进即停）；
+- 结果排序去重；失败抛 `CatalogError`，消息带状态码与 URL。
+
+`sidecar.providers.models` 复用探针那套：草稿值优先、空 key 回落已存密钥、daemon 线程 +
+`join(20)` 防坏端点冻住单线程循环。
+
+界面用原生 `<dialog>`（Esc、焦点圈定、遮罩都不必自己实现），带搜索框——OpenRouter 这类有
+几百个 id。**已配置的项勾选且禁用**并标「已添加」，避免导入时覆盖用户调好的参数。导入时别名
+取 id 本身，之后可在行编辑里把别名与 API id 分开。
+
+**不自动填 `context_length`**：各家 `/models` 的元数据差异太大，猜一个数字比留空更糟。
+
+### 验证
+
+`pytest` **328 passed**（新增 `test_catalog.py` 19 条、`test_sidecar_catalog.py` 7 条、
+`test_config_env_refs.py` 6 条、供应商级开关 8 条）、`typecheck`、`check:i18n`（193 keys）、
+`build` 全绿。
+
+CDP 实测（本地 mock 同时提供 `/models` 与翻译端点）：
+
+- 选项文本为 `w国外反代 / deepseek-v4.1-flash` 形式；
+- 改名后左栏行、标题、`config.yaml` 键名、选项前缀全部同步，位置不变；
+- 关掉供应商后选项从 3 项变 1 项，行加 `is-off`；重新打开恢复；
+- 拉取弹窗列出 6 个上游 id，已配置的两项勾选禁用并标「已添加」；搜索 `hy` 过滤出 2 项；
+  勾选 `hy3`、`glm-5.3-flash` 导入后模型行与选项都出现，`config.yaml` 写入；
+- 地址改错后弹窗内红字显示 `拉取失败：HTTP 404 from http://127.0.0.1:8801/nope/models`。
+
+### 已知限制
+
+- 只做供应商改名，模型别名仍不能改（导入时别名取 id，可在行编辑里改模型 ID，但别名本身没有
+  重命名入口）。
+- 拉取只读 `id` 字段，不解析能力/上下文长度等元数据。
+- `providers.models` 与 `providers.test` 一样受单线程 sidecar 限制，最长阻塞 20/25 秒。

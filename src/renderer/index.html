@@ -456,6 +456,17 @@
                       <path d="M3 7l9 4.5L21 7M12 11.5V21.5" />
                     </svg>
                     <h2 id="provider-title" class="provider-head__title"></h2>
+                    <!--
+                      Shown in place of the title while renaming. Same font as
+                      the h2 so the row does not change height or shift.
+                    -->
+                    <input
+                      id="provider-name-input"
+                      class="provider-head__input hidden"
+                      type="text"
+                      data-i18n-placeholder="model.providerNamePlaceholder"
+                      maxlength="64"
+                    />
                     <span id="provider-test-msg" class="msg"></span>
                     <button
                       id="btn-test-provider"
@@ -463,6 +474,18 @@
                       type="button"
                       data-i18n="model.test"
                     ></button>
+                    <button
+                      id="btn-rename-provider"
+                      class="icon-btn icon-btn--bare"
+                      type="button"
+                      data-i18n-title="model.renameProvider"
+                      data-i18n-aria-label="model.renameProvider"
+                    >
+                      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                        <path d="M4 20h4L20 8l-4-4L4 16z" />
+                        <path d="M13 5l4 4" />
+                      </svg>
+                    </button>
                     <button
                       id="btn-remove-provider"
                       class="icon-btn icon-btn--bare icon-btn--danger"
@@ -474,6 +497,10 @@
                         <path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6" />
                       </svg>
                     </button>
+                    <label class="switch" data-i18n-title="model.providerEnabledHint">
+                      <input id="field-provider-enabled" type="checkbox" />
+                      <span class="switch__track"></span>
+                    </label>
                   </header>
 
                   <div class="grid grid--one model-fields">
@@ -508,7 +535,10 @@
 
                   <div class="model-list__head">
                     <span data-i18n="model.modelListTitle"></span>
-                    <button id="btn-add-model" class="btn btn--small btn--ghost" data-i18n="model.addModel"></button>
+                    <span class="model-list__actions">
+                      <button id="btn-fetch-models" class="btn btn--small btn--ghost" data-i18n="model.fetchModels"></button>
+                      <button id="btn-add-model" class="btn btn--small btn--ghost" data-i18n="model.addModel"></button>
+                    </span>
                   </div>
 
                   <div id="model-add" class="add-inline hidden">
@@ -603,6 +633,30 @@
                 <button id="btn-editor-close" class="btn btn--small btn--quiet" data-i18n="model.collapse"></button>
               </div>
             </div>
+
+            <!--
+              Upstream model picker. A native <dialog> for the Escape key,
+              focus trapping and the backdrop, which a hand-rolled overlay
+              would have to reproduce badly.
+            -->
+            <dialog id="models-dialog" class="models-dialog">
+              <form method="dialog" class="models-dialog__body">
+                <h3 class="models-dialog__title" data-i18n="model.fetchTitle"></h3>
+                <p class="hint" data-i18n="model.fetchHint"></p>
+                <input
+                  id="models-search"
+                  class="models-dialog__search"
+                  type="search"
+                  data-i18n-placeholder="model.fetchSearch"
+                />
+                <p id="models-dialog-msg" class="msg"></p>
+                <div id="models-options" class="models-options"></div>
+                <div class="models-dialog__actions">
+                  <button id="btn-models-cancel" class="btn btn--small" value="cancel" formnovalidate data-i18n="model.cancel"></button>
+                  <button id="btn-models-import" class="btn btn--small btn--primary" value="import" data-i18n="model.fetchImport"></button>
+                </div>
+              </form>
+            </dialog>
           </section>
 
           <section class="settings-panel hidden" data-panel="appearance">

@@ -13,9 +13,9 @@ Event    (stdout): ``{"event": "progress", "job_id": "...", "stage": "...",
                      "current": 3, "total": 10, "message": "..."}``
 
 Methods: ``ping``, ``config.get``, ``config.save``, ``providers.list``,
-``providers.test``, ``assets.status``, ``assets.download``, ``pdf.info``,
-``pdf.spread``, ``translate.start``, ``translate.cancel``, ``mcp.snippet``,
-``mcp.installConfig``.
+``providers.test``, ``providers.models``, ``assets.status``,
+``assets.download``, ``pdf.info``, ``pdf.spread``, ``translate.start``,
+``translate.cancel``, ``mcp.snippet``, ``mcp.installConfig``.
 ``providers.list`` reports the provider → models tree (each provider's ``kind``,
 ``base_url``, ``has_api_key`` and per-model sampling settings, including
 ``enabled``); it deliberately never returns an ``api_key``.  ``providers.test``
@@ -124,6 +124,7 @@ def method_providers_list(_params: dict) -> dict:
                 # Never send the key back to the renderer; report only whether
                 # one is present.
                 "has_api_key": bool(p.api_key),
+                "enabled": p.enabled,
                 "models": {
                     alias: {
                         "model": entry.model,
@@ -158,6 +159,21 @@ _PROBE_TIMEOUT_SECONDS = 25
 _PROBE_TEXT = "Hello."
 
 
+def _draft_api_key(provider: str, api_key: Any) -> str:
+    """The key to use for a probe: the draft's, or the one already saved.
+
+    The settings panel never receives a stored key back, so a blank field means
+    "unchanged", not "there is no key".
+    """
+    if api_key:
+        return str(api_key)
+    cfg = config_mod.load()
+    saved = cfg.providers.get(provider)
+    if saved is not None and saved.api_key:
+        return str(saved.api_key)
+    raise ValueError("api_key is required (none is saved for this provider)")
+
+
 def method_providers_test(params: dict) -> dict:
     """Send one tiny translation to a provider and report what happened.
 
@@ -187,15 +203,7 @@ def method_providers_test(params: dict) -> dict:
     if not model:
         raise ValueError("model is required (the API id, not the alias)")
 
-    if not api_key:
-        # The renderer sends the saved key only as "present", never as text.
-        cfg = config_mod.load()
-        saved = cfg.providers.get(provider)
-        if saved is not None:
-            api_key = saved.api_key
-    if not api_key:
-        raise ValueError("api_key is required (none is saved for this provider)")
-
+    api_key = _draft_api_key(provider, params.get("api_key"))
     profile = config_mod.ResolvedModel(
         kind=kind,
         provider=provider,
@@ -229,7 +237,21 @@ def method_providers_test(params: dict) -> dict:
         result["latency_ms"] = int((time.monotonic() - started) * 1000)
         result["sample"] = text[:120]
 
-    thread = threading.Thread(target=probe, name="provider-probe", daemon=True)
+    _run_bounded(probe, "provider-probe")
+    if "error" in result:
+        raise ValueError(result["error"])
+    return {"ok": True, **result}
+
+
+def _run_bounded(work, name: str) -> None:
+    """Run ``work`` on a daemon thread and give up after ``_PROBE_TIMEOUT_SECONDS``.
+
+    The sidecar handles requests on one thread, so a call that blocks on a dead
+    endpoint also blocks every other call. The worker cannot be killed — an
+    in-flight HTTP request is not interruptible — so this only bounds how long
+    the caller waits; the thread is a daemon and dies with the process.
+    """
+    thread = threading.Thread(target=work, name=name, daemon=True)
     thread.start()
     thread.join(_PROBE_TIMEOUT_SECONDS)
     if thread.is_alive():
@@ -237,9 +259,36 @@ def method_providers_test(params: dict) -> dict:
             f"no answer within {_PROBE_TIMEOUT_SECONDS}s; check the base URL, "
             "the network, and that the endpoint speaks this API format"
         )
+
+
+def method_providers_models(params: dict) -> dict:
+    """List the model ids a provider's endpoint reports (``GET .../models``).
+
+    Uses the settings panel's draft endpoint and format so the list can be
+    fetched before anything is saved; the key falls back to the stored one, as
+    for ``providers.test``.
+    """
+    from pdfxlate.models import catalog
+
+    provider = str(params.get("provider") or "").strip()
+    kind = str(params.get("kind") or "").strip() or "openai_compat"
+    base_url = str(params.get("base_url") or "").strip()
+    if not base_url:
+        raise ValueError("base_url is required")
+
+    api_key = _draft_api_key(provider, params.get("api_key"))
+    result: dict[str, Any] = {}
+
+    def fetch() -> None:
+        try:
+            result["models"] = catalog.list_models(kind, base_url, api_key)
+        except BaseException as exc:  # noqa: BLE001 - reported to the UI as-is
+            result["error"] = str(exc)
+
+    _run_bounded(fetch, "provider-catalog")
     if "error" in result:
         raise ValueError(result["error"])
-    return {"ok": True, **result}
+    return {"models": result.get("models", [])}
 
 
 
@@ -468,6 +517,9 @@ METHODS = {
     # the settings panel, so a wrong API format or key is caught before a long
     # job starts.  Never touches the cache.
     "providers.test": method_providers_test,
+    # What the endpoint itself says it offers, so the settings panel can show a
+    # checklist instead of asking for model ids from memory.
+    "providers.models": method_providers_models,
     "assets.status": method_assets_status,
     "assets.download": method_assets_download,
     "pdf.info": method_pdf_info,

@@ -164,3 +164,67 @@ def test_cli_marks_disabled_models(tmp_path, monkeypatch, capsys):
     assert "chat: deepseek-chat (disabled)" in out
     # The fallback marker moved to the first enabled model.
     assert "reason (used when unspecified): deepseek-reasoner" in out
+
+
+# --- provider-level switch -------------------------------------------------
+
+
+def test_provider_enabled_defaults_to_true(tmp_path):
+    cfg = config_mod.load(_write(tmp_path, NESTED))
+    assert all(provider.enabled for provider in cfg.providers.values())
+
+
+def test_disabled_provider_is_skipped_by_the_fallback(tmp_path):
+    cfg = config_mod.load(_write(tmp_path, NESTED))
+    cfg.providers["deepseek"].enabled = False
+    resolved = cfg.resolve()
+    assert (resolved.provider, resolved.alias) == ("local", "qwen")
+
+
+def test_naming_a_disabled_provider_is_an_error(tmp_path):
+    cfg = config_mod.load(_write(tmp_path, NESTED))
+    cfg.providers["deepseek"].enabled = False
+    with pytest.raises(ValueError, match="Provider 'deepseek' is disabled"):
+        cfg.resolve("deepseek", "chat")
+
+
+def test_old_profile_alias_respects_the_provider_switch(tmp_path):
+    cfg = config_mod.load(_write(tmp_path, NESTED))
+    cfg.providers["deepseek"].enabled = False
+    with pytest.raises(ValueError, match="disabled"):
+        cfg.resolve("reason")
+
+
+def test_all_models_filters_a_disabled_provider(tmp_path):
+    cfg = config_mod.load(_write(tmp_path, NESTED))
+    cfg.providers["deepseek"].enabled = False
+    assert cfg.all_models(only_enabled=True) == [("local", "qwen")]
+    # The editor still sees everything.
+    assert ("deepseek", "chat") in cfg.all_models()
+
+
+def test_everything_disabled_raises(tmp_path):
+    cfg = config_mod.load(_write(tmp_path, NESTED))
+    for provider in cfg.providers.values():
+        provider.enabled = False
+    with pytest.raises(ValueError, match="No enabled models configured"):
+        cfg.resolve()
+
+
+def test_provider_flag_survives_a_save_and_reload(tmp_path):
+    path = _write(tmp_path, NESTED)
+    cfg = config_mod.load(path)
+    cfg.providers["deepseek"].enabled = False
+    config_mod.save(cfg, path)
+    assert config_mod.load(path).providers["deepseek"].enabled is False
+
+
+def test_sidecar_reports_provider_enabled(tmp_path, monkeypatch):
+    path = _write(tmp_path, NESTED)
+    monkeypatch.setenv("PDFXLATE_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(config_mod.paths, "config_file", lambda: path)
+
+    from pdfxlate import sidecar
+
+    providers = sidecar.method_providers_list({})["providers"]
+    assert providers["deepseek"]["enabled"] is True
