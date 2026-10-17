@@ -378,16 +378,49 @@ body {
   min-height: 0;
   overflow-y: auto;
   background: var(--bg);
-  padding: 20px 24px 40px;
+  padding: 24px 24px 40px;
+  /*
+   * Reserve the scrollbar gutter on BOTH sides.
+   *
+   * Without this the panel is centred in the content box, but the scrollbar
+   * occupies ~16px of that box on the right, so a centred panel sits visibly
+   * left of centre. Reserving both sides keeps the content box symmetric, and
+   * also stops the panel from shifting sideways when a section grows long
+   * enough to start scrolling.
+   */
+  scrollbar-gutter: stable both-edges;
 }
 
+/*
+ * The settings form, centred in the pane.
+ *
+ * `margin: 0 auto` is what stops it hugging the sidebar and leaving a wide
+ * empty strip on the right. 760px is a deliberate ceiling: wider would make
+ * each label/input line long enough to be tiring to read, and with the
+ * two-column grid below it already fills the pane well. On a narrow window the
+ * max-width simply yields — no breakpoint needed.
+ */
 .settings-panel {
-  max-width: 520px;
+  max-width: 760px;
+  margin: 0 auto;
 }
 
 .settings-panel__title {
-  font-size: 15px;
+  font-size: 16px;
   margin: 0 0 16px;
+}
+
+/*
+ * Explanatory copy is capped in characters, not pixels: the panel got wider,
+ * but a hint still reads best as a short measure rather than a full-width line.
+ */
+.settings-panel .hint {
+  max-width: 68ch;
+}
+
+/* A field that needs the full row: the JSON body is unreadable in half of one. */
+.settings-panel .field--wide {
+  grid-column: 1 / -1;
 }
 
 .facts {
@@ -612,6 +645,19 @@ body.sidebar-collapsed .sidebar {
   gap: 10px;
 }
 
+/*
+ * Two columns when there is room, one when there is not.
+ *
+ * `auto-fit` with a 260px minimum means a 760px panel fits two columns and
+ * anything narrower collapses to one without a media query. The sidebar's
+ * Options group keeps `.grid--one`: it is ~300px wide and would always be one
+ * column anyway.
+ */
+.grid--form {
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+}
+
 label {
   display: flex;
   flex-direction: column;
@@ -667,7 +713,21 @@ input[readonly] {
 }
 
 /* A checkbox with its label beside it, rather than stacked like the inputs. */
+/*
+ * A checkbox with its label beside it.
+ *
+ * Three things have to be undone here, none of them decorative:
+ *
+ * - the shared `label` rule stacks children in a column, so the box and text
+ *   would stay on separate lines;
+ * - the shared `input, select` rule sets `width: 100%`, which in a row layout
+ *   makes the checkbox eat the whole row and pushes the text to the far edge
+ *   (where it wraps);
+ * - a stretched grid item would centre that column horizontally.
+ */
 .check {
+  flex-direction: row;
+  align-self: start;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -675,8 +735,14 @@ input[readonly] {
 }
 
 .check input {
+  flex: 0 0 auto;
+  width: auto;
   margin: 0;
   accent-color: var(--accent);
+}
+
+.check span {
+  flex: 0 1 auto;
 }
 
 .subhead {

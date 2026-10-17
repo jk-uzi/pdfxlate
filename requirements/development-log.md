@@ -1739,3 +1739,42 @@ CDP **16/16**：
 真实 IPC 路径。
 
 `typecheck`、`check:i18n`（163 keys）、`build`、`pytest`（208）全绿。
+
+---
+
+## 2026-10-17（续四）：设置页布局——居中、加宽、两列
+
+**用户反馈**：设置页右边内容都挤在一边，应该在可用区域居中，并且可以适当变宽。
+
+### 改动
+
+- `.settings-panel`：`max-width` **520 → 760px**，加 `margin: 0 auto` 居中。
+  760 是刻意上限——再宽单行文字太长、读起来累；配合两列填充率已经够。
+- `.settings-host` 加 **`scrollbar-gutter: stable both-edges`**。这是个真 bug 的修复：
+  滚动条占内容盒右侧约 16px，面板"居中"后实际偏左 8px；而且各设置页内容长短不同，
+  有没有滚动条会让面板左右**跳一下**。两侧都留槽位后内容盒对称。
+- 新增 `.grid--form`（`repeat(auto-fit, minmax(260px, 1fr))`），设置页的三个表单
+  （模型 / 外观 / 通用）改用它；**侧栏的选项面板保持 `.grid--one`**，它本来就窄。
+  760px 时两列各约 374px；窗口变窄自动退回一列，不需要媒体查询。
+- `extra_body` 是 JSON，半列太窄，加 `.field--wide`（`grid-column: 1 / -1`）跨满整行。
+- `.settings-panel .hint` 限宽 `68ch`，标题 15 → 16px，顶部内边距 20 → 24px。
+
+### 顺手修掉一个真的 CSS bug
+
+截图发现「流式返回」复选框跑到了那一列的**最右端**并且文字折行。根因是两条全局规则叠加：
+
+1. 共享的 `label { display: flex; flex-direction: column }` —— `.check` 只改了
+   `display`，没改方向，所以复选框和文字仍然上下排列；
+2. 共享的 `input, select { width: 100% }` —— 在横向布局里复选框吃掉整行宽度，把文字
+   挤到最右边。
+
+`.check` 现在显式 `flex-direction: row`、`align-self: start`，`.check input` 覆盖为
+`width: auto; flex: 0 0 auto`。实测复选框 13px、紧贴单元格左缘、文字不折行。
+
+### 验证
+
+CDP **21/21**：面板 760px 且左右留白相等（90/90）、占面板宽度 >75%、模型页 2 列、
+JSON 字段跨满 760px、hint 窄于面板、四个设置页都居中、面板收窄到 580px 时退回 1 列、
+复选框为 row 布局 / 13px / 不折行 / 对齐。截图确认版式。
+
+`typecheck`、`check:i18n`（163 keys）、`build`、`pytest`（208）全绿。

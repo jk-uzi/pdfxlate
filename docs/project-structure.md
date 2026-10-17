@@ -45,7 +45,7 @@ Python 3.12，venv 在 `python/.venv`，包以 editable 方式安装，改源码
 | 改 Electron 界面 | `src/renderer/app.ts` + `index.html` + `style.css` |
 | 改标题栏 / 窗口按钮 | `src/main/main.ts`（`titleBarOverlay` / `TITLEBAR_HEIGHT`）+ `style.css` 的 `--titlebar-height`，两处必须一致 |
 | 改应用图标 / 标记 | `src/renderer/icon.svg` 是唯一来源；改完跑 `npm run make:icon` 重新生成 `assets/`，标题栏靠构建期内联自动跟上 |
-| 改任务/设置模式与设置项 | `src/renderer/app.ts` 的 `appMode` / `setAppMode()` / `paintSettingsMode()`，菜单与面板在 `index.html` |
+| 改任务/设置模式与设置项 | `src/renderer/app.ts` 的 `appMode` / `setAppMode()` / `paintSettingsMode()`，菜单与面板在 `index.html`；设置页版式在 `style.css` 的 `.settings-panel` / `.grid--form` |
 | 改侧栏折叠 | `src/renderer/app.ts` 的 `setSidebarCollapsed()` + `style.css` 的 `body.sidebar-collapsed` |
 | 改进度显示 | `src/renderer/app.ts` 的 `paintProgress()`，落点在 `index.html` 侧栏底部的 `.sidebar__status`（与设置图标同一行） |
 | 改默认输出目录 | `src/main/main.ts` 的 `defaultOutputDir()`（**必须走 `app.getPath("documents")`**，别在 Python 里拼路径） |
@@ -125,7 +125,7 @@ pdfxlate/
 │       ├── app.ts          2505 行  界面逻辑（任务/设置双模式、折叠、标签页、文件夹浏览、拖放、缩放、进度、另存为、选项覆盖、侧栏拖拽、MCP 配置）
 │       ├── i18n.ts          583 行  中英文字符串表 + t()/applyStaticTranslations()
 │       ├── icon.svg          49 行  应用标记的**唯一来源**（标题栏内联 + 打包图标）
-│       └── style.css       1316 行  样式（含标题栏标签、查看器浮层、折叠与侧栏状态行、侧栏拖拽手柄）
+│       └── style.css       1382 行  样式（含标题栏标签、查看器浮层、折叠与侧栏状态行、侧栏拖拽手柄）
 ├── assets/
 │   ├── icon.png               512×512，由 make_icon.py 从 icon.svg 生成后提交
 │   └── icon.ico               16–256 多尺寸，同上（Windows 用）
