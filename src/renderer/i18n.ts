@@ -85,6 +85,7 @@ const EN: Table = {
 
   "docs.title": "Documents",
   "docs.pickFolder": "Choose folder…",
+  "docs.pickFolderShort": "Choose…",
   "docs.noFolder": "No folder chosen",
   "docs.includeInJob": "Include in the next translation",
 
@@ -276,6 +277,7 @@ const ZH: Table = {
 
   "docs.title": "文档",
   "docs.pickFolder": "选择文件夹…",
+  "docs.pickFolderShort": "选择…",
   "docs.noFolder": "尚未选择文件夹",
   "docs.includeInJob": "加入下一次翻译",
 

@@ -841,16 +841,27 @@ function mergeFolderFiles(found: string[]): void {
   renderFiles();
 }
 
+/**
+ * Paint the folder selector's two lines.
+ *
+ * The name is the folder's own last segment — that is what you scan for — while
+ * the full path sits underneath for when two folders share a name. With no
+ * folder chosen the path line is hidden rather than blanked, so the row stays
+ * one line tall instead of leaving an empty gap under the label.
+ */
 function renderFolderLabel(): void {
-  const label = $("folder-label");
+  const name = $("folder-name");
+  const path = $("folder-label");
   if (currentFolder) {
-    label.textContent = currentFolder;
-    label.title = currentFolder;
-    label.classList.remove("muted");
+    name.textContent = baseName(currentFolder) || currentFolder;
+    path.textContent = currentFolder;
+    path.title = currentFolder;
+    path.classList.remove("hidden");
   } else {
-    label.textContent = t("docs.noFolder");
-    label.title = "";
-    label.classList.add("muted");
+    name.textContent = t("docs.noFolder");
+    path.textContent = "";
+    path.title = "";
+    path.classList.add("hidden");
   }
 }
 

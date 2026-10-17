@@ -125,8 +125,34 @@
           <details class="group" id="group-docs" open>
             <summary class="group__head" data-i18n="docs.title"></summary>
             <div class="group__body">
-              <button id="btn-pick-folder" class="btn btn--block" data-i18n="docs.pickFolder"></button>
-              <p id="folder-label" class="folder-label" data-i18n="docs.noFolder"></p>
+              <!--
+                The whole row picks a folder, not just a small button. Choosing
+                the folder is the one thing this group does before anything
+                else, so it gets a full-width target that reads as a control
+                rather than as a stray link.
+
+                Two lines inside: the folder's own name, and — once one is
+                chosen — its full path in smaller text. The name is what you
+                scan for; the path is the detail you check when two folders
+                share a name.
+              -->
+              <button
+                id="btn-pick-folder"
+                class="folder-picker"
+                data-i18n-title="docs.pickFolder"
+              >
+                <svg class="folder-picker__icon" viewBox="0 0 24 24"
+                     aria-hidden="true" focusable="false">
+                  <path d="M3 7.2a2 2 0 0 1 2-2h4.1a2 2 0 0 1 1.5.7l1.1 1.3H19a2 2 0 0 1 2 2v8.6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"
+                        fill="none" stroke="currentColor" stroke-width="1.6"
+                        stroke-linejoin="round" />
+                </svg>
+                <span class="folder-picker__text">
+                  <span id="folder-name" class="folder-picker__name" data-i18n="docs.noFolder"></span>
+                  <span id="folder-label" class="folder-picker__path hidden"></span>
+                </span>
+                <span class="folder-picker__action" data-i18n="docs.pickFolderShort"></span>
+              </button>
               <ul id="file-list" class="file-list"></ul>
             </div>
           </details>
