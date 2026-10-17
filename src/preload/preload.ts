@@ -120,6 +120,28 @@ const api = {
   onWheel: (cb: () => void): (() => void) => subscribe("viewer:wheel", cb),
 
   /**
+   * How an agent should launch this install's MCP server.
+   *
+   * Resolved in the main process because it knows whether this is a source
+   * checkout or a packaged install, and only it can ask the OS for the config
+   * directory. The renderer must not build this itself: a config that points at
+   * a path the app does not actually use is worse than no config.
+   */
+  mcpLaunch: (): Promise<{ command: string; args: string[] }> =>
+    ipcRenderer.invoke("app:mcpLaunch"),
+
+  /**
+   * The agents installed on this machine, with their config paths.
+   *
+   * Only ones whose config file already exists are returned.
+   */
+  mcpAgents: (): Promise<Array<{ id: string; target: string; path: string }>> =>
+    ipcRenderer.invoke("app:mcpAgents"),
+
+  /** System clipboard. Not available as `navigator.clipboard` from `file://`. */
+  copyText: (text: string): Promise<void> => ipcRenderer.invoke("clipboard:copy", text),
+
+  /**
    * Native "open files" dialog. `locale` is the renderer's active interface
    * language; the main process falls back to the OS locale when it is omitted.
    */

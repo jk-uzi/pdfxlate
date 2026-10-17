@@ -1099,3 +1099,64 @@ body.overlays-pinned .viewer-saveas {
   margin: 0;
   opacity: 0.75;
 }
+
+/* --- MCP setup panel ------------------------------------------------------ */
+
+/* The config to paste. Monospace and scrollable: it is a snippet to copy, not
+   prose to read, and a long Windows path would otherwise widen the panel. */
+.snippet {
+  margin: 0 0 10px;
+  padding: 10px;
+  background: #1f2328;
+  color: #d1d9e0;
+  border-radius: 6px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre;
+}
+
+.agent-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.agent-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card);
+  font-size: 12.5px;
+}
+
+.agent-row__name {
+  flex: 0 0 auto;
+  font-weight: 600;
+}
+
+/* The full path is long and the panel is narrow, so it truncates rather than
+   wrapping; the title attribute carries it in full. */
+.agent-row__path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl; /* keeps the file name visible when it is cut from the left */
+  text-align: left;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.agent-list__empty {
+  color: var(--muted);
+  font-size: 12px;
+}

@@ -1,8 +1,9 @@
 /** Application entry point: window lifecycle, IPC wiring, sidecar control. */
 
-import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, shell } from "electron";
 import { existsSync } from "node:fs";
 import { copyFile, readdir } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 
 import { Sidecar, type SidecarEvent } from "./sidecar";
@@ -247,7 +248,80 @@ function uniquePath(dir: string, name: string): string {
   return candidate;
 }
 
+/**
+ * Agents the app knows how to write an MCP entry for.
+ *
+ * Resolved here rather than in the renderer because only the main process knows
+ * the platform paths (`app.getPath`), and because on Windows the environment
+ * variables are what actually locate these directories.
+ *
+ * `target` names both the file format and where the entry goes inside it, and
+ * must match the keys `pdfxlate.mcp_config` understands. They are not uniform:
+ * ZCode nests its servers under `mcp.servers` and wants a transport type, and
+ * Codex uses TOML. That is exactly why each one is declared explicitly rather
+ * than generated from a template.
+ *
+ * Only agents whose config file already exists are offered. A missing file
+ * means the agent is not installed (or has never run), and creating one for a
+ * program that is not there would be a guess.
+ */
+interface McpAgent {
+  id: string;
+  /** Dotted key inside the file, or "toml"; see pdfxlate.mcp_config. */
+  target: string;
+  path: string;
+}
+
+function mcpAgents(): McpAgent[] {
+  const home = os.homedir();
+  const appData = app.getPath("appData");
+  const candidates: McpAgent[] = [
+    {
+      id: "claude-desktop",
+      target: "mcpServers",
+      path: path.join(appData, "Claude", "claude_desktop_config.json"),
+    },
+    { id: "claude-code", target: "mcpServers", path: path.join(home, ".claude.json") },
+    { id: "codex", target: "toml", path: path.join(home, ".codex", "config.toml") },
+    { id: "workbuddy", target: "mcpServers", path: path.join(home, ".workbuddy", "mcp.json") },
+    {
+      id: "zcode",
+      target: "mcp.servers",
+      path: path.join(home, ".zcode", "cli", "config.json"),
+    },
+  ];
+  return candidates.filter((agent) => existsSync(agent.path));
+}
+
+/**
+ * The command an agent should run to reach this install's MCP server.
+ *
+ * `--mcp` is what turns the engine binary into the MCP server. For a packaged
+ * install that flag is the only way in: an onedir bundle is the interpreter
+ * with one entry point baked in, so there is no `python -m` to offer an agent.
+ */
+function mcpLaunch(): { command: string; args: string[] } {
+  const launch = Sidecar.resolveLaunch(repoRoot, app.getPath("userData"), isDev, ["--mcp"]);
+  return { command: launch.command, args: launch.args };
+}
+
 function registerIpc(): void {
+  /** The command and arguments an agent should be given for this install. */
+  ipcMain.handle("app:mcpLaunch", async () => mcpLaunch());
+
+  /** Agents whose config file exists, so the UI can offer to write into them. */
+  ipcMain.handle("app:mcpAgents", async () => mcpAgents());
+
+  /**
+   * Copy text to the system clipboard.
+   *
+   * Not `navigator.clipboard` in the renderer: that requires a secure context
+   * and the app is served from `file://`, where the call can simply be refused.
+   */
+  ipcMain.handle("clipboard:copy", async (_event, text: string) => {
+    clipboard.writeText(text);
+  });
+
   ipcMain.handle("sidecar:request", async (_event, method: string, params: unknown) => {
     if (!sidecar) throw new Error("sidecar is not running");
     const payload = (params ?? {}) as Record<string, unknown>;

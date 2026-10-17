@@ -96,6 +96,12 @@ interface PdfxlateApi {
   importPdf(source: string, destDir: string): Promise<string>;
   saveAs(source: string, suggestedName: string, locale?: string): Promise<string | null>;
   onWheel(cb: () => void): () => void;
+  /** How an agent should launch this install's MCP server. */
+  mcpLaunch(): Promise<{ command: string; args: string[] }>;
+  /** Agents found on this machine, with the config file to write into. */
+  mcpAgents(): Promise<Array<{ id: string; target: string; path: string }>>;
+  /** System clipboard; `navigator.clipboard` is unavailable from `file://`. */
+  copyText(text: string): Promise<void>;
   pickPdf(locale?: string): Promise<string[]>;
   pickOutputDir(locale?: string): Promise<string | null>;
   reveal(target: string): Promise<void>;
@@ -238,7 +244,7 @@ const ZOOM_STEPS = [50, 75, 100, 125, 150, 200, 300];
  * hidden while configuring.
  */
 type AppMode = "task" | "settings";
-type SettingsSection = "model" | "appearance" | "general";
+type SettingsSection = "model" | "appearance" | "general" | "mcp";
 
 let appMode: AppMode = "task";
 let settingsSection: SettingsSection = "model";
@@ -536,6 +542,10 @@ function paintSettingsMode(): void {
     applyModelFields();
   }
   if (inSettings && settingsSection === "general") paintEngineFacts();
+  // Built on open rather than at startup: it needs the real launch command,
+  // which comes from the main process, and there is no reason to ask for it
+  // unless the panel is actually being looked at.
+  if (inSettings && settingsSection === "mcp") void refreshMcpPanel();
 }
 
 /** Fill the General panel's read-only diagnostics. */
@@ -543,6 +553,132 @@ function paintEngineFacts(): void {
   $("engine-version").textContent = engineVersion ?? t("settings.unknown");
   $("engine-config-dir").textContent = engineConfigDir ?? t("settings.unknown");
 }
+
+// --- MCP setup -------------------------------------------------------------
+
+/**
+ * The snippet to paste into any MCP client.
+ *
+ * Built from the real launch command rather than a template in the docs: the
+ * command differs between a source checkout and a packaged install, so a
+ * hard-coded example would be wrong for most readers and would rot as soon as
+ * anything moved.
+ */
+let mcpSnippetText = "";
+let mcpAgents: Array<{ id: string; target: string; path: string }> = [];
+// Kept from the same call that built the snippet, so the entry written into an
+// agent's config is byte-for-byte what the snippet tells people to use.
+let mcpLaunch: { command: string; args: string[] } | null = null;
+
+async function refreshMcpPanel(): Promise<void> {
+  try {
+    const [launch, agents] = await Promise.all([api.mcpLaunch(), api.mcpAgents()]);
+    mcpLaunch = launch;
+    mcpAgents = agents;
+    const snippet = await api.request<{ snippet: string }>("mcp.snippet", {
+      command: launch.command,
+      args: launch.args,
+    });
+    mcpSnippetText = snippet.snippet;
+    $("mcp-snippet").textContent = mcpSnippetText;
+  } catch (err) {
+    // The engine may not be up yet; the panel explains itself rather than
+    // showing an empty box.
+    $("mcp-snippet").textContent = t("mcp.unavailable", { error: String(err) });
+    mcpSnippetText = "";
+  }
+  paintMcpAgents();
+}
+
+function paintMcpAgents(): void {
+  const list = $("mcp-agent-list");
+  list.innerHTML = "";
+  if (!mcpAgents.length) {
+    const li = document.createElement("li");
+    li.className = "agent-list__empty";
+    li.textContent = t("mcp.noAgents");
+    list.append(li);
+    return;
+  }
+  for (const agent of mcpAgents) {
+    const li = document.createElement("li");
+    li.className = "agent-row";
+
+    const name = document.createElement("span");
+    name.className = "agent-row__name";
+    name.textContent = t(`mcp.agent.${agent.id}`);
+    name.title = agent.path;
+
+    const where = document.createElement("span");
+    where.className = "agent-row__path";
+    where.textContent = agent.path;
+    where.title = agent.path;
+
+    const write = document.createElement("button");
+    write.className = "btn btn--small";
+    write.textContent = t("mcp.write");
+    write.addEventListener("click", () => void writeMcpConfig(agent, write));
+
+    li.append(name, where, write);
+    list.append(li);
+  }
+}
+
+function setMcpMessage(key: string, params?: Record<string, string>, error = false): void {
+  const msg = $("mcp-msg");
+  msg.textContent = t(key, params);
+  msg.className = error ? "msg msg--error" : "msg";
+}
+
+/**
+ * Add our entry to one agent's config.
+ *
+ * The merge, the backup and the post-write check all happen in the engine; this
+ * only reports the outcome. That split is deliberate: writing another program's
+ * config is the part that must not go wrong, so it lives where it can be tested
+ * against real files rather than in a click handler.
+ */
+async function writeMcpConfig(
+  agent: { id: string; target: string; path: string },
+  button: HTMLButtonElement,
+): Promise<void> {
+  if (!mcpLaunch) {
+    setMcpMessage("mcp.unavailable", { error: t("settings.unknown") }, true);
+    return;
+  }
+  button.disabled = true;
+  setMcpMessage("mcp.writing");
+  try {
+    const result = await api.request<{ path: string; backup: string; changed: boolean }>(
+      "mcp.installConfig",
+      {
+        path: agent.path,
+        target: agent.target,
+        command: mcpLaunch.command,
+        args: mcpLaunch.args,
+      },
+    );
+    setMcpMessage(result.changed ? "mcp.written" : "mcp.alreadyPresent", {
+      path: result.path,
+      backup: result.backup,
+    });
+    appendLog(t("log.mcpWrote", { path: result.path, backup: result.backup }));
+  } catch (err) {
+    setMcpMessage("mcp.writeFailed", { error: String(err) }, true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+$("btn-copy-mcp").addEventListener("click", async () => {
+  if (!mcpSnippetText) return;
+  try {
+    await api.copyText(mcpSnippetText);
+    setMcpMessage("mcp.copied");
+  } catch (err) {
+    setMcpMessage("mcp.copyFailed", { error: String(err) }, true);
+  }
+});
 
 $("btn-open-settings").addEventListener("click", () => setAppMode("settings"));
 $("btn-close-settings").addEventListener("click", () => setAppMode("task"));

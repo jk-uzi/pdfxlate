@@ -39,6 +39,13 @@ export interface ReadyEvent {
 
 export type SidecarEvent = ProgressEvent | DoneEvent | ReadyEvent;
 
+/** Where the engine lives and how to launch it. */
+export interface Launch {
+  command: string;
+  args: string[];
+  cwd: string;
+}
+
 type Pending = {
   resolve: (value: unknown) => void;
   reject: (err: Error) => void;
@@ -59,18 +66,26 @@ export class Sidecar {
   ) {}
 
   /**
-   * Locate the sidecar executable.
+   * Locate the engine, with or without extra leading arguments.
    *
-   * Packaged builds ship a PyInstaller onedir binary under resources/sidecar;
-   * development runs the module from the local virtualenv.
+   * `extraArgs` is how the same binary serves two roles: the JSON sidecar the
+   * app talks to, and the MCP server an agent talks to (`--mcp`). Sharing this
+   * one resolution is deliberate — if the two disagreed about where the engine
+   * lives, the config the app told the user to paste would point somewhere the
+   * app itself does not use.
    */
-  static resolve(repoRoot: string, configDir: string, isDev: boolean): Sidecar {
-    const args = ["--config-dir", configDir];
+  static resolveLaunch(
+    repoRoot: string,
+    configDir: string,
+    isDev: boolean,
+    extraArgs: string[] = [],
+  ): Launch {
+    const args = [...extraArgs, "--config-dir", configDir];
 
     const bundled = process.platform === "win32" ? "pdfxlate-sidecar.exe" : "pdfxlate-sidecar";
     const bundledPath = path.join(process.resourcesPath ?? "", "sidecar", bundled);
     if (!isDev && existsSync(bundledPath)) {
-      return new Sidecar(bundledPath, args, path.dirname(bundledPath));
+      return { command: bundledPath, args, cwd: path.dirname(bundledPath) };
     }
 
     const pythonDir = path.join(repoRoot, "python");
@@ -80,7 +95,11 @@ export class Sidecar {
         : path.join(pythonDir, ".venv", "bin", "python");
 
     if (existsSync(venvPython)) {
-      return new Sidecar(venvPython, ["-m", "pdfxlate.sidecar", ...args], pythonDir);
+      return {
+        command: venvPython,
+        args: ["-m", "pdfxlate.sidecar", ...args],
+        cwd: pythonDir,
+      };
     }
 
     // Neither location exists. Report both so the cause is obvious rather than
@@ -93,6 +112,17 @@ export class Sidecar {
         "  cd python && python -m venv .venv && .venv/bin/pip install -e .\n" +
         "For a packaged build, run: npm run build && ./scripts/build.sh",
     );
+  }
+
+  /**
+   * Locate the sidecar executable.
+   *
+   * Packaged builds ship a PyInstaller onedir binary under resources/sidecar;
+   * development runs the module from the local virtualenv.
+   */
+  static resolve(repoRoot: string, configDir: string, isDev: boolean): Sidecar {
+    const launch = Sidecar.resolveLaunch(repoRoot, configDir, isDev);
+    return new Sidecar(launch.command, launch.args, launch.cwd);
   }
 
   start(): Promise<ReadyEvent> {

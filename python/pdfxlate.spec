@@ -34,9 +34,13 @@ hiddenimports = [
     "pdfxlate.pdf.ocr",
     "pdfxlate.models.openai_compat",
     # The MCP server is an alternative entry point into the same bundle, so a
-    # packaged build can be launched by an agent (``python -m
-    # pdfxlate.mcp_server``).  It is a hidden import because nothing in the
-    # sidecar entry point references it, so static analysis would drop it.
+    # packaged build can serve an agent as well as the desktop app.  It is a
+    # hidden import because nothing in the sidecar entry point references it, so
+    # static analysis would drop it.
+    #
+    # Launched as ``pdfxlate-sidecar --mcp``: an onedir bundle has no separate
+    # interpreter, so the binary itself has to be the entry point and the flag
+    # selects which one.  The reader lives in sidecar.py's main().
     "pdfxlate.mcp_server",
     # The mcp SDK and its separate ``mcp_types`` package import transport and
     # type modules lazily, which static analysis does not follow.  Both are

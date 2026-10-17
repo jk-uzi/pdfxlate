@@ -211,6 +211,7 @@
             <button class="settings-menu__item is-active" data-section="model" data-i18n="settings.sectionModel"></button>
             <button class="settings-menu__item" data-section="appearance" data-i18n="settings.sectionAppearance"></button>
             <button class="settings-menu__item" data-section="general" data-i18n="settings.sectionGeneral"></button>
+            <button class="settings-menu__item" data-section="mcp" data-i18n="settings.sectionMcp"></button>
           </nav>
         </div>
       </aside>
@@ -485,6 +486,27 @@
             -->
             <h3 class="subhead" data-i18n="settings.logTitle"></h3>
             <pre id="log-pane"></pre>
+          </section>
+
+          <section class="settings-panel hidden" data-panel="mcp">
+            <h2 class="settings-panel__title" data-i18n="settings.sectionMcp"></h2>
+            <p class="hint" data-i18n="mcp.intro"></p>
+
+            <!--
+              The snippet is the general answer: it works for any MCP client,
+              including ones this app has never heard of. The per-agent buttons
+              below are a convenience on top of it.
+            -->
+            <h3 class="subhead" data-i18n="mcp.snippetTitle"></h3>
+            <pre id="mcp-snippet" class="snippet"></pre>
+            <div class="row">
+              <button id="btn-copy-mcp" class="btn" data-i18n="mcp.copy"></button>
+            </div>
+
+            <h3 class="subhead" data-i18n="mcp.agentsTitle"></h3>
+            <p class="hint" data-i18n="mcp.agentsHint"></p>
+            <ul id="mcp-agent-list" class="agent-list"></ul>
+            <p id="mcp-msg" class="msg"></p>
           </section>
         </div>
       </section>

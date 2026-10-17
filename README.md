@@ -177,19 +177,32 @@ Other agents can drive pdfxlate over the [Model Context
 Protocol](https://modelcontextprotocol.io), either with a model you configured
 in the app or with **the agent's own model**.
 
+**The app will set this up for you**: open *Settings → MCP*. It shows the config
+to paste, already filled in with the right command for *your* install, and offers
+to write it into any supported agent found on the machine — Claude Desktop,
+Claude Code, Codex, WorkBuddy, ZCode. Writing backs the file up first and adds
+only its own entry, leaving everything else in it alone. For any other MCP
+client, paste the snippet by hand.
+
 ```bash
 cd python && .venv/bin/pip install -e ".[mcp]"
 ```
 
-That installs the `mcp` SDK (an optional extra, so the desktop bundle does not
-carry it) and the `pdfxlate-mcp` entry point. Point your MCP client at it:
+The `mcp` SDK is an optional extra, so the desktop bundle does not carry it. The
+snippet the app shows already accounts for that: from a source checkout it runs
+the engine as a module, and from a packaged install it runs the bundled binary
+with `--mcp` — the only way in, since an onedir bundle has no separate
+interpreter to run a module with.
+
+A hand-written config looks like this (on Windows, `.venv\Scripts\python.exe`):
 
 ```json
 {
   "mcpServers": {
     "pdfxlate": {
-      "command": "/path/to/python/.venv/bin/pdfxlate-mcp",
-      "args": ["--config-dir", "/path/to/your/userData"]
+      "command": "/path/to/python/.venv/bin/python",
+      "args": ["-m", "pdfxlate.sidecar", "--mcp",
+               "--config-dir", "/path/to/your/userData"]
     }
   }
 }
@@ -197,7 +210,6 @@ carry it) and the `pdfxlate-mcp` entry point. Point your MCP client at it:
 
 `--config-dir` makes the server read the *same* `config.yaml` as the desktop
 app, so the providers and models you configured in the UI are the ones it uses.
-On Windows the executable is `.venv\Scripts\pdfxlate-mcp.exe`.
 
 Tools exposed:
 
@@ -208,12 +220,13 @@ Tools exposed:
 | `typeset_translations` | Typesets a job with translations you supply |
 | `translate_pdf` | Does the whole job in one call |
 
-`translate_pdf` takes `translator="provider"` (the default — uses a model from
-`config.yaml`) or `translator="client"`, which asks **your** model to do the
-translating via MCP sampling and requires the client to support the `sampling`
-capability. The two-phase `extract_segments` + `typeset_translations` pair is
-the same engine made explicit, and works with any client: collect the
-paragraphs, translate them however you like, hand them back.
+`translate_pdf` takes `translator="provider"` (uses a model from `config.yaml`;
+an unspecified provider means the first one in the file) or
+`translator="client"`, which asks **your** model to do the translating via MCP
+sampling and requires the client to support the `sampling` capability. The
+two-phase `extract_segments` + `typeset_translations` pair is the same engine made
+explicit, and works with any client: collect the paragraphs, translate them
+however you like, hand them back.
 
 Configuration is **read-only** over MCP: there is deliberately no tool that
 adds a provider, edits a model or writes an API key, so pointing an agent at

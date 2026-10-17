@@ -1310,3 +1310,90 @@ CSS 解析器遇到孤立的 ` *` 会把它当成**畸形选择器**吞到下一
 - **CSS 那道检查只看定界符配对，不做完整 CSS 校验**：刻意如此——零成本、只抓真正咬到的
   那种故障，且**绝不会误拒合法 CSS**。真要完整校验得引依赖。
 - 既有遗留不变（深色主题、打包未验证、折叠侧栏时看不到进度、前端无自动化测试）。
+
+---
+
+## 2026-10-17（续三）：一键配置 MCP（片段为主 + 代写为辅），并让打包版也能用
+
+用户问：有没有办法给 agent 一键配好 MCP，但 agent 很多怎么办，是软件来配吗。
+
+### 先纠正我上一轮说错的两件事
+
+1. **`pdfxlate-mcp.exe` 不存在**。上一轮我看到 `mcp.exe` 就下了结论，**那是 MCP SDK 自带的
+   CLI**。`entry_points.txt` 里只有 `pdfxlate` / `pdfxlate-sidecar` —— editable 安装发生在
+   加这个入口**之前**，之后没重装。
+2. **`pdfxlate.spec` 里那句注释是错的**：说打包版能被 agent 用
+   `python -m pdfxlate.mcp_server` 启动。**做不到** —— onedir 产物里 exe 本身就是
+   "解释器 + 写死的入口"，没有独立 `python`。**所以装安装包的用户此前完全用不了 MCP。**
+
+### 实测：五个 agent 的配置是**三种形状**
+
+| agent | 文件 | 形状 |
+|---|---|---|
+| Claude Desktop / Claude Code / WorkBuddy | `claude_desktop_config.json` / `~/.claude.json` / `~/.workbuddy/mcp.json` | JSON `mcpServers` |
+| ZCode | `~/.zcode/cli/config.json` | JSON **`mcp.servers`** + `type`/`enabled`/`timeoutMs` |
+| Codex | `~/.codex/config.toml` | **TOML** `[mcp_servers.<名>]` |
+
+**所以没有"通用一键"**（键名、格式、路径都不同，agent 还在增加）。按用户选择：**片段是主**
+（对任何 agent 成立、永不过时），**代写是辅**（只覆盖这五个，先探测、只对装了且找到配置的显示）。
+
+### 打包版怎么用：复用 sidecar + `--mcp`
+
+`sidecar.main()` **最先**判断 `--mcp`，有则把剩余参数原样转交 `mcp_server.main()`。
+**不改 spec、不加第二个 EXE**：磁盘不变、构建时间不变、零打包风险。命令行是
+`pdfxlate-sidecar.exe --mcp --config-dir <userData>`。
+
+**这还绕开了上面第 1 条的坑**：应用生成的命令不依赖 `pdfxlate-mcp.exe` 是否装出来。
+
+### 谁生成命令：主进程，且与启动引擎**共用同一处判断**
+
+把 `Sidecar.resolve()` 拆出 `resolveLaunch(..., extraArgs)`，**dev/打包的判断只有一份**。
+若两处各写一遍，迟早出现"面板给的路径和应用实际用的不是同一个"，那比不给更糟。
+
+### 代写的三条护栏（写的是别人的文件，还含密钥）
+
+1. **先备份**到 `.bak-<时间戳>`
+2. **只合并我们那一个键**：读→解析→**只改这一个 key**→写回；绝不像素级重写整个文件
+3. **写后重读校验**（能解析、条目确实在）；失败则**从备份还原**并报错
+
+**解析不了的文件直接报错、绝不"修复"**：那是别人的配置，我们没资格猜内容。
+文件内容**绝不进日志**（实测发现 `~/.zcode/cli/config.json` 里有明文 GitHub token —— 已在
+报告里提醒用户轮换，代码里只记路径与结果）。
+
+TOML 的读与校验用 stdlib `tomllib`；**写入是手写一小段固定块**（stdlib 没有 TOML writer），
+只替换 `[mcp_servers.pdfxlate]` 这一段，注释与相邻表原样保留。
+
+### 验证
+
+- `pytest` **196 passed**（原 174 + 新增 22）；`typecheck`、`check:i18n`（**157 keys**）、`build` 全绿。
+- **写入正确性 19 条**（`test_mcp_config.py`）：三种格式各自——合并后**别人的条目原样保留**、
+  **幂等**（写两次逐字节相同且报 `changed=false`）、**备份等于原文件**、**坏文件一字不动且
+  不留残留备份**、`mcpServers` 是数组时报错拒写、缺命名空间时自动创建。
+- **TOML 边界单独手验**：替换已有 `[mcp_servers.pdfxlate]` 时**不吃掉下一张表**，注释、
+  `[other]`、其他 server 全部保留（这是最容易写错的地方）。
+- **`--mcp` 真的能起（3 条）**：真实 stdio 握手 `initialize` → `serverInfo.name == "pdfxlate"`
+  → `tools/list` 恰好四个工具；**不带 flag 时仍是 sidecar**（第一条输出是 `{"event":"ready"}`，
+  并回答 `ping`）；`--mcp` 放在参数任意位置都生效。
+- **应用侧 17 条 CDP**：MCP 面板出现并可从菜单进入；**片段里的命令是本机真实路径**
+  （断言等于主进程算出的那个，且**不是** README 里那个已失效的 `.venv/bin/pdfxlate-mcp`）；
+  按钮复制的内容**逐字符等于**预览；探测列表只显示存在的配置；**写入后我们的条目在、
+  别人的条目在、无关顶层键在、备份存在且等于原文**；**再写一次不重复、并提示"已配置过"**。
+- 清理临时脚本、临时 agent 配置；**所有 Electron 进程已杀**。
+
+### 过程中的一个环境限制（如实记）
+
+**本机 OS 剪贴板不可用**：`clipboard.readText()` 在**直接写完后立刻**仍返回空，且
+PowerShell 自己的 `Get-Clipboard` 都报"所请求的剪贴板操作失败"。所以**读回断言无法在此环境
+成立**，它测的是会话而不是代码。改为断言**按钮确实以逐字符相同的内容调用了剪贴板 API**
+（包装 `clipboard.writeText` 记录实参）。**端到端"粘贴到别处"这一步没有验证**，不假装验过。
+
+### 遗留（本轮新增）
+
+- **代写只覆盖五个 agent**；其余用片段。刻意如此——agent 会持续增加，而片段通吃。
+- **TOML 写入不是通用 TOML 序列化**：只替换我们那一段。若用户把该段写成多行数组等更复杂的
+  形式，会被整段替换为规范形式（值不变，格式归一）。
+- **打包版未能完整验证**：本机没有 electron-builder 产物，`--mcp` 只验到"源码下等价命令可用
+  + spec 会把它打进去"。完整打包验证仍是既有遗留。
+- **`pdfxlate-mcp` 这个 console script 目前没装出来**（`pip install -e ".[mcp]"` 之后会有），
+  但应用已不依赖它。
+- 既有遗留不变（深色主题、折叠侧栏看不到进度、前端无自动化测试）。

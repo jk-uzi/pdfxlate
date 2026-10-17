@@ -37,6 +37,7 @@ Python 3.12，venv 在 `python/.venv`，包以 editable 方式安装，改源码
 | 加新的 sidecar 方法 | `sidecar.py` 的 `METHODS` 字典 + 一个 `method_*` 函数 |
 | 改 Python 公开 API | `api.py`（`translate` / `translate_stream` / `build_translator`） |
 | 改外部 agent 能调用的能力（MCP 工具） | `mcp_server.py` 的 `build_server()` 里的 `@mcp.tool()` 函数 |
+| 改「一键配置 MCP」/ 支持的 agent | `mcp_config.py`（写入）+ `main.ts` 的 `mcpAgents()`（探测五个 agent 的路径） |
 | 改「两遍式」段落收集/回填引擎 | `pdf/two_phase.py`（`CollectingTranslator` / `DictTranslator` / `collect()` / `typeset()`） |
 | 改窗口 / 应用生命周期 / IPC | `src/main/main.ts` |
 | 改子进程管理与 JSON 协议 | `src/main/sidecar.ts`（`Sidecar` 类） |
@@ -94,8 +95,9 @@ pdfxlate/
 │       ├── cache.py         144 行  sqlite3 翻译缓存
 │       ├── api.py           192 行  公开 Python API
 │       ├── cli.py           216 行  命令行入口
-│       ├── sidecar.py       335 行  stdio JSON 行协议（Electron 调用）
-│       ├── mcp_server.py    509 行  MCP 服务（外部 agent 调用，stdio）
+│       ├── sidecar.py       407 行  stdio JSON 行协议（Electron 调用）；--mcp 转交 MCP 服务
+│       ├── mcp_server.py    505 行  MCP 服务（外部 agent 调用，stdio）
+│       ├── mcp_config.py    246 行  把 MCP 条目写进各 agent 配置（备份/合并/校验）
 │       ├── models/
 │       │   ├── __init__.py     23 行  导出翻译层公开符号
 │       │   ├── base.py       243 行  ModelAdapter 基类 + 注册表
@@ -112,16 +114,16 @@ pdfxlate/
 │           └── text_spacing.py 44 行  中英混排间距（上游照搬）
 ├── src/
 │   ├── main/
-│   │   ├── main.ts          399 行  窗口 + 应用生命周期 + IPC（自建标题栏、默认输出目录、另存为、目录列举、拖入归档、滚轮转发）
-│   │   └── sidecar.ts       204 行  Python 子进程管理 + JSON 行协议
+│   │   ├── main.ts          473 行  窗口 + 应用生命周期 + IPC（自建标题栏、默认输出目录、另存为、目录列举、拖入归档、滚轮转发）
+│   │   └── sidecar.ts       234 行  Python 子进程管理 + JSON 行协议
 │   ├── preload/
-│   │   └── preload.ts       168 行  contextBridge，向渲染进程暴露 API
+│   │   └── preload.ts       190 行  contextBridge，向渲染进程暴露 API
 │   └── renderer/
-│       ├── index.html       465 行  界面结构（文案走 data-i18n* 属性；图标在构建时内联）
-│       ├── app.ts          1994 行  界面逻辑（任务/设置双模式、折叠、标签页、文件夹浏览、拖放、缩放、进度、另存为、选项覆盖、侧栏拖拽）
+│       ├── index.html       517 行  界面结构（文案走 data-i18n* 属性；图标在构建时内联）
+│       ├── app.ts          2178 行  界面逻辑（任务/设置双模式、折叠、标签页、文件夹浏览、拖放、缩放、进度、另存为、选项覆盖、侧栏拖拽、MCP 配置）
 │       ├── i18n.ts          517 行  中英文字符串表 + t()/applyStaticTranslations()
 │       ├── icon.svg          49 行  应用标记的**唯一来源**（标题栏内联 + 打包图标）
-│       └── style.css       1059 行  样式（含标题栏标签、查看器浮层、折叠与侧栏状态行、侧栏拖拽手柄）
+│       └── style.css       1162 行  样式（含标题栏标签、查看器浮层、折叠与侧栏状态行、侧栏拖拽手柄）
 ├── assets/
 │   ├── icon.png               512×512，由 make_icon.py 从 icon.svg 生成后提交
 │   └── icon.ico               16–256 多尺寸，同上（Windows 用）
@@ -133,6 +135,8 @@ pdfxlate/
 │   ├── test_cli_options.py   286 行  CLI 排版选项解析与三态覆盖语义
 │   ├── test_sidecar_providers.py 181 行  providers.list 形状、密钥不外传
 │   ├── test_mcp_server.py    600 行  MCP 工具、stdio 握手、两遍式端到端与确定性护栏
+│   ├── test_mcp_config.py   239 行  写入 agent 配置：合并/幂等/备份/坏文件不动
+│   ├── test_sidecar_mcp_flag.py 159 行  --mcp 真的能起一个 MCP 握手
 │   ├── test_per_job_overrides.py 136 行  按次覆盖语言/推理；调用方配置对象不被改动
 │   └── test_assets_fonts.py  113 行  语言→字体映射、status() 兼容性
 └── scripts/
@@ -345,6 +349,30 @@ models: {别名: {model, reasoning_effort, temperature}}}}}`。
 
 **配置是只读的**：故意没有任何增删供应商/模型或写 API key 的工具，所以把 agent
 指向这个服务**不可能改动用户的配置**。
+
+**怎么启动（打包版的关键）**：`pdfxlate-sidecar --mcp`。`--mcp` 在 `sidecar.main()`
+里**最先判断**，有则把剩余参数原样转交 `mcp_server.main()`。之所以要这样，是因为
+**打包产物没有独立的解释器**——PyInstaller onedir 的 exe 本身就是"解释器 + 写死的入口"，
+没有 `python -m` 可用，所以只能让这个二进制自己当入口、用开关选角色。（早先 spec 注释
+里写的 `python -m pdfxlate.mcp_server` 是**错的**，已修。）源码检出下用
+`python -m pdfxlate.sidecar --mcp`，等价。
+
+**应用里的「设置 › MCP」面板**（`mcp_config.py` + 三个新 IPC）负责把这件事交给用户：
+片段由**主进程**按真实安装算出（`Sidecar.resolveLaunch` 是**唯一**判断 dev/打包的地方，
+与应用启动用的同一条），所以给用户的路径一定是这台机器上真正可用的那个，而不是文档里的
+样例。代写只覆盖五个 agent，因为**它们的格式并不一样**：
+
+| agent | 文件 | 形状 |
+|---|---|---|
+| Claude Desktop / Claude Code / WorkBuddy | `claude_desktop_config.json` / `~/.claude.json` / `~/.workbuddy/mcp.json` | JSON，`mcpServers` |
+| ZCode | `~/.zcode/cli/config.json` | JSON，**`mcp.servers`**，另需 `type`/`enabled`/`timeoutMs` |
+| Codex | `~/.codex/config.toml` | **TOML**，`[mcp_servers.<名>]` |
+
+**没有"通用一键"**（键名、格式、路径都不同，agent 还在增加），所以**片段是主、代写是辅**。
+写入三条护栏：**先备份** → **只合并我们那一个键** → **写后重读校验，失败即从备份还原**；
+**解析不了的文件直接报错、绝不"修复"**（那是别人的配置，我们没资格猜内容）。TOML 的读与
+校验用 stdlib `tomllib`，写入是**手写一小段固定块**（stdlib 没有 TOML writer），只替换
+`[mcp_servers.pdfxlate]` 这一段。实现全部可被 pytest 覆盖，因为它写的是**别人的文件**。
 
 两条翻译路线的差别：`provider` 就是普通的一遍式管线（带翻译缓存）；
 `client` 走 MCP sampling，需要客户端声明 `sampling` 能力——**先查

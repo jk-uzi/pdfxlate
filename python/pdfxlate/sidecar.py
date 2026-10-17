@@ -14,12 +14,20 @@ Event    (stdout): ``{"event": "progress", "job_id": "...", "stage": "...",
 
 Methods: ``ping``, ``config.get``, ``config.save``, ``providers.list``,
 ``assets.status``, ``assets.download``, ``pdf.info``, ``translate.start``,
-``translate.cancel``.  ``providers.list`` reports the provider → models tree
-(each provider's ``kind``, ``base_url``, ``has_api_key`` and per-model
-sampling settings); it deliberately never returns an ``api_key``.  There is no
-stored default model — which one a job uses is passed to ``translate.start``.
-``pdf.info`` is a read-only metadata probe (page count) used by the preview
-toolbar; it never renders or modifies the document.
+``translate.cancel``, ``mcp.snippet``, ``mcp.installConfig``.
+``providers.list`` reports the provider → models tree (each provider's ``kind``,
+``base_url``, ``has_api_key`` and per-model sampling settings); it deliberately
+never returns an ``api_key``.  There is no stored default model — which one a
+job uses is passed to ``translate.start``.  ``pdf.info`` is a read-only metadata
+probe (page count) used by the preview toolbar; it never renders or modifies the
+document.  ``mcp.snippet`` / ``mcp.installConfig`` help point an AI agent at this
+install: the first returns config text to paste, the second adds our entry to one
+agent's own config file (backing it up first, and touching nothing else in it).
+
+Run with ``--mcp`` to serve the same install as an MCP server instead of as the
+JSON sidecar.  That flag is how a *packaged* install is reachable by an agent:
+an onedir bundle has no `python -m` to offer, so the binary itself has to be the
+entry point.
 
 All non-protocol output (logs, library chatter) goes to **stderr** so stdout
 carries only JSON.
@@ -276,6 +284,40 @@ def method_translate_cancel(params: dict) -> dict:
     return {"cancelled": True, "job_id": job_id}
 
 
+def method_mcp_snippet(params: dict) -> dict:
+    """The MCP config to paste into any agent.
+
+    Built here rather than in the renderer so the escaping of the command and
+    its arguments comes from ``json.dumps`` rather than string concatenation —
+    Windows paths are full of backslashes that a template would mangle.
+    """
+    from pdfxlate import mcp_config
+
+    return {"snippet": mcp_config.snippet(params["command"], params.get("args") or [])}
+
+
+def method_mcp_install_config(params: dict) -> dict:
+    """Add our entry to one agent's config file.
+
+    The write itself lives in :mod:`pdfxlate.mcp_config` so it can be tested
+    against real files, which is the part of this that must not go wrong: these
+    are other programs' settings, and some hold API keys.
+    """
+    from pdfxlate import mcp_config
+
+    try:
+        return mcp_config.install(
+            params["path"],
+            params["target"],
+            params["command"],
+            params.get("args") or [],
+        )
+    except mcp_config.McpConfigError as exc:
+        # A refusal is an expected outcome, not a crash; the message is written
+        # to be shown to the user as-is.
+        raise ValueError(str(exc)) from exc
+
+
 METHODS = {
     "ping": method_ping,
     "config.get": method_config_get,
@@ -289,6 +331,9 @@ METHODS = {
     "pdf.info": method_pdf_info,
     "translate.start": method_translate_start,
     "translate.cancel": method_translate_cancel,
+    # Helping the user point an agent at this install.
+    "mcp.snippet": method_mcp_snippet,
+    "mcp.installConfig": method_mcp_install_config,
 }
 
 
@@ -310,6 +355,24 @@ def handle(request: dict[str, Any]) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     global _DEBUG
+
+    argv = list(sys.argv[1:] if argv is None else argv)
+
+    # ``--mcp`` turns this same executable into the MCP server instead of the
+    # JSON-protocol sidecar. It exists because a PyInstaller onedir bundle
+    # cannot be asked to run a different module: the executable *is* the
+    # interpreter with an entry point baked in, so there is no `python -m`
+    # available inside a packaged install. An agent pointed at the installed
+    # app therefore launches this binary with this flag.
+    #
+    # Handled before argparse so the remaining arguments pass through
+    # untouched, and imported lazily so that launching the sidecar does not
+    # require the optional ``mcp`` dependency to be installed.
+    if "--mcp" in argv:
+        argv.remove("--mcp")
+        from pdfxlate.mcp_server import main as mcp_main
+
+        return mcp_main(argv)
 
     parser = argparse.ArgumentParser(prog="pdfxlate-sidecar", description=__doc__)
     parser.add_argument("--config-dir", help="Config/cache/assets root directory")
