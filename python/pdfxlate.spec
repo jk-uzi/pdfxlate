@@ -33,6 +33,11 @@ hiddenimports = [
     "pdfxlate.pdf.ultrafast",
     "pdfxlate.pdf.ocr",
     "pdfxlate.models.openai_compat",
+    # The other two adapters are imported only for their @register side effect,
+    # so static analysis would drop them and the packaged app would report an
+    # unknown provider for both.
+    "pdfxlate.models.openai_responses",
+    "pdfxlate.models.anthropic_messages",
     # The MCP server is an alternative entry point into the same bundle, so a
     # packaged build can serve an agent as well as the desktop app.  It is a
     # hidden import because nothing in the sidecar entry point references it, so

@@ -1859,3 +1859,64 @@ CDP 实测（临时脚本，跑完即删）：
 - 状态点不联网，因此「绿」只代表配置齐全，不代表密钥有效或服务可达。
 - 删除模型仍用原生 `confirm()`，和项目其它删除操作保持一致。
 - 前端仍无自动化测试；CDP 脚本不提交。
+
+## 「类型」改成三选一下拉，并实现 Responses / Anthropic Messages 两个协议
+
+设置页的「类型」原本是自由文本框，用户得自己知道 `openai_compat` 这个词。ZCode 的同一
+位置是下拉，三项分别是 `Chat Completions (/v1/chat/completions)`、
+`Responses (/responses)`、`Anthropic Messages (/anthropic/v1/messages)`。照此改成下拉，
+并且**把后两项真正实现**——只改下拉会出现「能选但跑不通」。
+
+ZCode 是闭源的，端点路径从其 `resources/app.asar` 的界面文案确认；`references/` 里那份是
+PDFMathTranslate，与这三个协议无关，本轮没有拉取新源码。
+
+### 新增适配器
+
+`@register` 注册表原本就是为这件事设计的：新增后端 = 一个文件 + 一个装饰器，PDF 管线与
+缓存接线都不用动（见 `models/base.py` 顶部注释）。
+
+**`models/openai_responses.py`**（`openai_responses`）——复用已装的 `openai` SDK，
+不新增依赖。相对 chat/completions 的差异都处理了：prompt 进 `input` 而非 `messages`、
+输出上限叫 `max_output_tokens`、推理强度嵌套为 `reasoning={"effort": ...}`、正文取
+`response.output_text`、流式只累加 `response.output_text.delta`（推理摘要事件不能排版进
+PDF）。
+
+**`models/anthropic_messages.py`**（`anthropic_messages`）——**不引入 `anthropic` SDK**，
+用项目已有的 `requests`。三个需要留意的点：
+
+1. **端点拼接**：`base_url` 以 `/v1` 结尾时只补 `/messages`，否则补 `/v1/messages`，
+   否则粘 `https://api.anthropic.com/v1` 会变成 `/v1/v1/messages`。测试覆盖了带/不带
+   结尾斜杠与带/不带 `/v1` 四种组合。
+2. **`max_tokens` 是必填**：优先模型配置值 → `context_length / 4` → 4096。
+3. **不发 `reasoning_effort`**：Anthropic 用 `thinking.budget_tokens`，无法从
+   low/medium/high 推出预算。要开 thinking 请写 `extra_body: {"thinking": {...}}`；
+   `extra_body` 在这里是**顶层合并**，不是 OpenAI 那种透传字段。
+
+流式解析 SSE 的 `content_block_delta` / `text_delta`，`thinking_delta` 被忽略；
+429 与 5xx 归为可重试（`TransientApiError`），4xx 直接抛出不重试。
+
+`pyinstaller` 的 `hiddenimports` 补了两个模块名——它们只被 import 一次以触发
+`@register`，静态分析会把它们当成未使用而丢掉，打包版就会报 unknown provider。
+
+### 界面
+
+`#field-kind` 从 `<input>` 改为 `<select>`，三个选项带端点路径。`applyProviderFields()`
+里新增 `paintProviderKind()`：**`config.yaml` 里手写的、不在三项内的 kind 会临时插一个
+选项并选中**，否则保存时会被悄悄改写成 `openai_compat`——一个拼写错误会变成行为改变。
+离开该供应商时这个临时选项被移除。
+
+### 验证
+
+`pytest` **253 passed**（新增 `test_openai_responses.py` 11 条、`test_anthropic_messages.py`
+20 条，注册表断言扩展为三个协议）、`typecheck`、`check:i18n`（172 keys）、`build` 全绿。
+
+CDP 实测：`#field-kind` 是 `SELECT`，三个选项与标签正确；分别选中三个供应商时下拉值与
+`kind` 一致；手写 `my_custom_kind` 的供应商会多出第四个选项并被选中，**不改任何字段直接
+保存后磁盘上仍是 `my_custom_kind`**；切回内置供应商时临时选项消失。
+
+### 已知限制
+
+- 三个协议都只做「文本进、文本出」的翻译用法，没有实现工具调用、结构化输出、多模态。
+- Anthropic 的 thinking 需要用户自己在 `extra_body` 里写，界面上没有专门字段。
+- Responses 适配器依赖服务端真的实现了 `/responses`；不少 OpenAI 兼容网关只有
+  chat/completions，选错会在请求时报 404。

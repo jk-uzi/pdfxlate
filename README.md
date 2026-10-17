@@ -123,6 +123,12 @@ back to `hf-mirror.com` automatically.
 # A provider holds the endpoint and credentials once; list any number of
 # models under it. Adding a second model from the same service needs no
 # repetition of the URL or key.
+#
+# `kind` selects the API shape; the desktop app offers the same three in a
+# dropdown. Other values are passed through to the adapter registry.
+#   openai_compat      Chat Completions  (/v1/chat/completions)
+#   openai_responses   Responses         (/responses)
+#   anthropic_messages Anthropic Messages (/v1/messages)
 providers:
   deepseek:
     kind: openai_compat

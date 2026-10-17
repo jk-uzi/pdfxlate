@@ -2069,11 +2069,43 @@ async function removeModel(alias: string): Promise<void> {
   await saveConfig("model.saved");
 }
 
+/**
+ * The API shapes the engine has adapters for.
+ *
+ * Kept in step with the registered adapters by hand — a value here that has no
+ * adapter would be a selectable option that fails at translate time.
+ */
+const PROVIDER_KINDS = ["openai_compat", "openai_responses", "anthropic_messages"] as const;
+
+/**
+ * Select a provider's `kind` in the dropdown.
+ *
+ * A kind written by hand into `config.yaml` that is not one of the built-ins
+ * gets a temporary option of its own: without it the select would fall back to
+ * the first entry and the next save would silently rewrite the provider to
+ * `openai_compat`, turning a typo into a behaviour change.
+ */
+function paintProviderKind(kind: string): void {
+  const select = $<HTMLSelectElement>("field-kind");
+  const extra = select.querySelector<HTMLOptionElement>('option[data-kind-extra="true"]');
+  if (kind && !(PROVIDER_KINDS as readonly string[]).includes(kind)) {
+    const option = extra ?? document.createElement("option");
+    option.value = kind;
+    option.textContent = kind;
+    option.dataset.kindExtra = "true";
+    if (!extra) select.append(option);
+    select.value = kind;
+    return;
+  }
+  if (extra) extra.remove();
+  select.value = kind || PROVIDER_KINDS[0];
+}
+
 /** Fill the provider-level fields from the cached config, and mask the key. */
 function applyProviderFields(): void {
   const provider = draftProvider(editingProvider);
   $("provider-title").textContent = editingProvider ?? "";
-  $<HTMLInputElement>("field-kind").value = provider?.kind ?? "";
+  paintProviderKind(provider?.kind ?? "");
   $<HTMLInputElement>("field-base-url").value = provider?.base_url ?? "";
   // The key field always starts empty: the stored secret is never shown back,
   // only the `has_api_key` flag the summary reports.
@@ -2171,7 +2203,7 @@ function commitProviderFields(name: string): void {
   const existing = providers[name] ?? {};
   providers[name] = {
     ...existing,
-    kind: $<HTMLInputElement>("field-kind").value || "openai_compat",
+    kind: $<HTMLSelectElement>("field-kind").value || "openai_compat",
     base_url: $<HTMLInputElement>("field-base-url").value || null,
     models: existing.models ?? {},
   };

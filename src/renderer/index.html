@@ -476,7 +476,18 @@
                     </label>
                     <label>
                       <span data-i18n="model.kind"></span>
-                      <input id="field-kind" type="text" placeholder="openai_compat" />
+                      <!--
+                        The three API shapes the engine ships adapters for. A
+                        kind that is not in this list (hand-written in
+                        config.yaml) is added as an extra option by
+                        applyProviderFields(), so opening the panel never
+                        rewrites it.
+                      -->
+                      <select id="field-kind">
+                        <option value="openai_compat" data-i18n="model.kindChatCompletions"></option>
+                        <option value="openai_responses" data-i18n="model.kindResponses"></option>
+                        <option value="anthropic_messages" data-i18n="model.kindAnthropic"></option>
+                      </select>
                     </label>
                     <label>
                       <span data-i18n="model.apiKey"></span>

@@ -274,4 +274,6 @@ def build_adapter(
 
 
 # Import adapters so their @register decorators run.
+from pdfxlate.models import anthropic_messages as _anthropic_messages  # noqa: E402,F401
 from pdfxlate.models import openai_compat as _openai_compat  # noqa: E402,F401
+from pdfxlate.models import openai_responses as _openai_responses  # noqa: E402,F401

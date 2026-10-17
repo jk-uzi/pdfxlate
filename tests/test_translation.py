@@ -172,6 +172,13 @@ def test_registry_has_openai_compat():
     assert get_adapter("openai_compat").name == "openai_compat"
 
 
+def test_registry_has_every_shipped_protocol():
+    """The three kinds the settings dropdown offers must all resolve."""
+    assert {"openai_compat", "openai_responses", "anthropic_messages"} <= set(registered())
+    for kind in ("openai_compat", "openai_responses", "anthropic_messages"):
+        assert get_adapter(kind).name == kind
+
+
 def test_unknown_provider_error_lists_known():
     with pytest.raises(ValueError, match="openai_compat"):
         get_adapter("nope")

@@ -17,8 +17,8 @@ Python 3.12，venv 在 `python/.venv`，包以 editable 方式安装，改源码
 
 | 我想…… | 去改 |
 |---|---|
-| 接入新的模型后端 | `python/pdfxlate/models/` 新建文件 + `@register` 装饰器 |
-| 调整发给模型的请求参数 | `models/openai_compat.py`（`reasoning_effort` / `extra_body` / `stream`） |
+| 接入新的模型后端 | `python/pdfxlate/models/` 新建文件 + `@register` 装饰器（内置三个 `kind`：`openai_compat` / `openai_responses` / `anthropic_messages`） |
+| 调整发给模型的请求参数 | 对应适配器：`openai_compat.py` / `openai_responses.py` / `anthropic_messages.py`（`reasoning_effort` / `extra_body` / `stream`） |
 | 改翻译提示词 | `models/base.py` 的 `DEFAULT_PROMPT`，或配置里的 `translation.prompt` 指向模板文件 |
 | 改配置项 / 加新配置字段 | `config.py`（`Provider`、`ModelEntry`、`TranslationSettings` 等 pydantic 模型） |
 | 改「一个供应商挂多个模型」的结构 | `config.py` 的 `Provider` / `ModelEntry` / `AppConfig.resolve()` |
@@ -102,7 +102,9 @@ pdfxlate/
 │       ├── models/
 │       │   ├── __init__.py     23 行  导出翻译层公开符号
 │       │   ├── base.py       243 行  ModelAdapter 基类 + 注册表
-│       │   └── openai_compat.py 115 行  OpenAI 兼容适配器
+│       │   ├── openai_compat.py 115 行  OpenAI Chat Completions 适配器
+│       │   ├── openai_responses.py 114 行  OpenAI Responses 适配器
+│       │   └── anthropic_messages.py 221 行  Anthropic Messages 适配器
 │       └── pdf/
 │           ├── __init__.py      1 行
 │           ├── pipeline.py   580 行  管线编排：解析→版面→翻译→排版
@@ -132,6 +134,8 @@ pdfxlate/
 ├── tests/
 │   ├── test_translation.py   232 行  缓存、占位符、推理标签剥离、注册表、缓存开关、超窗口告警
 │   ├── test_openai_compat.py 137 行  适配器参数透传、校验、提示词渲染
+│   ├── test_openai_responses.py 134 行  Responses 形状映射、流式增量、空回复
+│   ├── test_anthropic_messages.py 227 行  Messages 端点拼接、请求体、SSE、错误分级
 │   ├── test_config_providers.py 349 行  供应商→模型 schema、resolve、迁移（含已移除字段）、env 引用
 │   ├── test_typesetting.py   172 行  字号适配纯函数（放不下时的缩字逻辑）
 │   ├── test_cli_options.py   286 行  CLI 排版选项解析与三态覆盖语义
@@ -247,10 +251,32 @@ GoNoto 语言」与「未知语言码」，不是「支持/不支持」的分界
 `build_adapter` 调用构造函数期间生效（`finally` 里 reset），因此对线程池里的调用也安全，
 且**新增模型后端只需加文件 + `@register`，无需碰任何缓存接线**。
 
-**`models/openai_compat.py`** — `OpenAICompatAdapter`，`name = "openai_compat"`。
-覆盖 DeepSeek / Qwen / Kimi / Grok / GLM / 硅基流动 / vLLM / Ollama / OpenRouter 等。
-一等支持 `reasoning_effort`、`extra_body`（厂商私有参数透传）、`stream`，
-429 限流用 tenacity 指数退避重试。
+**三个内置适配器**，对应设置页「类型」下拉的三项。选哪个由 `Provider.kind` 决定，
+`api.build_translator()` 把它传给注册表，PDF 管线完全不需要知道是哪一个。
+
+**`models/openai_compat.py`** — `OpenAICompatAdapter`，`name = "openai_compat"`
+（`/v1/chat/completions`）。覆盖 DeepSeek / Qwen / Kimi / Grok / GLM / 硅基流动 /
+vLLM / Ollama / OpenRouter 等。一等支持 `reasoning_effort`、`extra_body`
+（厂商私有参数透传）、`stream`，429 限流用 tenacity 指数退避重试。
+
+**`models/openai_responses.py`** — `OpenAIResponsesAdapter`，`name = "openai_responses"`
+（`/responses`）。同一个 `openai` SDK，但请求形状不同：prompt 进 `input` 而不是
+`messages`，输出上限叫 `max_output_tokens`，推理强度是嵌套的
+`reasoning={"effort": ...}`，回复用 `response.output_text` 取。流式只累加
+`response.output_text.delta`，推理摘要事件不进正文。
+
+**`models/anthropic_messages.py`** — `AnthropicMessagesAdapter`，
+`name = "anthropic_messages"`（`/v1/messages`）。**不用 `anthropic` SDK**，用已有的
+`requests`：一个端点、一种 body，为它再引一个厂商 SDK 及其传递依赖不划算。三处需要
+注意：
+
+- 端点拼接：`base_url` 已以 `/v1` 结尾就只补 `/messages`，否则补 `/v1/messages`，
+  避免出现 `/v1/v1/messages`。
+- `max_tokens` 在该 API 是必填：用模型配置值；没填则取 `context_length / 4`；
+  再没有就用 4096。
+- **不发 `reasoning_effort`**：Anthropic 用 `thinking.budget_tokens` 表达，
+  无法从 low/medium/high 推出一个预算。要开 thinking 请在 `extra_body` 里写
+  `{"thinking": {...}}`。
 
 ### PDF 管线
 
@@ -824,7 +850,8 @@ npm run check:i18n                                   # 中英文字符串表一�
 
 `test_translation.py` 用假 adapter（计数器、故意丢占位符）测缓存命中、
 `{vN}` 守卫、`<think>` 剥离、注册表冲突、`cache.enabled` 接线。
-`test_openai_compat.py` 用 mock 客户端测参数透传与校验，不打真实 API。
+`test_openai_compat.py` / `test_openai_responses.py` 用 mock 客户端测参数透传与校验，
+`test_anthropic_messages.py` mock `requests.Session`，都不打真实 API。
 `test_config_providers.py` 测供应商→模型的 `resolve()`、默认值校验、旧
 `profiles:` 迁移，以及 `${VAR}` 在保存往返后不被写成明文（含 UI 重建配置那条路径）。
 `test_typesetting.py` 测 `converter.fit_font_size()` 这个纯函数（放得下/放不下/
