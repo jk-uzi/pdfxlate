@@ -95,7 +95,6 @@ interface PdfxlateApi {
   pickFolder(locale?: string): Promise<string | null>;
   importPdf(source: string, destDir: string): Promise<string>;
   saveAs(source: string, suggestedName: string, locale?: string): Promise<string | null>;
-  onWheel(cb: () => void): () => void;
   /** How an agent should launch this install's MCP server. */
   mcpLaunch(): Promise<{ command: string; args: string[] }>;
   /** Agents found on this machine, with the config file to write into. */
@@ -221,6 +220,19 @@ let activeTab: string | null = null;
  */
 type ZoomMode = "fit-width" | "fit-height";
 let previewZoom: number | ZoomMode = "fit-width";
+
+/**
+ * Whether two pages are shown side by side.
+ *
+ * Global like the zoom, for the same reason: it describes how you read, not
+ * which document you are reading. The built-in viewer has no spread mode of its
+ * own (no fragment parameter selects one), so this is implemented by mounting a
+ * second frame next to the first and stepping the page number by two.
+ *
+ * `page` keeps meaning "the first page of the spread", so turning the mode off
+ * leaves you on a page that is actually on screen.
+ */
+let spreadMode = false;
 
 /**
  * Per-document scroll position and page count.
@@ -1177,22 +1189,35 @@ async function refreshPageCount(): Promise<void> {
  * this Chromium build, whereas `view=FitV` does resize the rendered page. So
  * the two fit modes use two different fragment parameters.
  */
-function viewerUrl(file: string): string {
+function viewerUrl(file: string, page: number): string {
   const fragment =
     previewZoom === "fit-width"
       ? "zoom=page-width"
       : previewZoom === "fit-height"
         ? "view=FitV"
         : `zoom=${previewZoom}`;
-  const page = stateFor(file).page;
   return `${api.fileUrl(file)}#toolbar=0&navpanes=0&page=${page}&${fragment}`;
+}
+
+/**
+ * The pages a spread shows, in order.
+ *
+ * Two adjacent pages, except at the end of an odd-length document where there
+ * is only one left. Pages are 1-based, matching both the viewer fragment and
+ * `state.page`.
+ */
+function spreadPages(state: { page: number; pages: number }): number[] {
+  const first = state.page;
+  const second = first + 1;
+  if (state.pages > 0 && second > state.pages) return [first];
+  return [first, second];
 }
 
 /**
  * Repaint the preview for the active tab, page and zoom.
  *
- * The frame is built fresh rather than having its `src` updated: changing the
- * fragment of an already-loaded viewer frame does NOT navigate, so replacing
+ * The frames are built fresh rather than having their `src` updated: changing
+ * the fragment of an already-loaded viewer frame does NOT navigate, so replacing
  * the element is the only way to move to another page or zoom level.
  */
 function renderPreview(): void {
@@ -1218,13 +1243,24 @@ function renderPreview(): void {
     return;
   }
 
-  const frame = document.createElement("iframe");
-  frame.className = "preview__frame";
-  frame.src = viewerUrl(source);
-  // A drag may be in flight; a freshly built frame must not become droppable
-  // again underneath it.
-  if (!frameDroppable) frame.style.pointerEvents = "none";
-  host.append(frame);
+  // One wrapper whether there is one page or two, so the layout rule that puts
+  // the pages side by side is the only thing spread mode changes.
+  const row = document.createElement("div");
+  row.className = "preview__pages";
+  row.classList.toggle("preview__pages--spread", spreadMode);
+
+  const state = stateFor(source);
+  const pages = spreadMode ? spreadPages(state) : [state.page];
+  for (const page of pages) {
+    const frame = document.createElement("iframe");
+    frame.className = "preview__frame";
+    frame.src = viewerUrl(source, page);
+    // A drag may be in flight; a freshly built frame must not become droppable
+    // again underneath it.
+    if (!frameDroppable) frame.style.pointerEvents = "none";
+    row.append(frame);
+  }
+  host.append(row);
 }
 
 /** Enable/disable the viewer controls and paint the page and zoom readouts. */
@@ -1239,16 +1275,32 @@ function updatePreviewControls(): void {
   $("fit-width").classList.toggle("is-active", previewZoom === "fit-width");
   $("fit-height").classList.toggle("is-active", previewZoom === "fit-height");
 
+  // Spread is independent of the zoom mode, so it is its own toggle rather than
+  // a third entry in the fit group.
+  const spread = $<HTMLButtonElement>("spread-toggle");
+  spread.disabled = !hasFile;
+  spread.classList.toggle("is-active", spreadMode);
+  spread.setAttribute("aria-pressed", String(spreadMode));
+
   const page = state?.page ?? 1;
   const pages = state?.pages ?? 0;
   const known = pages > 0;
+  // In a spread the label names both pages on screen; the second is omitted
+  // when the document ends on the first one.
+  const shown = hasFile && spreadMode && state ? spreadPages(state) : [];
   $("page-label").textContent = hasFile
-    ? known
-      ? `${page} / ${pages}`
-      : String(page)
+    ? shown.length === 2
+      ? `${shown[0]}–${shown[1]} / ${known ? pages : "?"}`
+      : known
+        ? `${page} / ${pages}`
+        : String(page)
     : "–";
   $<HTMLButtonElement>("page-prev").disabled = !hasFile || page <= 1;
-  $<HTMLButtonElement>("page-next").disabled = !hasFile || (known && page >= pages);
+  // In a spread the last page can be on screen while `page` is still below
+  // `pages`, so the boundary is the last page the next step would reveal.
+  const lastVisible = spreadMode ? Math.min(page + 1, known ? pages : Infinity) : page;
+  $<HTMLButtonElement>("page-next").disabled =
+    !hasFile || (known && lastVisible >= pages);
 
   $("zoom-label").textContent =
     previewZoom === "fit-width"
@@ -1313,33 +1365,6 @@ function flashViewerOverlay(): void {
   }, 1600);
 }
 
-/**
- * Whether the pointer is currently over the preview area.
- *
- * Needed because scroll gestures cannot be seen from here: the PDF viewer runs
- * in another process, so its wheel events never reach this document. The main
- * process sees the wheel but not where it happened, so it forwards a bare ping
- * and this flag supplies the missing half. `mouseenter`/`mouseleave` on the
- * frame's container do fire in this document, which is what makes the pairing
- * possible at all.
- */
-let pointerOverPreview = false;
-
-function trackPointerOverPreview(): void {
-  const host = $("preview-host");
-  host.addEventListener("mouseenter", () => {
-    pointerOverPreview = true;
-  });
-  host.addEventListener("mouseleave", () => {
-    pointerOverPreview = false;
-  });
-  // A wheel anywhere else in the window must not reveal controls that belong to
-  // the document, so the ping is ignored unless the pointer is over the preview.
-  api.onWheel(() => {
-    if (pointerOverPreview) flashViewerOverlay();
-  });
-}
-
 /** Switch to a fit mode (or back to fit-width) from the title-bar buttons. */
 function setZoomMode(mode: ZoomMode): void {
   if (!previewSource()) return;
@@ -1359,7 +1384,10 @@ function stepPage(delta: number): void {
   const file = activeTab;
   if (!file) return;
   const state = stateFor(file);
-  const next = state.page + delta;
+  // A spread moves by two, so the same page does not appear on both sides of
+  // two consecutive views.
+  const stride = spreadMode ? 2 : 1;
+  const next = state.page + delta * stride;
   if (next < 1) return;
   if (state.pages > 0 && next > state.pages) return;
   state.page = next;
@@ -1370,6 +1398,23 @@ function stepPage(delta: number): void {
 
 $("page-prev").addEventListener("click", () => stepPage(-1));
 $("page-next").addEventListener("click", () => stepPage(1));
+
+/**
+ * Turn the two-page spread on or off.
+ *
+ * `page` always means the left page of the spread, so switching off lands on a
+ * page that is genuinely on screen rather than on the right-hand one, which
+ * would be indistinguishable from skipping forward.
+ */
+function toggleSpread(): void {
+  if (!previewSource()) return;
+  spreadMode = !spreadMode;
+  updatePreviewControls();
+  renderPreview();
+  flashViewerOverlay();
+}
+
+$("spread-toggle").addEventListener("click", toggleSpread);
 
 function stepZoom(delta: number): void {
   // From either fit mode, the first press lands on the step nearest to 100% so
@@ -2345,7 +2390,6 @@ loadOptionValues();
 paintOptionSelects();
 updatePreviewControls();
 renderPreview();
-trackPointerOverPreview();
 void loadDefaultOutput();
 
 /**

@@ -162,101 +162,15 @@ function createWindow(): void {
   mainWindow.once("ready-to-show", reveal);
   mainWindow.webContents.once("did-finish-load", reveal);
   mainWindow.on("closed", () => {
-    // A message hook outlives the window object otherwise, and the callback
-    // would keep firing into a destroyed webContents.
-    mainWindow?.unhookAllWindowMessages();
     mainWindow = null;
   });
 
   void mainWindow.loadFile(path.join(currentDir, "..", "renderer", "index.html"));
 
-  registerWheelForwarding(mainWindow);
-
   if (isDev) {
     mainWindow.webContents.openDevTools({ mode: "detach" });
     registerDevShortcuts(mainWindow);
   }
-}
-
-/** `WM_MOUSEWHEEL`, from the Win32 window-message constants. */
-const WM_MOUSEWHEEL = 0x020a;
-
-/**
- * Tell the renderer that a wheel event happened anywhere in the window.
- *
- * Scrolling the preview cannot be noticed from the renderer: the PDF viewer is
- * a separate process, and neither its wheel events nor its scroll position reach
- * the page (its `postMessage` interface is not exposed in this build either).
- * The renderer therefore combines a bare "a wheel happened" signal with its own
- * knowledge of whether the pointer is over the preview — it does receive
- * `mouseenter` / `mouseleave` for the iframe element — and reveals the overlay
- * controls only when both hold. The signal carries no position or delta, so the
- * split between "where" and "what" still lives in the renderer.
- *
- * Three sources, and the PDF area needs the one that is easy to miss:
- *
- * - **The viewer's own `webContents`** (see `attachViewerWheelForwarding`) is
- *   the only reliable one over a PDF. The viewer is not an ordinary iframe: it
- *   is Chromium's built-in PDF extension, running as a `remote` WebContents
- *   with its own window. Measured over three consecutive gestures, the viewer
- *   received every wheel while the top-level contents received none. This is
- *   also the only source that works on every platform.
- * - **`input-event` on the window** covers wheels over the ordinary DOM —
- *   sidebar, title bar, and the empty preview pane.
- * - **`WM_MOUSEWHEEL` (Windows)** is a secondary net for the same DOM areas.
- *   It sees the message when the top-level window still holds focus, which is
- *   why it looked sufficient at first: the *first* scroll after opening a
- *   document works, and every one after that goes to the viewer instead.
- *
- * Several sources firing for one gesture only restarts the renderer's 1.6 s
- * hide timer, which is invisible.
- *
- * Twice this was "verified" with synthetic input and still did not work. Both
- * mistakes are worth remembering: `sendInputEvent` on the window injects past
- * the real routing (so it always produces `input-event`), and a single gesture
- * from a clean state cannot reveal a focus-dependent regression. Test with the
- * viewer's contents, repeatedly.
- */
-function registerWheelForwarding(window: BrowserWindow): void {
-  window.webContents.on("input-event", (_event, input) => {
-    if (input.type === "mouseWheel") window.webContents.send("viewer:wheel");
-  });
-  if (process.platform === "win32") {
-    window.hookWindowMessage(WM_MOUSEWHEEL, () => {
-      window.webContents.send("viewer:wheel");
-    });
-  }
-}
-
-/**
- * Forward wheels from the PDF viewer, which is a WebContents of its own.
- *
- * Chromium implements the built-in PDF viewer as an extension page loaded into a
- * `remote` WebContents. The OS routes a wheel over the document to *that*
- * window, not to the app's, so neither `input-event` on the window nor
- * `WM_MOUSEWHEEL` sees more than the first gesture — after that the viewer has
- * focus and keeps the rest. Its own `input-event` does fire for every one.
- *
- * `getType()` is the whole test. Filtering on `hostWebContents` would be more
- * precise, but that property is documented as "might own" and can be absent for
- * these guests, and an absent value here means silently forwarding nothing.
- * This app has one window and one viewer, so the type is unambiguous.
- *
- * Registered once for the app rather than per window: the guest is created (and
- * recreated) by the viewer itself, and `web-contents-created` is the only hook
- * that sees each new one. Forwarding is dropped if the window is gone, which is
- * also how a torn-down viewer stops mattering.
- */
-function attachViewerWheelForwarding(): void {
-  app.on("web-contents-created", (_event, contents) => {
-    if (contents.getType() !== "remote") return;
-    contents.on("input-event", (_e, input) => {
-      if (input.type !== "mouseWheel") return;
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send("viewer:wheel");
-      }
-    });
-  });
 }
 
 /**
@@ -519,12 +433,6 @@ app.whenReady().then(async () => {
   // Edit, View, …) have no counterpart in this UI. Removing it also removes
   // its accelerators; registerDevShortcuts puts the dev ones back.
   Menu.setApplicationMenu(null);
-
-  // Before the window: the PDF viewer's WebContents can be created as soon as a
-  // document loads, and `web-contents-created` is the only event that sees each
-  // one. Missing the first would leave the very first document without wheel
-  // forwarding until it was reopened.
-  attachViewerWheelForwarding();
 
   registerIpc();
   createWindow();

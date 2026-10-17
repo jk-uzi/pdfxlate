@@ -52,7 +52,7 @@ Python 3.12，venv 在 `python/.venv`，包以 editable 方式安装，改源码
 | 改「另存为」存哪一份 | `src/renderer/app.ts` 的 `saveAsSource()`；对话框与拷贝在 `src/main/main.ts` 的 `dialog:saveAs` |
 | 改选项面板（模型/推理/语言，只影响本次） | `src/renderer/app.ts` 的 `optionValues` / `selectedModel()`；引擎侧覆盖在 `api.py` 的 `translate()` |
 | 改侧栏宽度 | `src/renderer/app.ts` 的 `applySidebarWidth()` / `clampSidebarWidth()` + `style.css` 的 `--sidebar-width`、`.sidebar__resizer` |
-| 改浮层显隐时机 | `src/renderer/app.ts` 的 `flashViewerOverlay()` + `VIEWER_OVERLAYS`；滚轮那条还需 `src/main/main.ts` 的 `registerWheelForwarding()` |
+| 改浮层显隐时机 | `src/renderer/app.ts` 的 `flashViewerOverlay()` + `VIEWER_OVERLAYS` |
 | 改右侧 PDF 预览（标签/翻页/缩放） | `src/renderer/app.ts` 的 `renderPreview()` / `viewerUrl()` / `activateTab()` |
 | 改标签栏（宽度/箭头/拖动排序） | `src/renderer/app.ts` 的 `renderTabs()` / `updateTabbarScroll()` / `dragTabOver()` / `endTabDrag()` + `style.css` 的 `.tabbar` / `.tab` |
 | 改左侧文件列表（文件夹浏览/勾选） | `src/renderer/app.ts` 的 `openFolder()` / `renderFiles()`；目录列举在 `src/main/main.ts` 的 `app:listPdfs` |
@@ -115,7 +115,7 @@ pdfxlate/
 │           └── text_spacing.py 44 行  中英混排间距（上游照搬）
 ├── src/
 │   ├── main/
-│   │   ├── main.ts          473 行  窗口 + 应用生命周期 + IPC（自建标题栏、默认输出目录、另存为、目录列举、拖入归档、滚轮转发）
+│   │   ├── main.ts          473 行  窗口 + 应用生命周期 + IPC（自建标题栏、默认输出目录、另存为、目录列举、拖入归档）
 │   │   └── sidecar.ts       234 行  Python 子进程管理 + JSON 行协议
 │   ├── preload/
 │   │   └── preload.ts       190 行  contextBridge，向渲染进程暴露 API
@@ -433,7 +433,7 @@ overlay 的位置由 OS 按这个值摆放，不一致时系统三键会在栏�
 **`src/preload/preload.ts`** — `contextBridge.exposeInMainWorld("pdfxlate", ...)`，
 在 `contextIsolation` 开启的前提下向渲染进程暴露：
 `request()`（转发到 sidecar）、`onEvent()` / `onLog()`（订阅事件）、
-`defaultOutputDir()` / `saveAs()`（见下）、`onWheel()`（滚轮通知，见下）、
+`defaultOutputDir()` / `saveAs()`（见下）、
 `pickPdf(locale?)` / `pickOutputDir(locale?)`（原生对话框，语言由渲染进程传入）、
 `reveal()` / `openPath()`（打开输出）、`fileUrl(path)`（绝对路径 → `file://` URL）。
 
@@ -451,35 +451,13 @@ overlay 的位置由 OS 按这个值摆放，不一致时系统三键会在栏�
 `-mono`/`-dual` 就是这么来的），打包后往 `Program Files` 写还可能直接失败。`.gitignore`
 里加了 `*-mono.pdf` / `*-dual.pdf` 作兜底。
 
-**`onWheel()` 只通知"发生了滚轮"，不带坐标或增量**，所以位置判断留在渲染进程：
-父页面**能**收到 iframe 元素的 `mouseenter`/`mouseleave`，两者配对——**指针在预览区
-上方时为真**才显示控件。
-
-信号源有**三个**，PDF 区靠的是最容易漏掉的那个：
-
-- **查看器自己的 `webContents`（主信号，全平台）**。PDF 查看器**不是普通 iframe**：
-  它是 Chromium 内置 PDF 扩展，跑在**独立的 `remote` WebContents** 里，有自己的窗口。
-  OS 把滚轮路由给它，所以顶层窗口**一次都收不到**（实测连续三轮：查看器收到 2/2/2，
-  顶层收到 0/0/0）。`attachViewerWheelForwarding()` 在 `web-contents-created` 里按
-  `getType() === "remote"` 认领它并监听 `input-event`——**每次滚动都会触发**。
-- **窗口的 `input-event`**：侧栏、标题栏、空预览区这些普通 DOM。
-- **`WM_MOUSEWHEEL`（仅 Windows）**：同样的普通 DOM 的补充。它只在**顶层窗口还持有
-  焦点**时收得到——这正是当初误判的原因：打开文档后的**第一次**滚动有效，之后焦点进入
-  查看器自己的窗口，就再也收不到了。
-
-多个源同时触发只会把 1.6s 计时器重置一次，无可见影响。**注意 `hookWindowMessage`
-对同一个消息 id 只保留一个回调**——再挂一个会**静默顶掉**前一个，测试里因此改为
-拦截 `webContents.send("viewer:wheel")` 来计数。
-
-**这条链路假阳性过两次**，教训都写在这里：
-
-1. 用 `webContents.sendInputEvent` 打给**顶层** `webContents`，它绕开真实路由、必然
-   产生 `input-event`，把"PDF 区收不到"完全掩盖。
-2. 用 `PostMessage(WM_MOUSEWHEEL)` 打给**顶层窗口**，同样绕开了"OS 会把消息投给光标下
-   的窗口"这一点；而且**只测一次**，于是"第一次有效、之后失效"的回归看不出来。
-
-**正确测法**：驱动**查看器自己的 `webContents`**（或真实滚轮），并且**连续测多轮**、
-每轮间隔超过自动隐藏时间。`postMessage` 那条路已实测无响应，别再试。
+**滚轮唤醒浮层的功能已移除。** 曾经用主进程转发滚轮事件来显隐浮层，但 PDF 查看器是
+Chromium 内置扩展的**独立 `remote` WebContents**，OS 把滚轮路由给它，顶层窗口收不到；
+即使在 `web-contents-created` 里认领该 guest 并监听 `input-event`，真实硬件滚轮路径
+仍未能验证通过（本机 RDP 会话过滤了 `SendInput`）。按需求整体删除，不留死代码：
+`registerWheelForwarding()` / `attachViewerWheelForwarding()` / `onWheel()` /
+`pointerOverPreview` 全部去掉。**浮层仍会在翻页、缩放、切换适应模式时出现**——
+那几条走的是 `flashViewerOverlay()`，与滚轮无关。
 
 **`saveAs()` 存的就是当前标签那一份**。以前要在"原文/译文/对比"之间选，现在一个标签
 只装一份文档，没有歧义可言。对话框在渲染进程之外，拷贝用 `copyFile` 在主进程完成
@@ -605,17 +583,31 @@ config.yaml**——与同面板的页码、线程数、模式一致。存进 loc
 
 ### 控件位置
 
-**适应宽度/高度**：`#viewer-fit`，**文档左上角**，两个内联 SVG 图标（一页纸外框 +
-双向箭头，`fit-height` 只把**箭头组**旋转 90°）。**翻页/缩放/打开**：
-`#viewer-overlay` **右下角**。**另存为**：`#viewer-saveas` **右上角**。三者共用同一套
-`.is-visible` / `:hover` 规则与同一个 `flashViewerOverlay()`，外观一致，读起来是**一组
-控件**。都**内缩 18px**——查看器自己的竖向滚动条贴在最右侧，压住它下端会很难抓。
+**适应宽度/高度 + 双栏**：`#viewer-fit`，**文档左上角**，三个内联 SVG 图标（一页纸外框 +
+双向箭头，`fit-height` 只把**箭头组**旋转 90°；双栏是两个并排的页面轮廓）。
+**翻页/缩放/打开**：`#viewer-overlay` **右下角**。**另存为**：`#viewer-saveas`
+**右上角**。三者共用同一套 `.is-visible` / `:hover` 规则与同一个
+`flashViewerOverlay()`，外观一致，读起来是**一组控件**。都**内缩 18px**——查看器自己的
+竖向滚动条贴在最右侧，压住它下端会很难抓。
 
 **三个显示条件**：① CSS `:hover`（浮层保持 `opacity: 0` 但**留着布局盒与命中测试**，
 所以不需要额外热区、也没有死角）；② 页面/缩放变化时 `flashViewerOverlay()` 加的
-`is-visible` 类（约 1.6s 后移除，每次调用**重置计时器**）；③ **滚轮**——见下。
-三者并存，鼠标停在上面时不会被计时器藏掉。无文档时由 `updatePreviewControls()` 整块
+`is-visible` 类（约 1.6s 后移除，每次调用**重置计时器**）。两者并存，鼠标停在上面时
+不会被计时器藏掉。无文档时由 `updatePreviewControls()` 整块
 `hidden`。**已知取舍**：自动隐藏意味着平时看不出当前是哪种适应模式。
+
+### 双栏（左右两页）
+
+Chromium 内置查看器**没有**双页模式的 URL 参数（`spread` / `two-page` 都不认），所以
+双栏是自己实现的：`renderPreview()` 在 `#preview-host` 里放一个 `.preview__pages`
+行容器，双栏时放**两个** iframe（当前页 + 下一页），各占一半宽。
+
+- `spreadMode` 是**全局**开关，与缩放同理（阅读偏好，不按标签记）。
+- `state.page` 始终表示**左页**，所以关掉双栏会停在屏幕上真实存在的那一页。
+- 翻页步长变 2（`stepPage()` 里的 `stride`），否则同一页会连续出现在两个视图里。
+- 末页是奇数时只渲染一页（`spreadPages()` 返回单元素）。
+- 页号标签显示 `3–4 / 20`；"下一页"的禁用边界按"左页 + 1"判断。
+- `zoom=page-width` 是**相对每个 iframe 自己的视口**，所以两页各自缩放到半宽，正好装下。
 
 **第四个条件：标题栏的图钉按钮**（`#btn-toggle-overlays`）可以把三个浮层**钉住常显**，
 给不想每次去"找"控件的人用。实现只有**一个类 + 一条 CSS**（`body.overlays-pinned` 把三块
@@ -645,13 +637,6 @@ path**，正好把真实失败掩盖掉。现在用 CDP 的真实 drag 事件（
 - **仍然无法**从窗口右边缘/底边缘（即页面外侧）直接拖进来——那条路径无解，只能绕过边框。
 - 拖入的 PDF **复制进当前文件夹**（`app.importPdf`）：**同一路径不复制**、**同名自动改名
   `C (2).pdf` 绝不覆盖**、**未选文件夹则不复制**只开标签。非 PDF 忽略并提示。
-
-**滚轮为什么需要主进程配合**：查看器在另一个进程里，其滚轮事件**不到父页面的监听器**，
-`postMessage` 接口在本版 Chromium 也没暴露（都实测过）。而父页面**能**收到 iframe 的
-`mouseenter`/`mouseleave`。于是主进程只转发"发生了一次滚轮"，渲染进程再配对
-`pointerOverPreview` 标志，**两者同时成立**才显示——否则在侧栏上滚滚轮也会弹出文档控件。
-**转发的主信号是查看器自己的 `remote` WebContents**（详见上文 `onWheel()`）；
-`WM_MOUSEWHEEL` 只在顶层窗口仍有焦点时有效，属于次要来源。
 
 **侧栏底部**：进度条与设置按钮**同一行**（进度条在左、设置只占一个方形图标位）。
 设置图标是**内联 SVG**（8 齿齿轮：一个粗描边圆得到齿盘与中心孔 + 8 个旋转小矩形当齿），

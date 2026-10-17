@@ -110,16 +110,6 @@ const api = {
     ipcRenderer.invoke("dialog:saveAs", source, suggestedName, locale),
 
   /**
-   * Fires on any wheel event in the window, with no position or delta.
-   *
-   * The renderer cannot see wheel events over the PDF viewer (it runs in
-   * another process), but the main process can, so the bare occurrence is
-   * forwarded and paired with the renderer's own pointer tracking. See
-   * `registerWheelForwarding` in main.ts for why the split falls here.
-   */
-  onWheel: (cb: () => void): (() => void) => subscribe("viewer:wheel", cb),
-
-  /**
    * How an agent should launch this install's MCP server.
    *
    * Resolved in the main process because it knows whether this is a source

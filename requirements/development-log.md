@@ -1582,3 +1582,56 @@ WebContents** 里，有自己的窗口。OS 把滚轮路由给**它**，主窗�
 `0xFFFFFF88`，仍无效），OS 输入管线被过滤。验证走的是
 `guest.sendInputEvent`——它注入的**正是真实滚轮到达的那个 WebContents**，比前两次
 都接近真实路径，但仍不等于硬件。要彻底确认，需要在有物理鼠标的机器上滚一次。
+
+---
+
+## 2026-10-17（续）：移除滚轮唤醒浮层；新增双栏阅读
+
+### 移除滚轮功能
+
+滚轮唤醒浮层在真实硬件上始终没能验证通过（详见上一节：本机 RDP 会话过滤了 `SendInput`，
+而查看器是独立的 `remote` WebContents，路由复杂）。按用户决定**整体删除，不留死代码**：
+
+- `src/main/main.ts`：`WM_MOUSEWHEEL` 常量、`registerWheelForwarding()`、
+  `attachViewerWheelForwarding()`、两处调用、`closed` 里的 `unhookAllWindowMessages()`。
+- `src/preload/preload.ts`：`onWheel()`。
+- `src/renderer/app.ts`：`PdfxlateApi.onWheel`、`pointerOverPreview`、
+  `trackPointerOverPreview()`、启动调用。
+- `docs/project-structure.md`：`onWheel()` 整段替换为"已移除"说明，删掉两处交叉引用。
+
+**保留 `flashViewerOverlay()`**——翻页、缩放、切换适应模式仍在用它，浮层照常出现。
+
+### 双栏（左右两页）
+
+**为什么不能靠查看器自己**：Chromium 内置 PDF 查看器没有双页模式的 URL 参数
+（`spread` / `two-page` 都不认，已试）。所以自己实现：`renderPreview()` 在
+`#preview-host` 里放一个 `.preview__pages` 行容器，双栏时放**两个** iframe。
+
+- 按钮在左上角 `#viewer-fit` 面板内作第三个图标（两个并排页面轮廓），自动继承该面板的
+  显隐规则，**没有新增任何显隐逻辑**。
+- `spreadMode` 全局开关，与缩放同理。`state.page` 始终是**左页**，关掉双栏停在真实可见页。
+- 翻页步长 2；末页奇数时只渲染一页；页号显示 `3–4 / 20`；"下一页"边界按"左页 + 1"。
+- `zoom=page-width` 相对每个 iframe 自己的视口，两页各自缩到半宽，正好装下。
+
+**新增 i18n**：`preview.spread`（中英各一），共 **160 keys**。
+
+### 验证
+
+CDP **20/20**（6 页真实排版 PDF + 7 页测试 PDF）：
+
+| 检查 | 结果 |
+|---|---|
+| `window.pdfxlate` 上已无 `onWheel` | ✅ 键列表不含它 |
+| 按钮在 `#viewer-fit` 内、有文档时可用 | ✅ |
+| 默认单栏、1 个 frame、`page=1` | ✅ |
+| 开启双栏：2 个 frame、`page=1`/`page=2`、标签 `1–2 / 7` | ✅ |
+| 翻页一次到 `3–4`（步长 2） | ✅ |
+| 末页只渲染 1 页、下一页禁用、标签 `7 / 7` | ✅ |
+| 闲置时浮层隐藏，翻页后出现 | ✅ |
+| 关闭双栏回到 1 个 frame，停在左页（5） | ✅ |
+
+**关于"看起来页面变窄"**：截图里双栏的白页比单栏窄，实测查看器内部尺寸确认这是**正确的**——
+单栏 `sizer` 803px，双栏每页 446px，正好约一半（`zoom=page-width` 按各自视口缩放）。
+本环境 `Page.captureScreenshot` 有返回过期帧的前科，像素判读不可靠，故以 DOM 实测为准。
+
+`typecheck`、`check:i18n`（160 keys）、`build`、`pytest`（196）全绿。
