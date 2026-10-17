@@ -451,10 +451,25 @@ overlay 的位置由 OS 按这个值摆放，不一致时系统三键会在栏�
 `-mono`/`-dual` 就是这么来的），打包后往 `Program Files` 写还可能直接失败。`.gitignore`
 里加了 `*-mono.pdf` / `*-dual.pdf` 作兜底。
 
-**`onWheel()` 只通知"发生了滚轮"，不带坐标或增量**，因为主进程的 `input-event` 载荷
-就只有这些。原因：PDF 查看器是**另一个进程**，它里面的滚轮事件既不到父页面的监听器，
-查看器的 `postMessage` 接口在本版 Chromium 也没暴露。父页面**能**收到 iframe 元素的
-`mouseenter`/`mouseleave`，所以渲染进程把两者配对——**指针在预览区上方时为真**才显示控件。
+**`onWheel()` 只通知"发生了滚轮"，不带坐标或增量**，所以位置判断留在渲染进程：
+父页面**能**收到 iframe 元素的 `mouseenter`/`mouseleave`，两者配对——**指针在预览区
+上方时为真**才显示控件。
+
+信号源有**两个**，缺一不可：
+
+- **`WM_MOUSEWHEEL`（仅 Windows，`hookWindowMessage`）** 是 PDF 区域唯一可靠的那个。
+  查看器跑在 Chromium 的 guest 进程里，滚轮**到不了顶层 `webContents`**，
+  `input-event` 全程静默（实测：PDF 区上 `inputEvent.mouseWheel = 0`）。窗口过程却
+  一定看得到——`WM_MOUSEWHEEL` 发给焦点窗口，`DefWindowProc` 再向父窗口传播。
+- **`input-event`** 覆盖其余情况：其他平台，以及 Windows 上侧栏/标题栏等普通 DOM。
+
+两个同时触发只会把 1.6s 计时器重置一次，无可见影响。**注意 `hookWindowMessage`
+对同一个消息 id 只保留一个回调**——再挂一个会**静默顶掉**前一个，测试里因此改为
+拦截 `webContents.send("viewer:wheel")` 来计数。
+
+**这条链路曾经"验证通过"却实际不工作**：当时用 `webContents.sendInputEvent` 造滚轮，
+它直接注入顶层 `webContents`，必然触发 `input-event`，正好绕开了真实硬件滚轮的路由。
+**合成输入测不了这条路径**，必须用真实滚轮（或直接 `PostMessage(WM_MOUSEWHEEL)`）。
 `postMessage` 那条路已实测无响应，别再试。
 
 **`saveAs()` 存的就是当前标签那一份**。以前要在"原文/译文/对比"之间选，现在一个标签
@@ -623,10 +638,11 @@ path**，正好把真实失败掩盖掉。现在用 CDP 的真实 drag 事件（
   `C (2).pdf` 绝不覆盖**、**未选文件夹则不复制**只开标签。非 PDF 忽略并提示。
 
 **滚轮为什么需要主进程配合**：查看器在另一个进程里，其滚轮事件**不到父页面的监听器**，
-`postMessage` 接口在本版 Chromium 也没暴露（都实测过）。但主进程的 `input-event` 能
-看到 `mouseWheel`，只是**没有坐标也没有增量**；而父页面**能**收到 iframe 的
+`postMessage` 接口在本版 Chromium 也没暴露（都实测过）。而父页面**能**收到 iframe 的
 `mouseenter`/`mouseleave`。于是主进程只转发"发生了一次滚轮"，渲染进程再配对
 `pointerOverPreview` 标志，**两者同时成立**才显示——否则在侧栏上滚滚轮也会弹出文档控件。
+**转发必须靠 `WM_MOUSEWHEEL` 钩子**：PDF 区的滚轮连主进程的 `input-event` 都到不了
+（详见上文 `onWheel()`）。
 
 **侧栏底部**：进度条与设置按钮**同一行**（进度条在左、设置只占一个方形图标位）。
 设置图标是**内联 SVG**（8 齿齿轮：一个粗描边圆得到齿盘与中心孔 + 8 个旋转小矩形当齿），

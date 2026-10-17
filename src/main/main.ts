@@ -162,6 +162,9 @@ function createWindow(): void {
   mainWindow.once("ready-to-show", reveal);
   mainWindow.webContents.once("did-finish-load", reveal);
   mainWindow.on("closed", () => {
+    // A message hook outlives the window object otherwise, and the callback
+    // would keep firing into a destroyed webContents.
+    mainWindow?.unhookAllWindowMessages();
     mainWindow = null;
   });
 
@@ -175,24 +178,49 @@ function createWindow(): void {
   }
 }
 
+/** `WM_MOUSEWHEEL`, from the Win32 window-message constants. */
+const WM_MOUSEWHEEL = 0x020a;
+
 /**
  * Tell the renderer that a wheel event happened anywhere in the window.
  *
  * Scrolling the preview cannot be noticed from the renderer: the PDF viewer is
  * a separate process, and neither its wheel events nor its scroll position reach
  * the page (its `postMessage` interface is not exposed in this build either).
- * The main process does see a `mouseWheel` input event, but the payload carries
- * no coordinates or delta, so it cannot say *where* the wheel happened.
+ * The renderer therefore combines a bare "a wheel happened" signal with its own
+ * knowledge of whether the pointer is over the preview — it does receive
+ * `mouseenter` / `mouseleave` for the iframe element — and reveals the overlay
+ * controls only when both hold.
  *
- * The renderer therefore combines this bare signal with its own knowledge of
- * whether the pointer is over the preview — it does receive `mouseenter` /
- * `mouseleave` for the iframe element — and reveals the overlay controls only
- * when both hold. Only the notification travels; the decision stays in one place.
+ * Two sources, because neither covers every case:
+ *
+ * - **`WM_MOUSEWHEEL` (Windows)** is the reliable one over the PDF. Chromium
+ *   hosts the viewer in a guest process, so a wheel over it never reaches the
+ *   top-level `webContents`, and `input-event` stays silent. The window
+ *   procedure does see the message regardless of which frame handles it —
+ *   `WM_MOUSEWHEEL` goes to the focused window and `DefWindowProc` forwards it
+ *   up the parent chain.
+ * - **`input-event`** covers the rest: other platforms, and wheels over the
+ *   ordinary DOM (sidebar, title bar) on Windows.
+ *
+ * Both firing for one gesture only restarts the renderer's 1.6 s hide timer,
+ * which is invisible. The message carries no position or delta either way, so
+ * the split between "where" and "what" still lives in the renderer.
+ *
+ * This was verified with a real OS wheel, not `sendInputEvent`: the synthetic
+ * API injects straight into the top-level `webContents` and therefore always
+ * produces `input-event`, which hid the fact that real wheels over the PDF did
+ * not.
  */
 function registerWheelForwarding(window: BrowserWindow): void {
   window.webContents.on("input-event", (_event, input) => {
     if (input.type === "mouseWheel") window.webContents.send("viewer:wheel");
   });
+  if (process.platform === "win32") {
+    window.hookWindowMessage(WM_MOUSEWHEEL, () => {
+      window.webContents.send("viewer:wheel");
+    });
+  }
 }
 
 /**

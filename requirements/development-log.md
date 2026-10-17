@@ -1458,3 +1458,60 @@ PowerShell 自己的 `Get-Clipboard` 都报"所请求的剪贴板操作失败"�
 
 **遗留**：箭头一次滚 80% 可视宽，没有"滚到最后一个"的跳转；标签顺序不持久化到磁盘
 （重开应用回到文件夹顺序）。两者都没要求，先记着。
+
+---
+
+## 2026-10-16（续）：滚 PDF 时浮层不出现——上一轮的验证是假阳性
+
+**现象**：用滚轮上下滚 PDF，页面确实在滚，但右下角翻页/缩放、右上角另存为、左上角适应
+这几个浮层按钮**不出现**。
+
+### 根因
+
+浮层的唤醒链路是「主进程转发『发生了滚轮』→ 渲染进程再与 `pointerOverPreview` 配对」。
+转发用的是 `webContents.on("input-event")` 抓 `mouseWheel`。**PDF 查看器跑在 Chromium
+的 guest 进程里，滚轮到不了顶层 `webContents`**，所以那个事件对 PDF 区域根本不存在。
+
+**上一轮为什么判成"通过"**：当时用 `webContents.sendInputEvent` 造滚轮。这个 API 直接
+注入**顶层** `webContents`，因此必然触发 `input-event`——它绕开了真实硬件滚轮的路由，
+把"PDF 区收不到"这件事完全掩盖了。开发记录里那句"主进程 `input-event` 通"只对普通
+DOM 区域成立，当时被当成了全局结论。
+
+### 修法
+
+`registerWheelForwarding()` 增加 **`hookWindowMessage(WM_MOUSEWHEEL)`**（仅 Windows）
+作为主信号：窗口过程一定看得到滚轮，`WM_MOUSEWHEEL` 发给焦点窗口、`DefWindowProc` 再向
+父窗口传播，与哪个 frame 处理它无关。原有 `input-event` 保留为兜底（非 Windows 平台，
+以及 Windows 上侧栏/标题栏等普通 DOM）。窗口 `closed` 时 `unhookAllWindowMessages()`。
+**渲染进程一行没改**——`pointerOverPreview` 那半本来是对的。
+
+### 验证（真实消息，不用合成输入）
+
+本机是 RDP 会话，`SetForegroundWindow` 被系统拒绝，且 `SendInput` 只产生 `mouseMove`。
+改用 `PostMessage(WM_MOUSEWHEEL)` 直接投递到窗口——这正是真实滚轮到达窗口过程的同一条
+路径。主进程侧通过 Node inspector 计数，**注意 `require` 在 inspector 上下文里不存在**，
+要用 `process.getBuiltinModule("module").createRequire(...)`。
+
+| 检查 | 结果 |
+|---|---|
+| 对照：侧栏上滚轮产生 `input-event` | ✅ `mouseWheel=5` |
+| 对照：侧栏上滚轮**不**显示浮层 | ✅ `shown=0`（指针配对仍生效） |
+| **根因**：PDF 区真实滚轮**没有** `input-event` | ✅ `mouseWheel=0` |
+| 修复：PDF 区滚轮被 `WM_MOUSEWHEEL` 钩子接住 | ✅ `sent=4` |
+| 渲染进程收到 `viewer:wheel` | ✅ `pings=4` |
+| 浮层出现 | ✅ `shown=4` |
+| 1.6s 后自行消失 | ✅ |
+
+**9/9 通过**；`typecheck`、`check:i18n`（159 keys）、`build`、`pytest`（196）全绿。
+
+### 测试过程中踩到的两个坑（记下来免得重犯）
+
+1. **`hookWindowMessage` 对同一消息 id 只保留一个回调**。测试里又挂了一个 `WM_MOUSEWHEEL`
+   计数，**静默顶掉了应用自己的钩子**，于是"修复没生效"。改为拦截
+   `webContents.send("viewer:wheel")` 计数。
+2. **渲染进程的钩子要在 `location.reload()` 之后装**，否则被重载清掉。
+
+### 已知限制
+
+`hookWindowMessage` **仅 Windows**。macOS/Linux 仍走 `input-event`，在 PDF 区域很可能同样
+收不到——本机无法验证，没有假装修好。若要覆盖，得各平台另找信号源。
