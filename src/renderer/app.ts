@@ -1908,21 +1908,25 @@ function renderModelList(): void {
     if (model.enabled === false) row.classList.add("is-disabled");
     if (alias === expandedModel) row.classList.add("is-expanded");
 
+    // The primary label is the API model id, which is what the user recognises
+    // and what the row is about. The alias used to be primary, which read as
+    // "provider + model" because the two usually differ only by a prefix.
+    const modelId = model.model ?? alias;
     const name = document.createElement("span");
     name.className = "model-row__name";
-    name.textContent = alias;
-    name.title = alias;
+    name.textContent = modelId;
+    name.title = modelId;
     row.append(name);
 
-    // The API id is only worth showing when it differs from the alias; when
-    // they match it would just repeat the row's own name.
-    const modelId = model.model ?? alias;
-    if (modelId && modelId !== alias) {
-      const id = document.createElement("span");
-      id.className = "model-row__id";
-      id.textContent = modelId;
-      id.title = modelId;
-      row.append(id);
+    // The alias is still shown when it differs, because it is the key in
+    // config.yaml and half of the options value — but as a badge, not as a
+    // second name. When they match it is the same string and is omitted.
+    if (modelId !== alias) {
+      const aliasBadge = document.createElement("span");
+      aliasBadge.className = "model-row__alias";
+      aliasBadge.textContent = alias;
+      aliasBadge.title = t("model.aliasHint", { alias });
+      row.append(aliasBadge);
     }
 
     if (typeof model.context_length === "number" && model.context_length > 0) {
@@ -2648,6 +2652,7 @@ function paintModelsOptions(filter: string): void {
     empty.className = "models-options__empty";
     empty.textContent = t("model.fetchNoMatch");
     box.append(empty);
+    paintModelsCount();
     return;
   }
 
@@ -2666,6 +2671,9 @@ function paintModelsOptions(filter: string): void {
       tick.disabled = true;
       row.classList.add("is-present");
     }
+    // Any change to one row can change the select-all box and the count, so
+    // both are recomputed from the DOM rather than tracked separately.
+    tick.addEventListener("change", () => paintModelsCount());
 
     const label = document.createElement("span");
     label.className = "models-option__id";
@@ -2681,7 +2689,43 @@ function paintModelsOptions(filter: string): void {
     }
     box.append(row);
   }
+  paintModelsCount();
 }
+
+/** The rows that are selectable at all — the already-added ones are locked. */
+function selectableTicks(): HTMLInputElement[] {
+  return [
+    ...document.querySelectorAll<HTMLInputElement>(
+      "#models-options .models-option input:not(:disabled)",
+    ),
+  ];
+}
+
+/**
+ * Refresh the select-all box and the "n / m" counter.
+ *
+ * Derived from the DOM on every change (filtering, ticking, select-all) so the
+ * three sources cannot disagree: the visible rows *are* the truth.
+ */
+function paintModelsCount(): void {
+  const ticks = selectableTicks();
+  const chosen = ticks.filter((tick) => tick.checked).length;
+  const all = $<HTMLInputElement>("models-selectall");
+  all.checked = ticks.length > 0 && chosen === ticks.length;
+  // Indeterminate covers "some of them": native checkboxes draw it for us.
+  all.indeterminate = chosen > 0 && chosen < ticks.length;
+  all.disabled = ticks.length === 0;
+  $("models-count").textContent = t("model.fetchCount", {
+    n: String(chosen),
+    m: String(ticks.length),
+  });
+}
+
+$("models-selectall").addEventListener("change", (event) => {
+  const on = (event.target as HTMLInputElement).checked;
+  for (const tick of selectableTicks()) tick.checked = on;
+  paintModelsCount();
+});
 
 async function openModelsDialog(button: HTMLButtonElement): Promise<void> {
   const provider = editingProvider;
@@ -2764,6 +2808,13 @@ $("models-dialog").addEventListener("close", () => {
   // `close` fires for the Escape key and the Cancel button alike; only the
   // Import button runs the import, so nothing else is needed here.
   upstreamModels = [];
+  // The tick state lives in the DOM, which is rebuilt on every open; clearing
+  // the select-all box keeps it from looking pre-selected for an empty list.
+  const all = $<HTMLInputElement>("models-selectall");
+  all.checked = false;
+  all.indeterminate = false;
+  all.disabled = true;
+  $("models-count").textContent = "";
 });
 
 $("btn-models-import").addEventListener("click", (event) => {

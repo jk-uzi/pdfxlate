@@ -21,7 +21,7 @@ Python 3.12，venv 在 `python/.venv`，包以 editable 方式安装，改源码
 | 调整发给模型的请求参数 | 对应适配器：`openai_compat.py` / `openai_responses.py` / `anthropic_messages.py`（`reasoning_effort` / `extra_body` / `stream` / `temperature`） |
 | 改重试策略 / 取消行为 | `pdf/converter.py` 的 `translate_segment()`（有界重试）+ `models/base.py` 的 `PERMANENT_TRANSLATION_ERRORS` |
 | 改「测试连接」 | `sidecar.py` 的 `method_providers_test` + `app.ts` 的 `testProvider()` |
-| 改「从上游拉取模型」 | `models/catalog.py` + `sidecar.py` 的 `method_providers_models` + `app.ts` 的 `openModelsDialog()` |
+| 改「从上游拉取模型」 | `models/catalog.py` + `sidecar.py` 的 `method_providers_models` + `app.ts` 的 `openModelsDialog()` / `paintModelsOptions()` / `paintModelsCount()` |
 | 改供应商改名 | `app.ts` 的 `renameProvider()` / `startRenamingProvider()` / `stopRenamingProvider()` |
 | 改翻译提示词 | `models/base.py` 的 `DEFAULT_PROMPT`，或配置里的 `translation.prompt` 指向模板文件 |
 | 改配置项 / 加新配置字段 | `config.py`（`Provider`、`ModelEntry`、`TranslationSettings` 等 pydantic 模型） |
@@ -335,8 +335,13 @@ vLLM / Ollama / OpenRouter 等。一等支持 `reasoning_effort`、`extra_body`
 留空时「最大输出」的 placeholder 只是 1/4 窗口的建议值，不会被写进配置。
 
 界面上：模型列表标题行的「从上游拉取」打开原生 `<dialog>`，带搜索框（OpenRouter 这类有几百
-个 id）；**已配置的项勾选且禁用**并标「已添加」，避免导入时覆盖用户调好的参数。导入的别名
-取 id 本身，之后可在行编辑里把别名与 API id 分开。
+个 id）与**全选**（只作用于当前筛选结果中尚未添加的项，已添加的是 `disabled`，所以不会覆盖
+已有配置）；**已配置的项勾选且禁用**并标「已添加」。计数与全选框状态由 `paintModelsCount()`
+每次从 DOM 重算，避免筛选/勾选/全选三处各维护一份状态。导入的别名取 id 本身，之后可在行
+编辑里把别名与 API id 分开。
+
+模型行以**模型 ID**为主标签；别名仅在两者不同时以灰色小徽章出现。别名不能省：它是
+`config.yaml` 的键，也是选项面板 `value` 的一半，藏起来会让配置文件和界面对不上。
 
 ### 失败语义：什么会重试，什么不会
 

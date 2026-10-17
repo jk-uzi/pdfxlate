@@ -683,14 +683,48 @@ body {
   border-radius: 6px;
 }
 
-.models-option {
+/*
+ * `flex-direction: row` is not decoration: the generic `label` rule further
+ * down sets `column`, and it has the same specificity and comes later, so
+ * without this the checkbox lands above the name. The selector is one class
+ * deeper than plain `label` so rule order cannot silently flip it again.
+ */
+.models-options .models-option {
   display: flex;
+  flex-direction: row;
   align-items: center;
   gap: 8px;
   padding: 7px 10px;
   border-top: 1px solid var(--border);
   font-size: 12.5px;
+  font-weight: 400;
   cursor: pointer;
+}
+
+/* The select-all row sits directly above the list, outside its border. */
+.models-selectall {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 2px 0;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.models-selectall input,
+.models-options .models-option input {
+  flex: 0 0 auto;
+  width: auto;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.models-selectall__count {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
 }
 
 .models-option:first-child {
@@ -699,13 +733,6 @@ body {
 
 .models-option:hover {
   background: #f7f8fa;
-}
-
-.models-option input {
-  flex: 0 0 auto;
-  width: auto;
-  margin: 0;
-  accent-color: var(--accent);
 }
 
 .models-option__id {
@@ -728,13 +755,16 @@ body {
   opacity: 0.75;
 }
 
-.models-option__tag {
+/* The alias badge: same weight as the other badges, not a second name. */
+.models-option__tag,
+.model-row__alias {
   flex: 0 0 auto;
   padding: 1px 6px;
   border-radius: 10px;
   background: #eaeef2;
   color: var(--muted);
   font-size: 10.5px;
+  font-weight: 400;
 }
 
 .models-options__empty {
@@ -805,17 +835,6 @@ body {
   white-space: nowrap;
   font-size: 13px;
   font-weight: 600;
-}
-
-/* Shown only when the API id differs from the alias. */
-.model-row__id {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 11.5px;
-  color: var(--muted);
 }
 
 .model-row__badge {
