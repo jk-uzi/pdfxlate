@@ -1515,3 +1515,70 @@ DOM 区域成立，当时被当成了全局结论。
 
 `hookWindowMessage` **仅 Windows**。macOS/Linux 仍走 `input-event`，在 PDF 区域很可能同样
 收不到——本机无法验证，没有假装修好。若要覆盖，得各平台另找信号源。
+
+---
+
+## 2026-10-17：滚轮修复的第三次尝试——前两次都是假阳性
+
+**用户反馈**：修完仍然不显示；进一步说"好像只有第一次才会显示，后面的都不显示了"。
+
+### 根因（这次拿到了直接证据）
+
+**PDF 查看器不是普通 iframe**：它是 Chromium 内置 PDF 扩展，跑在**独立的 `remote`
+WebContents** 里，有自己的窗口。OS 把滚轮路由给**它**，主窗口一次都收不到。
+
+实测（把滚轮投递到光标下的窗口，连续三轮）：
+
+| 轮次 | 查看器收到 `mouseWheel` | 主窗口收到 `mouseWheel` |
+|---|---|---|
+| 1 | 2 | 0 |
+| 2 | 累计 4 | 0 |
+| 3 | 累计 6 | 0 |
+
+于是 `WM_MOUSEWHEEL` 钩子只在**焦点还在主窗口**时有效——即打开文档后的第一次滚动。
+之后焦点进入查看器自己的窗口，钩子永远沉默。这精确解释了"只有第一次"。
+
+### 修法
+
+`attachViewerWheelForwarding()`：在 `app.on("web-contents-created")` 里按
+`getType() === "remote"` 认领查看器，监听它自己的 `input-event` 并转发
+`viewer:wheel`。在 `createWindow()` **之前**注册一次（guest 是懒创建的，错过
+`web-contents-created` 就永远挂不上）。
+
+**不用 `hostWebContents` 过滤**：该属性文档写的是 "might own"，对这些 guest 可能为空，
+为空就会**静默转发失败**。本应用单窗口单查看器，`getType()` 足够。
+
+`WM_MOUSEWHEEL` 与窗口 `input-event` 保留为次要来源（普通 DOM），注释已改写。
+渲染进程**一行没改**——`pointerOverPreview` 本来是对的。
+
+### 两次假阳性的教训（比修复本身更重要）
+
+1. **`sendInputEvent` 打给顶层 `webContents`**：绕开真实路由，必然产生 `input-event`，
+   把"PDF 区收不到"完全掩盖。
+2. **`PostMessage(WM_MOUSEWHEEL)` 打给顶层窗口**：同样绕开"OS 投给光标下窗口"这一事实，
+   而且**只测一次**，所以"第一次有效、之后失效"看不出来。
+
+**正确测法**：驱动查看器**自己的** WebContents，并**连续多轮**、每轮间隔超过自动隐藏
+时间。这次就是这么测的。
+
+### 验证
+
+| 检查 | 结果 |
+|---|---|
+| 查看器确实是独立 `remote` WebContents | ✅ |
+| 第 1 轮：转发 + 浮层出现 | ✅ `sent=2 shown=2` |
+| 第 2 轮（间隔 1.9s） | ✅ `sent=2 shown=2` |
+| 第 3 轮 | ✅ `sent=2 shown=2` |
+| 三轮完全一致（无"只有第一次"） | ✅ |
+| 每轮之间浮层已自动隐藏 | ✅ |
+| 指针不在预览区时滚动**不**显示 | ✅ `sent=2 shown=0`（配对仍生效） |
+
+**12/12 通过**；`typecheck`、`check:i18n`（159 keys）、`build`、`pytest`（196）全绿。
+
+### 没能验证的一步（如实记）
+
+**真实硬件滚轮 → 查看器 `input-event`** 这一跳无法在本机证明：本机是 RDP 会话，
+`SendInput` 返回成功但**不产生任何输入**（`mouseData` 已修正为正确的
+`0xFFFFFF88`，仍无效），OS 输入管线被过滤。验证走的是
+`guest.sendInputEvent`——它注入的**正是真实滚轮到达的那个 WebContents**，比前两次
+都接近真实路径，但仍不等于硬件。要彻底确认，需要在有物理鼠标的机器上滚一次。

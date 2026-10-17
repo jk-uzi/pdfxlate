@@ -455,22 +455,31 @@ overlay 的位置由 OS 按这个值摆放，不一致时系统三键会在栏�
 父页面**能**收到 iframe 元素的 `mouseenter`/`mouseleave`，两者配对——**指针在预览区
 上方时为真**才显示控件。
 
-信号源有**两个**，缺一不可：
+信号源有**三个**，PDF 区靠的是最容易漏掉的那个：
 
-- **`WM_MOUSEWHEEL`（仅 Windows，`hookWindowMessage`）** 是 PDF 区域唯一可靠的那个。
-  查看器跑在 Chromium 的 guest 进程里，滚轮**到不了顶层 `webContents`**，
-  `input-event` 全程静默（实测：PDF 区上 `inputEvent.mouseWheel = 0`）。窗口过程却
-  一定看得到——`WM_MOUSEWHEEL` 发给焦点窗口，`DefWindowProc` 再向父窗口传播。
-- **`input-event`** 覆盖其余情况：其他平台，以及 Windows 上侧栏/标题栏等普通 DOM。
+- **查看器自己的 `webContents`（主信号，全平台）**。PDF 查看器**不是普通 iframe**：
+  它是 Chromium 内置 PDF 扩展，跑在**独立的 `remote` WebContents** 里，有自己的窗口。
+  OS 把滚轮路由给它，所以顶层窗口**一次都收不到**（实测连续三轮：查看器收到 2/2/2，
+  顶层收到 0/0/0）。`attachViewerWheelForwarding()` 在 `web-contents-created` 里按
+  `getType() === "remote"` 认领它并监听 `input-event`——**每次滚动都会触发**。
+- **窗口的 `input-event`**：侧栏、标题栏、空预览区这些普通 DOM。
+- **`WM_MOUSEWHEEL`（仅 Windows）**：同样的普通 DOM 的补充。它只在**顶层窗口还持有
+  焦点**时收得到——这正是当初误判的原因：打开文档后的**第一次**滚动有效，之后焦点进入
+  查看器自己的窗口，就再也收不到了。
 
-两个同时触发只会把 1.6s 计时器重置一次，无可见影响。**注意 `hookWindowMessage`
+多个源同时触发只会把 1.6s 计时器重置一次，无可见影响。**注意 `hookWindowMessage`
 对同一个消息 id 只保留一个回调**——再挂一个会**静默顶掉**前一个，测试里因此改为
 拦截 `webContents.send("viewer:wheel")` 来计数。
 
-**这条链路曾经"验证通过"却实际不工作**：当时用 `webContents.sendInputEvent` 造滚轮，
-它直接注入顶层 `webContents`，必然触发 `input-event`，正好绕开了真实硬件滚轮的路由。
-**合成输入测不了这条路径**，必须用真实滚轮（或直接 `PostMessage(WM_MOUSEWHEEL)`）。
-`postMessage` 那条路已实测无响应，别再试。
+**这条链路假阳性过两次**，教训都写在这里：
+
+1. 用 `webContents.sendInputEvent` 打给**顶层** `webContents`，它绕开真实路由、必然
+   产生 `input-event`，把"PDF 区收不到"完全掩盖。
+2. 用 `PostMessage(WM_MOUSEWHEEL)` 打给**顶层窗口**，同样绕开了"OS 会把消息投给光标下
+   的窗口"这一点；而且**只测一次**，于是"第一次有效、之后失效"的回归看不出来。
+
+**正确测法**：驱动**查看器自己的 `webContents`**（或真实滚轮），并且**连续测多轮**、
+每轮间隔超过自动隐藏时间。`postMessage` 那条路已实测无响应，别再试。
 
 **`saveAs()` 存的就是当前标签那一份**。以前要在"原文/译文/对比"之间选，现在一个标签
 只装一份文档，没有歧义可言。对话框在渲染进程之外，拷贝用 `copyFile` 在主进程完成
@@ -641,8 +650,8 @@ path**，正好把真实失败掩盖掉。现在用 CDP 的真实 drag 事件（
 `postMessage` 接口在本版 Chromium 也没暴露（都实测过）。而父页面**能**收到 iframe 的
 `mouseenter`/`mouseleave`。于是主进程只转发"发生了一次滚轮"，渲染进程再配对
 `pointerOverPreview` 标志，**两者同时成立**才显示——否则在侧栏上滚滚轮也会弹出文档控件。
-**转发必须靠 `WM_MOUSEWHEEL` 钩子**：PDF 区的滚轮连主进程的 `input-event` 都到不了
-（详见上文 `onWheel()`）。
+**转发的主信号是查看器自己的 `remote` WebContents**（详见上文 `onWheel()`）；
+`WM_MOUSEWHEEL` 只在顶层窗口仍有焦点时有效，属于次要来源。
 
 **侧栏底部**：进度条与设置按钮**同一行**（进度条在左、设置只占一个方形图标位）。
 设置图标是**内联 SVG**（8 齿齿轮：一个粗描边圆得到齿盘与中心孔 + 8 个旋转小矩形当齿），
