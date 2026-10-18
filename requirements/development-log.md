@@ -2776,9 +2776,81 @@ asar 内的渲染进程与主进程文件与当前 `out/` 逐字节相同，已�
   协议，尚未证明可安全使用）。
 - ZCode 当前模型来自最近 session，切换后最多 8 秒缓存延迟；若刚切换但未在 ZCode
   发消息，DB 可能还没记录。
-- WorkBuddy 桌面版仍未接入：面板只支持独立 `codebuddy` / `cbc` CLI；Phase 3
-  （桌面 auth 解密 + `/v3/config` / `/v2/enterprises/personal/models` 目录 +
-  `/v2/chat/completions` SSE 翻译）未开始。
+- WorkBuddy 桌面版在该阶段仍未接入；随后已在「2026-10-19 WorkBuddy 桌面版作为
+  翻译后端」条目完成（见上）。
 - DSH 真实 headless 调用未跑（配额原因）；patch 组合已用 `--dump-config` 和 fake
   CLI 验证；`W1_API_KEY` 从 `.credentials.yaml` `refs` 注入的路径已用 fake 验证，
   真实调用待用户点「测试」。
+
+## 2026-10-19 WorkBuddy 桌面版作为翻译后端
+
+**目标**：本机只装了 WorkBuddy 桌面版（没有独立 `codebuddy`/`cbc` CLI），
+Agents 卡片原来只提示安装 CLI；需要让桌面版自己的登录态、`/v3/config` 模型目录和
+`/v2/chat/completions` 额度成为可用后端。
+
+**只读 spike（成功）**
+
+- 用 `ELECTRON_RUN_AS_NODE=1 D:\WorkBuddy\WorkBuddy.exe -e "..._linkedBinding(
+  'electron_browser_workbuddy_storage').loggerGet()"` 取到 773 字节 key payload；
+  `atRestSecretKey` 的 SHA-256 派生 32 字节 key，keyId 为 key SHA-256 前 16 hex。
+- 解 `%LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth\workbuddy-desktop.info`：
+  access/refresh token 是 `$wbEncrypted` 的 AES-256-GCM 字段（12B nonce、16B tag、
+  带 WBEV1/sym-v1/field AAD）；本机 domain `www.workbuddy.cn`（CN）。
+- `GET https://copilot.tencent.com/v3/config` HTTP 200 / `code: 0`：33 个原始模型，
+  `agents[name=cli].models` 选出 **18 个 CLI 可用模型**，带 `credits` 倍率。
+
+**实现**
+
+- 新模块 `python/pdfxlate/agents/workbuddy_desktop.py`（1485 行）：
+  - App 探测：`WORKBUDDY_APP_EXECUTABLE` → 标准 Windows 布局（`Programs\WorkBuddy`
+    等）→ Windows 卸载注册表 → macOS bundle；本机找到 `D:\WorkBuddy\WorkBuddy.exe`。
+  - Auth：`WORKBUDDY_AUTH_FILE` 或 `%LOCALAPPDATA%` 的 live + 时间戳备份，按新到旧；
+    只读；AES-GCM/AAD 与 spike 一致；access/refresh/domain/identity 解出后只放内存；
+    token 过期用 `/v2/plugin/auth/token/refresh` 刷新，**绝不写回 auth 文件**。
+  - 目录：CN `/v3/config` → `/v2/enterprises/personal/models` 回退；global
+    `www.workbuddy.ai`/`www.codebuddy.ai` 的 `/v3/config`；`agents[name="cli"]` 交集；
+    label 为 `Name · x0.29 credits`。
+  - 聊天：`POST /v2/chat/completions`，Bearer + X-User-Id/Enterprise-Id/Domain +
+    X-Product SaaS + 每次三个 conversation UUID；`system` 首条（网关要求）；
+    `stream: true`，解析 SSE `data:` content；兼容 JSON-200 错误/普通 completion；
+    401/403 刷新一次并重试；错误分类为 auth/output/transport/rate_limit。
+  - 批量：`translate_batch()` 复用 CLI 的 prompt/parse 契约（严格重试→拆单段；
+    自定义 prompt 逐段），批队列和缓存 key 不变。
+- `models/agent_cli.py`：WorkBuddy 无可用独立 CLI 时切 desktop 后端；CLI 存在时
+  原路径不变；desktop 错误映射到 `AgentAuthError`/`AgentOutputError`/
+  `AgentProcessError`。
+- `catalog.py` / `agents/__init__.py`：WorkBuddy 桌面目录回退，`source: "desktop"`；
+  `agents.list` 多回可选 `desktop: {available, auth, app_path?, error?}`（无 token）。
+- 前端：WorkBuddy 卡片显示「桌面版 · 已登录/未登录」、18 个模型与 credits，隐藏
+  「安装 CLI」和 CLI 路径编辑器；登录失效给登录提示；Test 走桌面 HTTP；CLI 模式
+  保持旧显示。i18n 271 keys。
+- `python/pyproject.toml`：把 `cryptography` 加入 core 依赖（AES-GCM 解密需要；原先
+  只在 mcp/dev extra 里）。
+- 测试：`tests/test_workbuddy_desktop.py`（40 个）用合成 AES-GCM auth、fake catalog、
+  fake `requests`/SSE、adapter/sidecar 形状；不读真实 token、不调真实模型。
+
+**验证**
+
+- `pytest tests/ -q` → **542 passed**；`npm run typecheck`、
+  `npm run check:i18n`（271 keys）、`npm run build` 通过。
+- 真实只读探测（不调 chat、不打印 token）：
+  `catalog.list_models("workbuddy", refresh=True)` → `source: "desktop"`,
+  `desktop: {available: true, auth: "ok", app_path: "D:\\WorkBuddy\\WorkBuddy.exe"}`，
+  **18 个模型**，全部 label 带 credits。
+- CDP 界面：WorkBuddy 卡片「已安装 / 桌面版 · 已登录」、18 个模型、每行 Test 可用、
+  无「安装 CLI」链接、无 CLI 路径编辑器；截图
+  `%TEMP%\pdfxlate-agent-e2e\workbuddy-agents-panel.png`。
+- 没有发起真实 `/v2/chat/completions` 调用（额度）；用与参考项目一致的 fake HTTP
+  测试覆盖 headers/body/SSE；用户可在面板点 Test（Hy3 为 x0.00 credits）。
+
+**限制 / 待办**
+
+- 真实聊天未冒烟；若网关新增 header/body 约束，fake 测试可能滞后。
+- 桌面 token 只在 sidecar 进程内存；sidecar 重启后会重新读 auth 文件。
+- 独立 `codebuddy`/`cbc` 存在时优先 CLI，桌面版不会自动覆盖；要强制桌面版可让
+  独立 CLI 不可用。
+- `agents.list` 的 8 秒预算与 key probe 的 15 秒超时在极慢机器上可能截断；本机实测
+  远小于 1 秒。
+- 桌面模式下不显示 `agents.paths.workbuddy` 编辑器（它指 CLI，不指 app）；
+  app 路径用 `WORKBUDDY_APP_EXECUTABLE` 覆盖。
+- 打包版需要下次 `bash scripts/build.sh` 验证 `cryptography` 已被 PyInstaller 收集。
