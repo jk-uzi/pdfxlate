@@ -418,6 +418,28 @@ function registerIpc(): void {
   ipcMain.handle("shell:openPath", async (_event, target: string) => {
     await shell.openPath(target);
   });
+
+  /**
+   * Open a documentation or install page in the user's browser.
+   *
+   * The renderer is sandboxed and its CSP forbids navigation, so links to an
+   * agent's own site have to go through this process. Only `https:` is
+   * accepted: this handler takes a URL from page code, and handing the OS a
+   * `file:` or custom-scheme URL would turn a help link into a way to launch
+   * something arbitrary.
+   */
+  ipcMain.handle("shell:openExternal", async (_event, target: string) => {
+    let url: URL;
+    try {
+      url = new URL(target);
+    } catch {
+      throw new Error(`not a URL: ${target}`);
+    }
+    if (url.protocol !== "https:") {
+      throw new Error(`refusing to open a non-https URL: ${target}`);
+    }
+    await shell.openExternal(url.href);
+  });
 }
 
 // One instance per user. Two copies would share the same config, cache and

@@ -257,6 +257,7 @@
           <button id="btn-close-settings" class="btn btn--quiet" data-i18n="settings.back"></button>
           <nav class="settings-menu">
             <button class="settings-menu__item is-active" data-section="model" data-i18n="settings.sectionModel"></button>
+            <button class="settings-menu__item" data-section="agents" data-i18n="settings.sectionAgents"></button>
             <button class="settings-menu__item" data-section="appearance" data-i18n="settings.sectionAppearance"></button>
             <button class="settings-menu__item" data-section="general" data-i18n="settings.sectionGeneral"></button>
             <button class="settings-menu__item" data-section="mcp" data-i18n="settings.sectionMcp"></button>
@@ -427,7 +428,7 @@
           <!--
             Model settings are the one section that is itself a two-column
             layout: providers on the left, the selected provider's endpoint and
-            models on the right. The other three sections stay single-column
+            models on the right. The other four sections stay single-column
             and centred (`.settings-panel`), which is why the split lives here
             rather than on the host.
           -->
@@ -678,6 +679,24 @@
                 </div>
               </form>
             </dialog>
+          </section>
+
+          <!--
+            Agents: external agent CLIs used as translation backends. One
+            centred column of cards, like the panels below — each card is one
+            agent, so a third column would have nothing to put in it.
+          -->
+          <section class="settings-panel hidden" data-panel="agents">
+            <h2 class="settings-panel__title" data-i18n="settings.sectionAgents"></h2>
+            <p class="hint" data-i18n="agents.intro"></p>
+            <p class="hint" data-i18n="agents.termsHint"></p>
+            <div class="row">
+              <button id="btn-rescan-agents" class="btn btn--small" data-i18n="agents.rescan"></button>
+              <span id="agents-msg" class="msg"></span>
+            </div>
+            <!-- One card per agent, built by app.ts: what a card contains
+                 depends on whether the CLI was found and what it reports. -->
+            <div id="agent-cards" class="agent-cards"></div>
           </section>
 
           <section class="settings-panel hidden" data-panel="appearance">
