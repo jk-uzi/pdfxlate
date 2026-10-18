@@ -3686,7 +3686,10 @@ function agentModelRow(
   const tick = document.createElement("input");
   tick.type = "checkbox";
   tick.checked = row.configured;
-  tick.disabled = conflict || !row.selectable;
+  // A stale selection (configured, but no longer selectable) must still be
+  // clearable: after switching models inside ZCode, the old row would otherwise
+  // stay checked forever and keep feeding a model the CLI no longer runs.
+  tick.disabled = conflict || (!row.selectable && !row.configured);
   tick.setAttribute("aria-label", row.label);
   tick.addEventListener("change", () => void setAgentModel(agent, row.id, tick.checked));
   const label = document.createElement("span");
