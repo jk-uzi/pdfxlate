@@ -13,17 +13,19 @@ Event    (stdout): ``{"event": "progress", "job_id": "...", "stage": "...",
                      "current": 3, "total": 10, "message": "..."}``
 
 Methods: ``ping``, ``config.get``, ``config.save``, ``providers.list``,
-``providers.test``, ``providers.models``, ``assets.status``,
-``assets.download``, ``pdf.info``, ``pdf.spread``, ``translate.start``,
-``translate.cancel``, ``mcp.snippet``, ``mcp.installConfig``.
+``providers.test``, ``providers.models``, ``agents.list``, ``agents.models``,
+``agents.test``, ``assets.status``, ``assets.download``, ``pdf.info``,
+``pdf.spread``, ``translate.start``, ``translate.cancel``, ``mcp.snippet``,
+``mcp.installConfig``.
 ``providers.list`` reports the provider → models tree (each provider's ``kind``,
-``base_url``, ``has_api_key`` and per-model sampling settings, including
-``enabled``); it deliberately never returns an ``api_key``.  ``providers.test``
-sends one tiny translation to a provider using values supplied by the caller
-(the unsaved draft in the settings panel) and reports the latency or the error,
-so a wrong API format is discovered before a long job starts; it never reads or
-writes the cache.  There is no stored default model — which one a job uses is
-passed to ``translate.start``.  ``pdf.info`` is a read-only metadata
+``agent``, ``base_url``, ``has_api_key`` and per-model sampling settings,
+including ``enabled``); it deliberately never returns an ``api_key``.
+``providers.test`` sends one tiny translation to a provider using values supplied
+by the caller (the unsaved draft in the settings panel) and reports the latency
+or the error, so a wrong API format is discovered before a long job starts; it
+never reads or writes the cache.  Agent CLI providers are rejected there and
+tested through ``agents.test`` instead, which spawns the CLI once.  There is no
+stored default model — which one a job uses is passed to ``translate.start``.  ``pdf.info`` is a read-only metadata
 probe (page count) used by the preview toolbar; it never renders or modifies the
 document.  ``pdf.spread`` writes a *derived* copy with two pages side by side
 and returns its path, so the viewer can show facing pages in one scrollbar;
@@ -75,8 +77,10 @@ _EMIT_LOCK = threading.Lock()
 #:
 #: The loop is what receives ``translate.cancel``; running a whole translation
 #: inline meant the cancel request sat in the pipe until the job finished, so
-#: cancelling appeared to do nothing at all.
-_BACKGROUND_METHODS = frozenset({"translate.start"})
+#: cancelling appeared to do nothing at all.  ``agents.test`` runs a real model
+#: call through a CLI and may take most of a minute, so it must not freeze the
+#: settings panel's other requests either.
+_BACKGROUND_METHODS = frozenset({"translate.start", "agents.test"})
 
 
 def _emit(payload: dict[str, Any]) -> None:
@@ -137,6 +141,9 @@ def method_providers_list(_params: dict) -> dict:
         "providers": {
             name: {
                 "kind": p.kind,
+                # Which external agent CLI backs an ``agent_cli`` provider.
+                # ``None`` for the HTTP kinds.
+                "agent": p.agent,
                 "base_url": p.base_url,
                 # Never send the key back to the renderer; report only whether
                 # one is present.
@@ -215,6 +222,13 @@ def method_providers_test(params: dict) -> dict:
         raise ValueError(
             f"unknown kind {kind!r}; the engine has: {', '.join(registered())}"
         )
+    if kind == "agent_cli":
+        # An agent provider has no base_url and no key; its probe is a different
+        # operation (spawn the CLI) and belongs to the Agents panel.
+        raise ValueError(
+            "agent providers are tested in Settings › Agents, not here; "
+            "use agents.test"
+        )
     if not base_url:
         raise ValueError("base_url is required")
     if not model:
@@ -260,22 +274,36 @@ def method_providers_test(params: dict) -> dict:
     return {"ok": True, **result}
 
 
-def _run_bounded(work, name: str) -> None:
-    """Run ``work`` on a daemon thread and give up after ``_PROBE_TIMEOUT_SECONDS``.
+def _run_bounded(
+    work,
+    name: str,
+    timeout: float | None = None,
+    hint: str | None = None,
+) -> None:
+    """Run ``work`` on a daemon thread and give up after ``timeout`` seconds.
 
     The sidecar handles requests on one thread, so a call that blocks on a dead
     endpoint also blocks every other call. The worker cannot be killed — an
     in-flight HTTP request is not interruptible — so this only bounds how long
     the caller waits; the thread is a daemon and dies with the process.
+
+    ``timeout`` defaults to :data:`_PROBE_TIMEOUT_SECONDS`; ``hint`` is appended
+    to the timeout message so a caller can say what to check.
     """
+    limit = _PROBE_TIMEOUT_SECONDS if timeout is None else timeout
     thread = threading.Thread(target=work, name=name, daemon=True)
     thread.start()
-    thread.join(_PROBE_TIMEOUT_SECONDS)
+    thread.join(limit)
     if thread.is_alive():
-        raise TimeoutError(
-            f"no answer within {_PROBE_TIMEOUT_SECONDS}s; check the base URL, "
-            "the network, and that the endpoint speaks this API format"
-        )
+        message = f"no answer within {limit:g}s"
+        if hint:
+            message += f"; {hint}"
+        else:
+            message += (
+                "; check the base URL, the network, and that the endpoint "
+                "speaks this API format"
+            )
+        raise TimeoutError(message)
 
 
 def method_providers_models(params: dict) -> dict:
@@ -307,6 +335,125 @@ def method_providers_models(params: dict) -> dict:
         raise ValueError(result["error"])
     return {"models": result.get("models", [])}
 
+
+# --- external agent CLIs ---------------------------------------------------
+
+
+def _require_agent(params: dict):
+    """Return the ``AgentDef`` named by ``params['agent']``."""
+    from pdfxlate.agents.defs import get_agent_def
+
+    agent = str(params.get("agent") or "").strip()
+    if not agent:
+        raise ValueError("agent is required")
+    return get_agent_def(agent)
+
+
+def method_agents_list(params: dict) -> dict:
+    """Detect every supported agent and attach its model list.
+
+    The heavy work is in :func:`pdfxlate.agents.list_agents`, which bounds the
+    whole call and degrades gracefully when a CLI hangs.
+    """
+    from pdfxlate.agents import list_agents
+
+    return {"agents": list_agents(refresh=bool(params.get("refresh")))}
+
+
+def method_agents_models(params: dict) -> dict:
+    """Refresh one agent's model list (bounded, never a fatal error)."""
+    from pdfxlate.agents import catalog
+
+    defn = _require_agent(params)
+    result: dict[str, Any] = {}
+
+    def fetch() -> None:
+        try:
+            result.update(
+                catalog.list_models(defn.id, refresh=bool(params.get("refresh")))
+            )
+        except BaseException as exc:  # noqa: BLE001 - reported to the UI as-is
+            result.update(catalog.fallback_models(defn.id, str(exc)))
+
+    try:
+        _run_bounded(
+            fetch,
+            "agent-models",
+            timeout=15,
+            hint="the agent CLI's model-list command did not answer",
+        )
+    except TimeoutError as exc:
+        return catalog.fallback_models(defn.id, str(exc))
+    if not result:
+        return catalog.fallback_models(
+            defn.id, "the agent CLI returned no model list"
+        )
+    return result
+
+
+def method_agents_test(params: dict) -> dict:
+    """Send one short translation through an agent CLI.
+
+    Runs on a background thread (it is a real model call), with a 90 s bound.
+    Goes through ``do_translate`` so the cache is never read or written; the
+    adapter's queue is always closed afterwards.
+    """
+    from pdfxlate.models.base import build_adapter
+
+    defn = _require_agent(params)
+    model = str(params.get("model") or "default").strip() or "default"
+    cfg = config_mod.load()
+    profile = config_mod.ResolvedModel(
+        kind="agent_cli",
+        agent=defn.id,
+        provider=defn.id,
+        alias=model,
+        model=model,
+    )
+    # The 90 s bound below gives up waiting, but the child process must be
+    # stopped too; the adapter polls this event and kills the process tree.
+    stop = threading.Event()
+    from pdfxlate.agents.detect import use_configured_paths
+
+    with use_configured_paths(cfg.agents.paths if cfg.agents is not None else {}):
+        adapter = build_adapter(
+            "agent_cli",
+            profile,
+            cfg.translation.lang_in,
+            cfg.translation.lang_out,
+            cache_enabled=False,
+            cancellation_event=stop,
+        )
+
+    result: dict[str, Any] = {}
+
+    def probe() -> None:
+        started = time.monotonic()
+        try:
+            text = adapter.do_translate(_PROBE_TEXT)
+        except BaseException as exc:  # noqa: BLE001 - reported to the UI as-is
+            result["error"] = f"{type(exc).__name__}: {exc}"
+            return
+        result["latency_ms"] = int((time.monotonic() - started) * 1000)
+        result["sample"] = text[:120]
+
+    try:
+        _run_bounded(
+            probe,
+            "agent-probe",
+            timeout=90,
+            hint=(
+                "the agent CLI may still be starting; check that it runs and is "
+                "logged in from a terminal"
+            ),
+        )
+    finally:
+        stop.set()
+        adapter.close()
+
+    if "error" in result:
+        raise ValueError(result["error"])
+    return {"ok": True, **result}
 
 
 def method_assets_status(_params: dict) -> dict:
@@ -569,6 +716,10 @@ METHODS = {
     # What the endpoint itself says it offers, so the settings panel can show a
     # checklist instead of asking for model ids from memory.
     "providers.models": method_providers_models,
+    # External agent CLIs (Claude Code, Codex, WorkBuddy, ZCode, DSH).
+    "agents.list": method_agents_list,
+    "agents.models": method_agents_models,
+    "agents.test": method_agents_test,
     "assets.status": method_assets_status,
     "assets.download": method_assets_download,
     "pdf.info": method_pdf_info,
