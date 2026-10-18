@@ -36,6 +36,8 @@ interface ProviderSummary {
   base_url: string | null;
   has_api_key: boolean;
   enabled: boolean;
+  /** Which agent CLI backs this provider; null for HTTP providers. */
+  agent: string | null;
   models: Record<string, ProviderModelSummary>;
 }
 
@@ -64,6 +66,8 @@ interface ModelDraft {
 /** The editor's working copy of one provider (endpoint + its models). */
 interface ProviderDraft {
   kind?: string;
+  /** Set on `kind: "agent_cli"` providers; names the CLI to run. */
+  agent?: string | null;
   base_url?: string | null;
   api_key?: string | null;
   enabled?: boolean;
@@ -72,6 +76,35 @@ interface ProviderDraft {
 
 /** The full config document, as returned by `config.get`. */
 type ConfigDoc = Record<string, unknown>;
+
+/** One model an agent CLI says it can run, as reported by `agents.list`. */
+interface AgentModelOption {
+  id: string;
+  label: string;
+}
+
+/**
+ * One external agent CLI, as reported by `agents.list`.
+ *
+ * `auth` is deliberately coarse — `ok` / `missing` / `unknown` — because the
+ * engine never passes on the CLI's raw output: `codex login status` prints a
+ * masked key, and that must not reach the renderer or the log.
+ */
+interface AgentStatus {
+  id: string;
+  name: string;
+  installed: boolean;
+  path: string | null;
+  version: string | null;
+  auth: "ok" | "missing" | "unknown" | null;
+  reason: string | null;
+  models: AgentModelOption[];
+  models_source: "cli" | "fallback" | null;
+  models_error: string | null;
+  install_url: string | null;
+  docs_url: string | null;
+  supported: boolean;
+}
 
 // Named JobProgress rather than ProgressEvent: the latter is a DOM built-in
 // and declaring it here would collide with lib.dom.
@@ -142,6 +175,8 @@ interface PdfxlateApi {
   pickPdf(locale?: string): Promise<string[]>;
   reveal(target: string): Promise<void>;
   openPath(target: string): Promise<void>;
+  /** Open an `https:` link in the browser; the renderer cannot navigate. */
+  openExternal(target: string): Promise<void>;
   /** Absolute path -> `file://` URL. Synchronous: it is a pure conversion. */
   fileUrl(target: string): string;
   /** Absolute path of a dropped `File`; see the preload for why. */
@@ -310,13 +345,39 @@ const ZOOM_STEPS = [50, 75, 100, 125, 150, 200, 300];
  * hidden while configuring.
  */
 type AppMode = "task" | "settings";
-type SettingsSection = "model" | "appearance" | "general" | "mcp";
+type SettingsSection = "model" | "agents" | "appearance" | "general" | "mcp";
 
 let appMode: AppMode = "task";
 let settingsSection: SettingsSection = "model";
 // Cached from `ping`, for the General panel.
 let engineVersion: string | null = null;
 let engineConfigDir: string | null = null;
+
+// --- agents panel state ----------------------------------------------------
+
+/**
+ * The last `agents.list` result, and whether it can be trusted.
+ *
+ * `agentsLoaded` is what drives the retry: detection happens in the engine, so
+ * opening the panel before the engine is up leaves it false, and the ready
+ * event (or the next open) asks again. Keeping the stale list instead of
+ * clearing it means a failed rescan does not empty a panel that already had
+ * answers.
+ */
+let cachedAgents: AgentStatus[] = [];
+let agentsLoaded = false;
+let agentsLoading = false;
+/** Global message on `#agents-msg`, repainted on a locale switch. */
+let lastAgentsMessage: {
+  key: string;
+  params?: Record<string, string>;
+  error: boolean;
+} | null = null;
+/** Per-card messages (test results, refresh failures), keyed by agent id. */
+const agentMessages = new Map<
+  string,
+  { key: string; params?: Record<string, string>; error: boolean }
+>();
 
 // --- sidebar collapse ------------------------------------------------------
 
@@ -578,6 +639,9 @@ onLocaleChange(() => {
   renderModelList();
   renderOptionModels();
   paintOptionSelects();
+  // Agent names, status pills and card messages are built in code, so they
+  // have to be rebuilt from the cached result for the new language.
+  renderAgents();
   paintOverlaysPinned();
   updatePreviewControls();
   renderPreview();
@@ -631,10 +695,16 @@ function paintSettingsMode(): void {
     applyProviderFields();
     applyModelFields();
   }
-  // Only the model section is a two-column layout; the other three keep the
+  // Only the model section is a two-column layout; the other four keep the
   // centred single column, so the host's split styling follows the section.
   $("settings-host").classList.toggle("settings-host--split", inSettings && settingsSection === "model");
   if (inSettings && settingsSection === "general") paintEngineFacts();
+  // Detection runs in the engine. Until it is up the panel explains itself and
+  // leaves `agentsLoaded` false, so the next open — or the ready event — asks
+  // again instead of showing an empty list forever.
+  if (inSettings && settingsSection === "agents" && !agentsLoaded) {
+    void refreshAgents(false);
+  }
   // Built on open rather than at startup: it needs the real launch command,
   // which comes from the main process, and there is no reason to ask for it
   // unless the panel is actually being looked at.
@@ -790,7 +860,15 @@ function applyEngineState(payload: { ok: boolean; error?: string }): void {
     void refreshProviders();
     void refreshAssets();
     void refreshEngineFacts();
+    // The panel may have been opened while the engine was still starting;
+    // retry now that detection can actually run.
+    if (!agentsLoaded && appMode === "settings" && settingsSection === "agents") {
+      void refreshAgents(false);
+    }
   } else {
+    // A failed engine cannot report agents. Drop the cached answer so the
+    // panel retries when the engine comes up instead of showing a stale list.
+    agentsLoaded = false;
     appendLog(t("log.engineFailed", { error: payload.error ?? t("log.unknownError") }));
   }
   paintTranslateButton();
@@ -1833,6 +1911,10 @@ async function refreshProviders(): Promise<void> {
     renderOptionModels();
     applyProviderFields();
     applyModelFields();
+    // The Agents panel edits the same document, so its checkboxes have to
+    // follow the reloaded draft too. This also closes the startup race where
+    // the agent list arrives before the config does.
+    renderAgents();
   } catch (err) {
     appendLog(t("log.providersFailed", { error: String(err) }));
   }
@@ -1846,7 +1928,7 @@ async function refreshProviders(): Promise<void> {
  * choice about what to run.
  */
 function pickProvider(): string | null {
-  const names = draftProviderNames();
+  const names = modelPanelProviderNames();
   if (editingProvider && names.includes(editingProvider)) return editingProvider;
   return names[0] ?? null;
 }
@@ -1868,7 +1950,7 @@ function pickModel(provider: string): string | null {
 function renderProviderList(): void {
   const list = $("provider-list");
   list.innerHTML = "";
-  const names = draftProviderNames();
+  const names = modelPanelProviderNames();
 
   for (const name of names) {
     const row = document.createElement("button");
@@ -2188,6 +2270,15 @@ async function removeModel(alias: string): Promise<void> {
 const PROVIDER_KINDS = ["openai_compat", "openai_responses", "anthropic_messages"] as const;
 
 /**
+ * The adapter kind that runs an external agent CLI.
+ *
+ * Kept beside `PROVIDER_KINDS` because it is the one kind the Model panel does
+ * not offer: it is created only by the Agents panel, and it needs an `agent`
+ * field that no HTTP provider has.
+ */
+const AGENT_KIND = "agent_cli";
+
+/**
  * Select a provider's `kind` in the dropdown.
  *
  * A kind written by hand into `config.yaml` that is not one of the built-ins
@@ -2296,6 +2387,18 @@ function draftProviders(): Record<string, ProviderDraft> {
 
 function draftProviderNames(): string[] {
   return Object.keys(draftProviders());
+}
+
+/**
+ * The providers the Model panel edits.
+ *
+ * Agent providers are edited in the Agents panel: they have no endpoint, key
+ * or sampling parameters, so the model editor would show a form whose fields
+ * do not apply to them. The Options dropdown still lists every provider.
+ */
+function modelPanelProviderNames(): string[] {
+  const providers = draftProviders();
+  return Object.keys(providers).filter((name) => providers[name]?.kind !== AGENT_KIND);
 }
 
 function draftModelNames(provider: string): string[] {
@@ -3017,6 +3120,799 @@ $("btn-save-model").addEventListener("click", async () => {
   await saveConfig("model.saved");
 });
 
+// --- agents: external agent CLIs as translation backends -------------------
+
+/*
+ * Everything below reads the same draft config the Model panel edits, because
+ * an agent is stored as an ordinary provider with `kind: "agent_cli"` and one
+ * model entry per ticked model. That is the whole point of reusing the
+ * provider → model shape: translation, the Options dropdown and the cache all
+ * keep working without a second code path.
+ */
+
+/** The `agents` section of the draft config, created on demand. */
+function draftAgents(): { paths: Record<string, string> } {
+  if (!cachedConfig) cachedConfig = {};
+  let section = cachedConfig.agents as { paths?: Record<string, string> } | undefined;
+  if (!section || typeof section !== "object") {
+    section = {};
+    cachedConfig.agents = section;
+  }
+  if (!section.paths || typeof section.paths !== "object") section.paths = {};
+  return section as { paths: Record<string, string> };
+}
+
+/**
+ * The stored CLI path overrides, without creating the section.
+ *
+ * `draftAgents()` is for writing; using it while rendering would make merely
+ * opening the panel add an empty `agents:` block to the draft, which the next
+ * save would then write into the user's config.
+ */
+function agentPathOverrides(): Record<string, string> {
+  const section = cachedConfig?.agents as { paths?: Record<string, string> } | undefined;
+  const paths = section?.paths;
+  return paths && typeof paths === "object" ? paths : {};
+}
+
+/** A provider this build cannot map to one of the known agents. */
+function agentConfigured(agentId: string): boolean {
+  return draftProviders()[agentId]?.kind === AGENT_KIND;
+}
+
+/**
+ * Whether an existing provider blocks the Agents panel from editing this agent.
+ *
+ * Provider keys are agent ids, so a hand-written provider with the same name
+ * but a different kind or agent is a real collision: writing into it would
+ * either turn an HTTP endpoint into a CLI provider or point the CLI at the
+ * wrong agent. The panel refuses and says where to fix it.
+ */
+function agentConflict(agentId: string): boolean {
+  const provider = draftProviders()[agentId];
+  if (!provider) return false;
+  return provider.kind !== AGENT_KIND || provider.agent !== agentId;
+}
+
+/**
+ * Read a model list defensively.
+ *
+ * The contract is `[{id, label}]`, but this crosses the sidecar boundary: a
+ * bare list of strings is accepted too, since rendering blank rows for every
+ * model is a worse failure than tolerating the older shape.
+ */
+function normalizeAgentModels(models: unknown): AgentModelOption[] {
+  if (!Array.isArray(models)) return [];
+  const options: AgentModelOption[] = [];
+  for (const entry of models) {
+    if (typeof entry === "string") {
+      if (entry) options.push({ id: entry, label: entry });
+      continue;
+    }
+    if (!entry || typeof entry !== "object") continue;
+    const id = (entry as { id?: unknown }).id;
+    if (typeof id !== "string" || !id) continue;
+    const label = (entry as { label?: unknown }).label;
+    options.push({ id, label: typeof label === "string" && label ? label : id });
+  }
+  return options;
+}
+
+/**
+ * The display name for an agent.
+ *
+ * The literal `t()` calls matter: `check:i18n` can only verify keys it can see
+ * in the source, so a dynamic `t(\`agents.name.${id}\`)` would let a typo ship
+ * as a raw key in the UI. The backend's own `name` is the fallback for an
+ * agent this build has never heard of.
+ */
+function agentName(agentId: string, fallback: string): string {
+  switch (agentId) {
+    case "claude":
+      return t("agents.name.claude");
+    case "codex":
+      return t("agents.name.codex");
+    case "workbuddy":
+      return t("agents.name.workbuddy");
+    case "zcode":
+      return t("agents.name.zcode");
+    case "dsh":
+      return t("agents.name.dsh");
+    default:
+      return fallback || agentId;
+  }
+}
+
+type AgentState = "installed" | "missing" | "auth" | "unknown" | "unavailable";
+
+/**
+ * What the status pill says.
+ *
+ * `auth` beats "installed": a CLI that is present but signed out cannot
+ * translate, and that is the one state a user has to act on. A configured agent
+ * that has since been uninstalled stays "unavailable" rather than "missing" —
+ * its models are still in the config and still listed in Options, so calling it
+ * new would be misleading.
+ */
+function agentState(agent: AgentStatus): AgentState {
+  if (agent.supported === false) return "unavailable";
+  if (!agent.installed) return agentConfigured(agent.id) ? "unavailable" : "missing";
+  if (agent.auth === "missing") return "auth";
+  if (agent.auth === "ok") return "installed";
+  return "unknown";
+}
+
+function agentStatusLabel(state: AgentState): string {
+  switch (state) {
+    case "installed":
+      return t("agents.status.installed");
+    case "missing":
+      return t("agents.status.missing");
+    case "auth":
+      return t("agents.status.auth");
+    case "unknown":
+      return t("agents.status.unknown");
+    default:
+      return t("agents.status.unavailable");
+  }
+}
+
+function agentStatusClass(state: AgentState): string {
+  switch (state) {
+    case "installed":
+      return "status--ok";
+    case "missing":
+    case "unknown":
+      return "status--pending";
+    default:
+      return "status--error";
+  }
+}
+
+/** The machine-readable reason code as a sentence, or null when unknown. */
+function agentReasonLabel(code: string | null): string | null {
+  switch (code) {
+    case "not_installed":
+      return t("agents.reason.not_installed");
+    case "app_only":
+      return t("agents.reason.app_only");
+    case "node_missing":
+      return t("agents.reason.node_missing");
+    case "invalid_path":
+      return t("agents.reason.invalid_path");
+    default:
+      return code ? t("agents.reason.unknown") : null;
+  }
+}
+
+function paintAgentsMessage(): void {
+  const msg = $("agents-msg");
+  if (!lastAgentsMessage) {
+    msg.textContent = "";
+    msg.className = "msg";
+    return;
+  }
+  msg.textContent = t(lastAgentsMessage.key, lastAgentsMessage.params);
+  msg.className = lastAgentsMessage.error ? "msg msg--error" : "msg";
+}
+
+function setAgentsMessage(
+  key: string | null,
+  params?: Record<string, string>,
+  error = false,
+): void {
+  lastAgentsMessage = key ? { key, params, error } : null;
+  paintAgentsMessage();
+}
+
+/** Paint one card's message in place, so a test result survives a rebuild. */
+function paintAgentMessage(agentId: string): void {
+  const card = document.querySelector<HTMLElement>(
+    `.agent-card[data-agent="${cssEscape(agentId)}"]`,
+  );
+  const msg = card?.querySelector<HTMLElement>(".agent-card__msg");
+  if (!msg) return;
+  const message = agentMessages.get(agentId);
+  msg.textContent = message ? t(message.key, message.params) : "";
+  msg.className = message?.error ? "msg msg--error agent-card__msg" : "msg agent-card__msg";
+}
+
+function setAgentMessage(
+  agentId: string,
+  key: string,
+  params?: Record<string, string>,
+  error = false,
+): void {
+  agentMessages.set(agentId, { key, params, error });
+  paintAgentMessage(agentId);
+}
+
+/**
+ * Reload the agent list from the engine.
+ *
+ * `force` is `agents.list`'s own refresh flag: detection is cached for 30s in
+ * the engine, and the Rescan button is the user saying they just installed
+ * something.
+ */
+async function refreshAgents(force: boolean): Promise<void> {
+  if (engineState !== "ok") {
+    // Detection runs in the engine, so there is nothing to ask yet. The flag
+    // stays false so the panel retries once it is ready.
+    agentsLoaded = false;
+    setAgentsMessage("agents.configUnavailable", undefined, true);
+    return;
+  }
+  if (agentsLoading) return;
+  agentsLoading = true;
+  $<HTMLButtonElement>("btn-rescan-agents").disabled = true;
+  setAgentsMessage("agents.detecting");
+  try {
+    const result = await api.request<{ agents: AgentStatus[] }>("agents.list", {
+      refresh: force,
+    });
+    const agents = Array.isArray(result.agents) ? result.agents : [];
+    cachedAgents = agents.map((agent) => ({
+      ...agent,
+      models: normalizeAgentModels(agent.models),
+    }));
+    agentsLoaded = true;
+    setAgentsMessage(null);
+  } catch (err) {
+    agentsLoaded = false;
+    setAgentsMessage("agents.failed", { error: cleanError(err) }, true);
+    appendLog(t("log.agentsFailed", { error: cleanError(err) }));
+  } finally {
+    agentsLoading = false;
+    $<HTMLButtonElement>("btn-rescan-agents").disabled = false;
+    renderAgents();
+  }
+}
+
+/**
+ * Persist the draft config, then reload the summaries that derive from it.
+ *
+ * The Agents panel edits the same document as the Model panel, so it has to go
+ * through the same `config.save`; on success `refreshProviders` brings back the
+ * engine's normalised copy (model ids filled in, defaults applied), which is
+ * what the cards render from afterwards.
+ */
+async function persistAgentConfig(): Promise<boolean> {
+  // Refuse to write a document that was never loaded: a failed `config.get`
+  // must not be "fixed" by saving an empty config over the real one.
+  if (!configLoaded || !cachedConfig) {
+    setAgentsMessage("agents.configUnavailable", undefined, true);
+    return false;
+  }
+  try {
+    await api.request("config.save", { config: cachedConfig });
+    await refreshProviders();
+    return true;
+  } catch (err) {
+    setAgentsMessage("agents.saveFailed", { error: cleanError(err) }, true);
+    return false;
+  }
+}
+
+/** Tick or untick one model, creating the agent's provider on first use. */
+async function setAgentModel(
+  agent: AgentStatus,
+  modelId: string,
+  enabled: boolean,
+): Promise<void> {
+  if (agentConflict(agent.id)) {
+    setAgentsMessage("agents.conflict", { provider: agent.id }, true);
+    renderAgents();
+    return;
+  }
+  const providers = draftProviders();
+  let provider = providers[agent.id];
+  if (enabled) {
+    if (!provider) {
+      provider = { kind: AGENT_KIND, agent: agent.id, enabled: true, models: {} };
+      providers[agent.id] = provider;
+    }
+    // A provider switched off makes its models unusable, and the Model panel
+    // no longer lists agent providers, so there is nowhere else to switch it
+    // back on. Ticking a model is the user saying it should run.
+    provider.enabled = true;
+    if (!provider.models) provider.models = {};
+    // The alias is the CLI's own model id. Keeping them equal is what lets a
+    // hand-written entry and one made here address the same model. An entry
+    // that exists but was switched off is switched back on rather than left
+    // inert while its checkbox reads as ticked.
+    const entry = provider.models[modelId] ?? {};
+    entry.model = entry.model || modelId;
+    entry.enabled = true;
+    provider.models[modelId] = entry;
+  } else if (provider?.models) {
+    delete provider.models[modelId];
+  }
+  if (await persistAgentConfig()) setAgentsMessage("agents.saved");
+  renderAgents();
+}
+
+/** Add a model id the CLI did not list, as a configured model. */
+async function addAgentModel(agent: AgentStatus, input: HTMLInputElement): Promise<void> {
+  if (agentConflict(agent.id)) {
+    setAgentsMessage("agents.conflict", { provider: agent.id }, true);
+    return;
+  }
+  const id = input.value.trim();
+  // A pipe is the separator in the Options dropdown's value, and whitespace
+  // would have to be quoted by every CLI's argv — reject both here rather than
+  // writing a config the engine cannot address.
+  if (!id || /\s/.test(id) || id.includes("|")) {
+    setAgentsMessage("agents.modelInvalid", undefined, true);
+    return;
+  }
+  const providers = draftProviders();
+  let provider = providers[agent.id];
+  if (!provider) {
+    provider = { kind: AGENT_KIND, agent: agent.id, enabled: true, models: {} };
+    providers[agent.id] = provider;
+  }
+  // Same reasoning as ticking a model: adding one implies it should be usable.
+  provider.enabled = true;
+  if (!provider.models) provider.models = {};
+  if (provider.models[id]) {
+    setAgentsMessage("agents.modelExists", { name: id }, true);
+    return;
+  }
+  provider.models[id] = { model: id };
+  input.value = "";
+  if (await persistAgentConfig()) setAgentsMessage("agents.saved");
+  renderAgents();
+}
+
+/** Ask the CLI for its current model list, replacing the cached one. */
+async function refreshAgentModels(
+  agent: AgentStatus,
+  button: HTMLButtonElement,
+): Promise<void> {
+  button.disabled = true;
+  button.textContent = t("agents.refreshing");
+  try {
+    const result = await api.request<{
+      models: AgentModelOption[];
+      source: "cli" | "fallback";
+      error?: string;
+    }>("agents.models", { agent: agent.id, refresh: true });
+    agent.models = normalizeAgentModels(result.models);
+    agent.models_source = result.source ?? null;
+    agent.models_error = result.error ?? null;
+    // A fallback list is still an answer; its reason is shown as a persistent
+    // hint on the card (see `agentModelsSection`), so only the refresh itself
+    // needs confirming here.
+    setAgentMessage(agent.id, "agents.modelsRefreshed");
+  } catch (err) {
+    setAgentMessage(agent.id, "agents.modelsFailed", { error: cleanError(err) }, true);
+  } finally {
+    // Rebuild from the updated list; the old button goes away with the card.
+    renderAgents();
+  }
+}
+
+/** Trim a model's answer to something that fits in a card. */
+function truncateSample(sample: string): string {
+  const text = (sample ?? "").replace(/\s+/g, " ").trim();
+  return text.length > 80 ? `${text.slice(0, 80)}…` : text;
+}
+
+/** Send one "Hello." through the CLI and report latency plus a sample. */
+async function testAgentModel(
+  agent: AgentStatus,
+  row: AgentModelRow,
+  button: HTMLButtonElement,
+): Promise<void> {
+  button.disabled = true;
+  button.textContent = t("agents.testing");
+  try {
+    const result = await api.request<{
+      ok: boolean;
+      latency_ms: number;
+      sample: string;
+      error?: string;
+    }>("agents.test", { agent: agent.id, model: row.testModel });
+    if (result.ok) {
+      setAgentMessage(agent.id, "agents.testOk", {
+        ms: String(result.latency_ms),
+        model: row.label,
+        sample: truncateSample(result.sample),
+      });
+    } else {
+      setAgentMessage(
+        agent.id,
+        "agents.testFailed",
+        { error: result.error || t("log.unknownError") },
+        true,
+      );
+    }
+  } catch (err) {
+    setAgentMessage(agent.id, "agents.testFailed", { error: cleanError(err) }, true);
+  } finally {
+    button.disabled = false;
+    button.textContent = t("agents.test");
+  }
+}
+
+/** Store or clear `agents.paths.<id>`, then re-detect with the new override. */
+async function saveAgentPath(
+  agent: AgentStatus,
+  input: HTMLInputElement,
+  clear: boolean,
+): Promise<void> {
+  if (clear) {
+    const section = draftAgents();
+    delete section.paths[agent.id];
+    // Do not leave an empty `agents:` block behind in the file; other keys (a
+    // hand-written field) keep the section alive.
+    if (!Object.keys(section.paths).length && Object.keys(section).length === 1) {
+      delete (cachedConfig as Record<string, unknown>).agents;
+    }
+  } else {
+    const value = input.value.trim();
+    if (!value) {
+      setAgentsMessage("agents.path.required", undefined, true);
+      return;
+    }
+    draftAgents().paths[agent.id] = value;
+  }
+  if (!(await persistAgentConfig())) return;
+  // Detection depends on the override, so a fresh scan is needed — re-rendering
+  // the old result would keep showing the path we just replaced.
+  await refreshAgents(true);
+  // Only claim success when the rescan worked: a failed detection has its own
+  // message, and overwriting it would hide the fact that the new path did not
+  // resolve.
+  if (agentsLoaded) setAgentsMessage(clear ? "agents.path.cleared" : "agents.path.saved");
+}
+
+/** One row in a card's model list. */
+interface AgentModelRow {
+  /** The model id the CLI is given, and the config alias. */
+  id: string;
+  /** What the row shows: the CLI's label, or the id when there is none. */
+  label: string;
+  /** Whether the checkbox starts ticked: configured *and* switched on. */
+  configured: boolean;
+  /** Configured here but absent from the CLI's current list. */
+  custom: boolean;
+  /** The API model id to test: a hand-edited entry may differ from its alias. */
+  testModel: string;
+}
+
+/**
+ * The rows a card shows: what the CLI reports, plus anything configured that
+ * the list no longer contains.
+ *
+ * The union is deliberate. A CLI that changes its model names would otherwise
+ * hide — and make impossible to untick — a model the user configured earlier.
+ * A stored entry with `enabled: false` reads as unticked: the checkbox means
+ * "this model will be used", and ticking it again switches the entry back on
+ * rather than finding it already present and doing nothing.
+ */
+function agentModelRows(agent: AgentStatus): AgentModelRow[] {
+  const configured = draftProvider(agent.id)?.models ?? {};
+  const rows: AgentModelRow[] = [];
+  const seen = new Set<string>();
+  for (const model of agent.models) {
+    seen.add(model.id);
+    const entry = configured[model.id];
+    rows.push({
+      id: model.id,
+      label: model.label || model.id,
+      configured: !!entry && entry.enabled !== false,
+      custom: false,
+      testModel: entry?.model || model.id,
+    });
+  }
+  for (const alias of Object.keys(configured)) {
+    if (seen.has(alias)) continue;
+    const entry = configured[alias];
+    rows.push({
+      id: alias,
+      label: entry?.model || alias,
+      configured: entry?.enabled !== false,
+      custom: true,
+      testModel: entry?.model || alias,
+    });
+  }
+  return rows;
+}
+
+/** A documentation/install link that opens in the browser, not in the app. */
+function agentLink(url: string, key: string): HTMLAnchorElement {
+  const link = document.createElement("a");
+  link.className = "agent-card__link";
+  link.href = url;
+  link.textContent = t(key);
+  link.addEventListener("click", (event) => {
+    event.preventDefault();
+    void api.openExternal(url).catch((err) => {
+      setAgentsMessage("agents.linkFailed", { error: cleanError(err) }, true);
+    });
+  });
+  return link;
+}
+
+function agentModelRow(
+  agent: AgentStatus,
+  row: AgentModelRow,
+  conflict: boolean,
+): HTMLElement {
+  const element = document.createElement("div");
+  element.className = "agent-model-row";
+
+  // `.check` supplies the row layout and un-does the shared stacked `label`
+  // rule; the extra class only sizes it inside this row.
+  const check = document.createElement("label");
+  check.className = "check agent-model-row__check";
+  const tick = document.createElement("input");
+  tick.type = "checkbox";
+  tick.checked = row.configured;
+  tick.disabled = conflict;
+  tick.setAttribute("aria-label", row.label);
+  tick.addEventListener("change", () => void setAgentModel(agent, row.id, tick.checked));
+  const label = document.createElement("span");
+  label.className = "agent-model-row__label";
+  label.textContent = row.label;
+  label.title = row.id;
+  check.append(tick, label);
+  element.append(check);
+
+  if (row.custom) {
+    const badge = document.createElement("span");
+    badge.className = "agent-model-row__custom";
+    badge.textContent = t("agents.customModel");
+    element.append(badge);
+  }
+
+  const spacer = document.createElement("span");
+  spacer.className = "agent-model-row__spacer";
+  element.append(spacer);
+
+  const test = document.createElement("button");
+  test.type = "button";
+  test.className = "btn btn--small";
+  test.textContent = t("agents.test");
+  // Testing spawns the CLI, so there is nothing to test when it is not there.
+  test.disabled = !agent.installed;
+  test.addEventListener("click", () => void testAgentModel(agent, row, test));
+  element.append(test);
+
+  return element;
+}
+
+function agentModelAdd(agent: AgentStatus): HTMLElement {
+  const box = document.createElement("div");
+  box.className = "add-inline";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.placeholder = t("agents.customModelPlaceholder");
+  const add = document.createElement("button");
+  add.type = "button";
+  add.className = "btn btn--small btn--primary";
+  add.textContent = t("agents.addModel");
+  add.addEventListener("click", () => void addAgentModel(agent, input));
+  input.addEventListener("keydown", (event) => {
+    if ((event as KeyboardEvent).key === "Enter") {
+      event.preventDefault();
+      void addAgentModel(agent, input);
+    }
+  });
+  box.append(input, add);
+  return box;
+}
+
+/** The models block of one card: list, refresh, add, and the card's message. */
+function agentModelsSection(
+  agent: AgentStatus,
+  rows: AgentModelRow[],
+  conflict: boolean,
+): HTMLElement {
+  const section = document.createElement("div");
+  section.className = "agent-models";
+
+  const head = document.createElement("div");
+  head.className = "agent-models__head";
+  const title = document.createElement("span");
+  title.textContent = t("agents.modelsTitle");
+  const refresh = document.createElement("button");
+  refresh.type = "button";
+  refresh.className = "btn btn--small btn--ghost";
+  refresh.textContent = t("agents.refreshModels");
+  refresh.addEventListener("click", () => void refreshAgentModels(agent, refresh));
+  head.append(title, refresh);
+  section.append(head);
+
+  // A fallback list is still usable, but the reason the CLI could not be asked
+  // is worth showing: it is usually the first symptom of a broken install.
+  if (agent.models_error) {
+    const warning = document.createElement("p");
+    warning.className = "hint";
+    warning.textContent = t("agents.modelsFallback", { error: agent.models_error });
+    section.append(warning);
+  }
+
+  if (!rows.length) {
+    const empty = document.createElement("p");
+    empty.className = "hint";
+    empty.textContent = t("agents.noModels");
+    section.append(empty);
+  } else {
+    const list = document.createElement("div");
+    list.className = "agent-models__list";
+    for (const row of rows) list.append(agentModelRow(agent, row, conflict));
+    section.append(list);
+  }
+
+  if (conflict) {
+    const warning = document.createElement("p");
+    warning.className = "msg msg--error";
+    warning.textContent = t("agents.conflict", { provider: agent.id });
+    section.append(warning);
+  } else {
+    section.append(agentModelAdd(agent));
+  }
+
+  // The card's own message area: test results and refresh failures. Kept
+  // outside the row list so a result does not look like it belongs to the last
+  // row, and painted in place so a rebuild does not erase it.
+  const message = document.createElement("p");
+  message.className = "msg agent-card__msg";
+  section.append(message);
+  return section;
+}
+
+/** The manual path override, for a CLI that lives somewhere detection missed. */
+function agentPathEditor(agent: AgentStatus): HTMLElement {
+  const row = document.createElement("div");
+  row.className = "agent-card__path-edit";
+  const label = document.createElement("span");
+  label.className = "agent-card__path-label";
+  label.textContent = t("agents.path.title");
+  const input = document.createElement("input");
+  input.type = "text";
+  input.value = agentPathOverrides()[agent.id] ?? "";
+  // The detected path is the best placeholder: it shows what the CLI would run
+  // without turning it into an override that has to be kept up to date.
+  input.placeholder = agent.path || t("agents.path.placeholder");
+  const save = document.createElement("button");
+  save.type = "button";
+  save.className = "btn btn--small";
+  save.textContent = t("agents.path.save");
+  save.addEventListener("click", () => void saveAgentPath(agent, input, false));
+  const clear = document.createElement("button");
+  clear.type = "button";
+  clear.className = "btn btn--small btn--quiet";
+  clear.textContent = t("agents.path.clear");
+  clear.disabled = !(agent.id in agentPathOverrides());
+  clear.addEventListener("click", () => void saveAgentPath(agent, input, true));
+  row.append(label, input, save, clear);
+  return row;
+}
+
+/** One agent's card. */
+function agentCard(agent: AgentStatus): HTMLElement {
+  const state = agentState(agent);
+  const conflict = agentConflict(agent.id);
+
+  const card = document.createElement("article");
+  card.className = "agent-card";
+  card.dataset.agent = agent.id;
+
+  const head = document.createElement("header");
+  head.className = "agent-card__head";
+  const name = document.createElement("h3");
+  name.className = "agent-card__name";
+  name.textContent = agentName(agent.id, agent.name);
+  const pill = document.createElement("span");
+  pill.className = `status ${agentStatusClass(state)}`;
+  pill.textContent = agentStatusLabel(state);
+  head.append(name, pill);
+  card.append(head);
+
+  const meta = document.createElement("div");
+  meta.className = "agent-card__meta";
+  if (agent.version) {
+    const version = document.createElement("span");
+    version.className = "agent-card__version";
+    version.textContent = t("agents.version", { version: agent.version });
+    meta.append(version);
+  }
+  if (agent.path) {
+    const path = document.createElement("span");
+    path.className = "agent-card__path";
+    path.textContent = agent.path;
+    path.title = agent.path;
+    meta.append(path);
+  }
+  if (meta.childElementCount) card.append(meta);
+
+  const reason = agentReasonLabel(agent.reason);
+  if (reason) {
+    const line = document.createElement("p");
+    line.className = "hint agent-card__reason";
+    line.textContent = reason;
+    card.append(line);
+  }
+  // Two states have no machine-readable reason from the engine but still need
+  // to say what the user can do about them.
+  if (state === "auth") {
+    const hint = document.createElement("p");
+    hint.className = "hint agent-card__reason";
+    hint.textContent = t("agents.authHint");
+    card.append(hint);
+  } else if (state === "unavailable" && !agent.installed && agentConfigured(agent.id)) {
+    const hint = document.createElement("p");
+    hint.className = "hint agent-card__reason";
+    hint.textContent = t("agents.configuredUnavailable");
+    card.append(hint);
+  }
+
+  const links = document.createElement("div");
+  links.className = "agent-card__links";
+  if (!agent.installed && agent.install_url) {
+    links.append(agentLink(agent.install_url, "agents.install"));
+  }
+  if (agent.docs_url) links.append(agentLink(agent.docs_url, "agents.docs"));
+  if (links.childElementCount) card.append(links);
+
+  const rows = agentModelRows(agent);
+  // A configured-but-uninstalled agent still needs its rows: that is the only
+  // place to untick a model whose CLI is gone. Presence, not the checkbox
+  // state, decides — a switched-off entry must stay reachable.
+  const hasConfigured = Object.keys(draftProvider(agent.id)?.models ?? {}).length > 0;
+  if (agent.installed || hasConfigured) {
+    card.append(agentModelsSection(agent, rows, conflict));
+  }
+
+  card.append(agentPathEditor(agent));
+  return card;
+}
+
+/** Rebuild every agent card from the cached result. */
+function renderAgents(): void {
+  const list = $("agent-cards");
+  list.innerHTML = "";
+  paintAgentsMessage();
+
+  for (const agent of cachedAgents) {
+    list.append(agentCard(agent));
+    paintAgentMessage(agent.id);
+  }
+
+  if (!cachedAgents.length && agentsLoaded) {
+    const empty = document.createElement("p");
+    empty.className = "hint";
+    empty.textContent = t("agents.empty");
+    list.append(empty);
+  }
+
+  // Configured agent providers this build has no definition for. They are left
+  // in the config on purpose — silently deleting another program's settings is
+  // worse than showing a warning — so the panel only points at config.yaml.
+  // Skipped until a scan has succeeded: on a failed scan every configured
+  // provider would look unknown.
+  if (agentsLoaded) {
+    const known = new Set(cachedAgents.map((agent) => agent.id));
+    const unknown = draftProviderNames().filter((name) => {
+      const provider = draftProviders()[name];
+      return provider?.kind === AGENT_KIND && !known.has(provider.agent ?? "");
+    });
+    if (unknown.length) {
+      const warning = document.createElement("p");
+      warning.className = "msg msg--error agent-cards__unknown";
+      warning.textContent = t("agents.unknownConfigured", { agents: unknown.join(", ") });
+      list.append(warning);
+    }
+  }
+}
+
+$("btn-rescan-agents").addEventListener("click", () => {
+  void refreshAgents(true);
+});
+
 // --- options ---------------------------------------------------------------
 
 /**
@@ -3112,13 +4008,38 @@ function paintOptionSelects(): void {
   fillLanguageSelect($<HTMLSelectElement>("opt-lang-in"), "langIn");
   fillLanguageSelect($<HTMLSelectElement>("opt-lang-out"), "langOut");
   $<HTMLSelectElement>("opt-reasoning").value = optionValues.reasoning;
+  paintReasoningAvailability();
+}
+
+/**
+ * Reasoning effort is an HTTP-model parameter.
+ *
+ * The agent CLI adapters deliberately do not map sampling parameters in v1
+ * (temperature, top_p, max_tokens, reasoning), so leaving the control usable
+ * would promise an effect that never happens. It is disabled with a title
+ * explaining why, rather than hidden: the layout stays put, and a user who
+ * picked an agent model can see where the setting went.
+ */
+function paintReasoningAvailability(): void {
+  // Read the dropdown itself rather than `optionValues`: when nothing is
+  // selectable the select has been reset to "", while the stored choice may
+  // still name an agent model.
+  const provider = $<HTMLSelectElement>("opt-model").value.split("|")[0] ?? "";
+  const providers = (cachedConfig?.providers ?? {}) as Record<string, ProviderDraft>;
+  const isAgent = providers[provider]?.kind === AGENT_KIND;
+  const select = $<HTMLSelectElement>("opt-reasoning");
+  select.disabled = isAgent;
+  select.title = isAgent ? t("options.reasoningAgent") : "";
 }
 
 /**
  * Rebuild the model dropdown from the loaded config.
  *
  * Every provider/model pair, labelled `provider · model`, with the alias as the
- * value so the job can name it exactly as the engine expects.
+ * value so the job can name it exactly as the engine expects. Agent providers
+ * are included here (unlike the Model panel): their models are ordinary
+ * translation backends, and a ` · CLI` suffix is the only hint needed that the
+ * work will run through an external program.
  */
 function renderOptionModels(): void {
   const select = $<HTMLSelectElement>("opt-model");
@@ -3129,6 +4050,7 @@ function renderOptionModels(): void {
   for (const [providerName, provider] of Object.entries(providers)) {
     // A disabled provider takes its whole group out of rotation.
     if (provider.enabled === false) continue;
+    const isAgent = provider.kind === AGENT_KIND;
     for (const [alias, entry] of Object.entries(provider.models ?? {})) {
       // A disabled model is not offered: the backend refuses to resolve it, so
       // listing it here would only turn into a failure at translate time.
@@ -3141,8 +4063,10 @@ function renderOptionModels(): void {
       // the value keeps the alias, which is what `resolve()` expects. Two
       // aliases can point at one id, so the alias goes in the tooltip.
       const modelId = entry?.model || alias;
-      opt.textContent = `${providerName} / ${modelId}`;
-      opt.title = `${providerName} / ${modelId}` + (alias !== modelId ? `（${alias}）` : "");
+      const suffix = isAgent ? t("options.agentSuffix") : "";
+      opt.textContent = `${providerName} / ${modelId}${suffix}`;
+      opt.title =
+        `${providerName} / ${modelId}${suffix}` + (alias !== modelId ? `（${alias}）` : "");
       select.append(opt);
       values.push(opt.value);
     }
@@ -3150,6 +4074,7 @@ function renderOptionModels(): void {
   if (!values.length) {
     select.value = "";
     select.disabled = true;
+    paintReasoningAvailability();
     return;
   }
   select.disabled = false;
@@ -3161,6 +4086,7 @@ function renderOptionModels(): void {
     storeOption("model", values[0]);
   }
   select.value = optionValues.model;
+  paintReasoningAvailability();
 }
 
 /** The provider/model pair for the next job, or null to use the default. */
@@ -3170,9 +4096,11 @@ function selectedModel(): { provider: string; model: string } | null {
   return provider && model ? { provider, model } : null;
 }
 
-$("opt-model").addEventListener("change", (e) =>
-  storeOption("model", (e.target as HTMLSelectElement).value),
-);
+$("opt-model").addEventListener("change", (e) => {
+  storeOption("model", (e.target as HTMLSelectElement).value);
+  // Whether the reasoning control applies depends on the provider just picked.
+  paintReasoningAvailability();
+});
 $("opt-reasoning").addEventListener("change", (e) =>
   storeOption("reasoning", (e.target as HTMLSelectElement).value),
 );

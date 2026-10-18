@@ -136,6 +136,16 @@ const api = {
   openPath: (target: string): Promise<void> => ipcRenderer.invoke("shell:openPath", target),
 
   /**
+   * Open an `https:` link in the default browser.
+   *
+   * The renderer cannot navigate to a remote page itself (its CSP refuses it),
+   * and a documentation link must not replace the app's own window. Only
+   * `https:` is accepted on the main-process side.
+   */
+  openExternal: (target: string): Promise<void> =>
+    ipcRenderer.invoke("shell:openExternal", target),
+
+  /**
    * Absolute filesystem path -> `file://` URL, for the PDF preview iframe.
    *
    * A pure conversion, not an IPC round trip: the renderer is sandboxed with

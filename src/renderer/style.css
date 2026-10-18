@@ -2068,3 +2068,202 @@ body.overlays-pinned .viewer-saveas {
   color: var(--muted);
   font-size: 12px;
 }
+
+/* --- settings › agents panel --------------------------------------------- */
+
+/*
+ * One card per external agent CLI. The panel is the same centred 760px column
+ * as the other single-column sections; each card is self-contained because
+ * everything in it (status, models, path override) belongs to one program.
+ */
+.agent-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.agent-card {
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+}
+
+.agent-card__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.agent-card__name {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Version and path share a line: both are diagnostics, neither is a control. */
+.agent-card__meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.agent-card__version {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The full path is long and the panel is narrow, so it truncates rather than
+   wrapping; the title carries it in full. `direction: rtl` keeps the file name
+   visible when the cut happens on the left, which is where the useful end is. */
+.agent-card__path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+
+.agent-card__reason {
+  margin: 8px 0 0;
+}
+
+.agent-card__links {
+  display: flex;
+  gap: 14px;
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.agent-card__link {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.agent-card__link:hover {
+  text-decoration: underline;
+}
+
+.agent-card__msg {
+  margin: 8px 0 0;
+}
+
+/* Models block: separated from the header by a rule, like a detail section. */
+.agent-models {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.agent-models__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.agent-models__list {
+  display: flex;
+  flex-direction: column;
+  margin-top: 4px;
+}
+
+.agent-model-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 0;
+  border-top: 1px solid #eef1f4;
+}
+
+.agent-model-row:first-child {
+  border-top: none;
+}
+
+/*
+ * The checkbox and label as one click target. `.check` already undoes the
+ * stacked `label` rule and the full-width `input` rule; this only sizes the
+ * group inside the row.
+ */
+.agent-model-row__check {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin: 0;
+  align-self: center;
+  color: var(--text);
+  font-weight: 400;
+}
+
+.agent-model-row__check input {
+  accent-color: var(--accent);
+}
+
+.agent-model-row__label {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Configured here but absent from the CLI's own list. */
+.agent-model-row__custom {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: #eaeef2;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+.agent-model-row__spacer {
+  flex: 1 1 auto;
+}
+
+/* The manual path override: one line, because it is a fallback, not a form. */
+.agent-card__path-edit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.agent-card__path-label {
+  flex: 0 0 auto;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.agent-card__path-edit input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+/* The "add a model id" row sits inside the card, not in the sidebar. */
+.agent-models .add-inline {
+  margin: 10px 0 0;
+}
+
+.agent-cards__unknown {
+  margin: 4px 0 0;
+}
