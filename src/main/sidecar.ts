@@ -131,6 +131,11 @@ export class Sidecar {
         cwd: this.cwd,
         stdio: ["pipe", "pipe", "pipe"],
         env: { ...process.env, PYTHONUNBUFFERED: "1", PYTHONIOENCODING: "utf-8" },
+        // The bundled sidecar is a console application (PyInstaller
+        // console=True) so it has stdout/stderr pipes to talk over. Without
+        // this, Windows gives it its own console window, which flashes over
+        // the app at every launch.
+        windowsHide: true,
       });
       this.child = child;
 

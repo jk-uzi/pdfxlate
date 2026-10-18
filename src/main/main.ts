@@ -40,6 +40,21 @@ let engineState: EngineState = null;
 type Locale = "en" | "zh";
 
 /**
+ * Where the engine writes its output, relative to each source document.
+ *
+ * Duplicated from `python/pdfxlate/pdf/pipeline.py` on purpose: this process has
+ * to *list* that folder, and importing Python is not an option. Keep the two in
+ * step — the constant is named the same there.
+ */
+const TRANSLATED_SUBDIR = "translated";
+
+/** One row handed to the renderer's documents list. */
+interface PdfEntry {
+  path: string;
+  translated: boolean;
+}
+
+/**
  * Native dialog strings owned by the main process.
  *
  * Deliberately duplicated from the renderer's i18n table rather than imported
@@ -54,7 +69,6 @@ const DIALOG_STRINGS: Record<
   Locale,
   {
     selectPdf: string;
-    selectOutput: string;
     pickFolder: string;
     saveAs: string;
     engineErrorTitle: string;
@@ -63,7 +77,6 @@ const DIALOG_STRINGS: Record<
 > = {
   en: {
     selectPdf: "Select PDF files",
-    selectOutput: "Select output directory",
     pickFolder: "Choose a folder of PDFs",
     saveAs: "Save a copy as",
     engineErrorTitle: "Could not start the translation engine",
@@ -71,7 +84,6 @@ const DIALOG_STRINGS: Record<
   },
   zh: {
     selectPdf: "选择 PDF 文件",
-    selectOutput: "选择输出目录",
     pickFolder: "选择包含 PDF 的文件夹",
     saveAs: "另存为",
     engineErrorTitle: "无法启动翻译引擎",
@@ -197,36 +209,6 @@ function registerDevShortcuts(window: BrowserWindow): void {
 }
 
 /**
- * Where translated PDFs go when the user has not chosen a directory.
- *
- * Resolved here rather than in Python because the OS may have relocated the
- * Documents folder (Windows lets it point at another drive entirely), and
- * `app.getPath("documents")` is the only thing that knows the real location.
- * A Python-side `~/Documents` guess would silently write somewhere else.
- *
- * This exists to fix a real bug: with the field left blank, the engine wrote
- * its output into its own working directory — the source tree in development,
- * and the application install directory once packaged, where the write can
- * simply fail.
- */
-function defaultOutputDir(): string {
-  return path.join(app.getPath("documents"), "pdfxlate");
-}
-
-/**
- * Fill in the output directory for `translate.start` when the renderer did not.
- *
- * Done at the application boundary so every caller gets it: the renderer shows
- * this path in the UI, but a stale or omitted value must still not fall through
- * to the engine's working directory.
- */
-function withDefaultOutput(params: Record<string, unknown>): Record<string, unknown> {
-  const chosen = params.output;
-  if (typeof chosen === "string" && chosen.trim()) return params;
-  return { ...params, output: defaultOutputDir() };
-}
-
-/**
  * Pick an unused path in `dir` for `name`.
  *
  * Dropping a file into a folder must never silently replace what is already
@@ -319,34 +301,52 @@ function registerIpc(): void {
 
   ipcMain.handle("sidecar:request", async (_event, method: string, params: unknown) => {
     if (!sidecar) throw new Error("sidecar is not running");
-    const payload = (params ?? {}) as Record<string, unknown>;
-    const resolved = method === "translate.start" ? withDefaultOutput(payload) : payload;
-    return sidecar.request(method, resolved);
+    return sidecar.request(method, (params ?? {}) as Record<string, unknown>);
   });
 
   // Lets a late-loading renderer learn the current engine state instead of
   // depending on having caught the one-shot ready event.
   ipcMain.handle("sidecar:state", async () => engineState);
 
-  /** The directory shown as the default in the output field. */
-  ipcMain.handle("app:defaultOutputDir", async () => defaultOutputDir());
-
   /**
-   * PDF files directly inside a folder, for the sidebar's file list.
+   * PDFs in a folder, plus the ones the engine wrote into its `translated/`
+   * subfolder.
    *
-   * Non-recursive on purpose: the list is a flat set of things you might open,
-   * and walking subfolders would make it unbounded. A missing folder is an
-   * ordinary outcome (it was deleted since it was remembered), so it is reported
-   * as a message the UI can show rather than as an opaque throw.
+   * Non-recursive apart from that one known subfolder: the list is a flat set
+   * of things you might open, and walking every subfolder would make it
+   * unbounded. Outputs are included so a finished translation is findable
+   * again after a restart — they are marked rather than silently mixed in, so
+   * the UI can keep them out of the next job (translating a translation is
+   * never what anyone means).
+   *
+   * A missing folder is an ordinary outcome (it was deleted since it was
+   * remembered), so it is reported as a message the UI can show rather than as
+   * an opaque throw.
    */
   ipcMain.handle("app:listPdfs", async (_event, dir: string) => {
     if (typeof dir !== "string" || !dir.trim()) throw new Error("no folder given");
     if (!existsSync(dir)) throw new Error(`folder no longer exists: ${dir}`);
-    const entries = await readdir(dir, { withFileTypes: true });
-    return entries
-      .filter((e) => e.isFile() && e.name.toLowerCase().endsWith(".pdf"))
-      .map((e) => path.join(dir, e.name))
-      .sort((a, b) => a.localeCompare(b));
+
+    const scan = async (target: string, translated: boolean): Promise<PdfEntry[]> => {
+      let entries;
+      try {
+        entries = await readdir(target, { withFileTypes: true });
+      } catch {
+        // The translated subfolder need not exist, and a race with a deletion
+        // should not fail the whole listing.
+        return [];
+      }
+      return entries
+        .filter((e) => e.isFile() && e.name.toLowerCase().endsWith(".pdf"))
+        .map((e) => path.join(target, e.name))
+        .sort((a, b) => a.localeCompare(b))
+        .map((file) => ({ path: file, translated }));
+    };
+
+    return [
+      ...(await scan(dir, false)),
+      ...(await scan(path.join(dir, TRANSLATED_SUBDIR), true)),
+    ];
   });
 
   ipcMain.handle("dialog:pickPdf", async (_event, locale?: string) => {
@@ -386,14 +386,6 @@ function registerIpc(): void {
     return target;
   });
 
-  ipcMain.handle("dialog:pickOutputDir", async (_event, locale?: string) => {
-    const result = await dialog.showOpenDialog(mainWindow!, {
-      title: DIALOG_STRINGS[resolveLocale(locale)].selectOutput,
-      properties: ["openDirectory", "createDirectory"],
-    });
-    return result.canceled ? null : result.filePaths[0];
-  });
-
   /**
    * Copy one file to a location the user picks.
    *
@@ -428,41 +420,63 @@ function registerIpc(): void {
   });
 }
 
-app.whenReady().then(async () => {
-  // The app supplies its own title bar, and the default menu's items (File,
-  // Edit, View, …) have no counterpart in this UI. Removing it also removes
-  // its accelerators; registerDevShortcuts puts the dev ones back.
-  Menu.setApplicationMenu(null);
+// One instance per user. Two copies would share the same config, cache and
+// outputs, and two sidecars would race on the same sqlite file. The second
+// launch focuses the window that is already open instead.
+const singleInstance = app.requestSingleInstanceLock();
 
-  registerIpc();
-  createWindow();
-  engineState = { ok: false, pending: true };
-  try {
-    sidecar = await startSidecar();
-    engineState = { ok: true, pending: false };
-    broadcast("sidecar:ready", { ok: true });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    engineState = { ok: false, pending: false, error: message };
-    broadcast("sidecar:ready", { ok: false, error: message });
-    // This fires before the renderer can report a locale, so the language can
-    // only come from the OS setting Electron exposes.
-    const startupStrings = DIALOG_STRINGS[resolveLocale()];
-    dialog.showErrorBox(
-      startupStrings.engineErrorTitle,
-      `${message}\n\n${startupStrings.engineErrorHint}\n` +
-        `cd python && python -m venv .venv && .venv/bin/pip install -e .`,
-    );
-  }
-
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+if (!singleInstance) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    if (!mainWindow) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
   });
-});
 
-app.on("window-all-closed", () => {
-  sidecar?.stop();
-  if (process.platform !== "darwin") app.quit();
-});
+  app.whenReady().then(async () => {
+    // Must match `appId` in electron-builder.yml: Windows uses it for taskbar
+    // grouping and for the notification identity.
+    if (process.platform === "win32") app.setAppUserModelId("com.pdfxlate.app");
 
-app.on("before-quit", () => sidecar?.stop());
+    // The app supplies its own title bar, and the default menu's items (File,
+    // Edit, View, …) have no counterpart in this UI. Removing it also removes
+    // its accelerators; registerDevShortcuts puts the dev ones back.
+    Menu.setApplicationMenu(null);
+
+    registerIpc();
+    createWindow();
+    engineState = { ok: false, pending: true };
+    try {
+      sidecar = await startSidecar();
+      engineState = { ok: true, pending: false };
+      broadcast("sidecar:ready", { ok: true });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      engineState = { ok: false, pending: false, error: message };
+      broadcast("sidecar:ready", { ok: false, error: message });
+      // This fires before the renderer can report a locale, so the language
+      // can only come from the OS setting Electron exposes.
+      const startupStrings = DIALOG_STRINGS[resolveLocale()];
+      const pip =
+        process.platform === "win32" ? ".venv\\Scripts\\pip" : ".venv/bin/pip";
+      dialog.showErrorBox(
+        startupStrings.engineErrorTitle,
+        `${message}\n\n${startupStrings.engineErrorHint}\n` +
+          `cd python && python -m venv .venv && ${pip} install -e .`,
+      );
+    }
+
+    app.on("activate", () => {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    });
+  });
+
+  app.on("window-all-closed", () => {
+    sidecar?.stop();
+    if (process.platform !== "darwin") app.quit();
+  });
+
+  app.on("before-quit", () => sidecar?.stop());
+}

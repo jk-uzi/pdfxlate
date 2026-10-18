@@ -52,7 +52,7 @@ scripts/                  copy-static.mjs（拷静态资源 + 内联图标）、
 
 ```bash
 git config core.hooksPath .githooks                     # 启用提交前密钥扫描（克隆后一次）
-python/.venv/bin/python -m pytest tests/ -q             # Python 测试
+python/.venv/bin/python -m pytest tests/ -q             # Python 测试（Windows: python/.venv/Scripts/python.exe）
 npm run typecheck                                       # 前端类型检查
 npm run make:icon                                       # 改了 icon.svg 后重新生成应用图标
 ```

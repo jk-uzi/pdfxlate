@@ -14,6 +14,10 @@ dist/
 *.egg-info/
 .eggs/
 
+# Fonts staged for the bundled sidecar by scripts/stage_assets.py. Build input,
+# never source: the font is copied from the downloaded asset cache.
+python/bundle_assets/
+
 # Test & tool caches
 .pytest_cache/
 .mypy_cache/

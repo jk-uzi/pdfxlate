@@ -30,8 +30,10 @@ Python 3.12，venv 在 `python/.venv`，包以 editable 方式安装，改源码
 | 换模型或字体的下载地址 | `assets.py`（`_LAYOUT_REPO`、`_GO_NOTO_URL`、`_SOURCE_HAN_URL`、`_hf_endpoints`） |
 | 改「哪种语言用哪款字体」 | `assets.py` 的 `font_filename()`——语言→字体的**唯一来源**；`_CJK_FONTS` 与 `_NOTO_LANGS` 只是它的两张表 |
 | 改翻译缓存的键或行为 | `cache.py`（`TranslationCache`）；影响输出的参数要加进 `models/base.py` 的 `_cache_params()` |
+| 改缓存命中统计（本地 + 服务端 usage） | `cache.py` 的 `snapshot_stats()`、`models/base.py` 的 `provider_cache_snapshot()`、`sidecar.py` 的 `translate.start` 返回值、`app.ts` 的 `paintDoneProgress()` |
 | 改 PDF 排版回填逻辑 | `pdf/converter.py`（`TranslateConverter`，最难的部分） |
 | 改页面解析流程 / 阶段编排 | `pdf/pipeline.py`（`translate` / `translate_stream`） |
+| 改译文形式 / 页码裁剪 / 产物重名 | `pdf/pipeline.py` 的 `OUTPUT_MODES`、`_selected_pages()`、`_unique_paths()`；前端下拉是 `index.html` 的 `#field-output-mode` |
 | 改内容流解释器 | `pdf/interp.py`（`PDFPageInterpreterEx`，上游照搬） |
 | 改版面检测 | `pdf/layout.py`（`OnnxModel`，DocLayout-YOLO） |
 | 改免模型的快速路径 | `pdf/ultrafast.py` |
@@ -52,15 +54,15 @@ Python 3.12，venv 在 `python/.venv`，包以 editable 方式安装，改源码
 | 改任务/设置模式与设置项 | `src/renderer/app.ts` 的 `appMode` / `setAppMode()` / `paintSettingsMode()`，菜单与面板在 `index.html`；设置页版式在 `style.css` 的 `.settings-panel` / `.grid--form`；模型页的两栏布局由 `.settings-host--split` + `.model-split` 提供 |
 | 改侧栏折叠 | `src/renderer/app.ts` 的 `setSidebarCollapsed()` + `style.css` 的 `body.sidebar-collapsed` |
 | 改进度显示 | `src/renderer/app.ts` 的 `paintProgress()`，落点在 `index.html` 侧栏底部的 `.sidebar__status`（与设置图标同一行） |
-| 改默认输出目录 | `src/main/main.ts` 的 `defaultOutputDir()`（**必须走 `app.getPath("documents")`**，别在 Python 里拼路径） |
+| 改输出位置 | Python → `pdf/pipeline.py` 的 `OUTPUT_SUBDIR`（空 `output` 时按源文件目录解析）；列译文 → `src/main/main.ts` 的 `TRANSLATED_SUBDIR`，两处必须一致 |
 | 改「另存为」存哪一份 | `src/renderer/app.ts` 的 `saveAsSource()`；对话框与拷贝在 `src/main/main.ts` 的 `dialog:saveAs` |
 | 改选项面板（模型/推理/语言，只影响本次） | `src/renderer/app.ts` 的 `optionValues` / `selectedModel()`；引擎侧覆盖在 `api.py` 的 `translate()` |
 | 改侧栏宽度 | `src/renderer/app.ts` 的 `applySidebarWidth()` / `clampSidebarWidth()` + `style.css` 的 `--sidebar-width`、`.sidebar__resizer` |
 | 改侧栏底部（进度条 / 状态 / 设置入口） | `index.html` 的 `.sidebar__status`（进度条）与 `.sidebar__foot`（状态文字 + `#btn-open-settings`），样式见 `style.css` 的 `.btn.btn--settings` |
-| 改浮层显隐时机 | `src/renderer/app.ts` 的 `flashViewerOverlay()` + `VIEWER_OVERLAYS` |
+| 改浮层显隐时机 / 常驻图钉 | `src/renderer/app.ts` 的 `flashViewerOverlay()` + `VIEWER_OVERLAYS`；图钉逻辑在同文件的 `paintOverlaysPinned()` / `setOverlaysPinned()`，标记在 `index.html` 的 `#viewer-saveas` 内 |
 | 改右侧 PDF 预览（标签/翻页/缩放） | `src/renderer/app.ts` 的 `renderPreview()` / `viewerUrl()` / `activateTab()` |
 | 改标签栏（宽度/箭头/拖动排序） | `src/renderer/app.ts` 的 `renderTabs()` / `updateTabbarScroll()` / `dragTabOver()` / `endTabDrag()` + `style.css` 的 `.tabbar` / `.tab` |
-| 改左侧文件列表（文件夹浏览/勾选） | `src/renderer/app.ts` 的 `openFolder()` / `renderFiles()`；目录列举在 `src/main/main.ts` 的 `app:listPdfs` |
+| 改左侧文件列表（文件夹浏览/勾选/搜索） | `src/renderer/app.ts` 的 `openFolder()` / `renderFiles()` / `translatedFiles`；目录列举在 `src/main/main.ts` 的 `app:listPdfs` |
 | 改拖放行为（复制/改名） | `src/renderer/app.ts` 的 `handleDropped()`；复制与改名在 `src/main/main.ts` 的 `app:importPdf` / `uniquePath()` |
 | 改左侧栏分组 | `src/renderer/index.html` 的 `details.group` + `app.ts` 的 `expandGroup()` |
 | 改供应商/模型的界面编辑 | `src/renderer/app.ts` 的 `renderProviderList()` / `renderModelList()` / `toggleModelEditor()` / `setModelEnabled()`；后端字段在 `config.py` 的 `ModelEntry`（含 `enabled`） |
@@ -81,8 +83,9 @@ pdfxlate/
 ├── .gitleaks.toml                   gitleaks 规则与排除路径
 ├── .env.example                     环境变量名清单（不含值）
 ├── .npmrc                           Electron 二进制下载镜像
-├── package.json                     Electron 依赖与构建脚本
-├── electron-builder.yml             三平台打包配置
+├── package.json                     Electron / electron-builder 依赖与构建脚本
+├── electron-builder.yml             三平台打包配置（Windows：NSIS）
+├── LICENSE                          AGPL-3.0 全文（安装包与 asar 都会带上）
 ├── tsconfig.node.json               主进程 / preload 的 TS 配置
 ├── tsconfig.renderer.json           渲染进程的 TS 配置
 ├── docs/
@@ -97,17 +100,17 @@ pdfxlate/
 │       ├── __init__.py              惰性暴露 translate / translate_stream
 │       ├── paths.py          93 行  跨平台 config / cache / assets 路径
 │       ├── config.py        491 行  pydantic 配置模型（供应商→模型）+ YAML 读写
-│       ├── assets.py        349 行  模型 / 字体 / OCR 数据下载与校验
-│       ├── cache.py         144 行  sqlite3 翻译缓存
+│       ├── assets.py        405 行  模型 / 字体 / OCR 数据下载与校验；内置字体优先
+│       ├── cache.py         179 行  sqlite3 翻译缓存 + 命中统计
 │       ├── api.py           192 行  公开 Python API
 │       ├── cli.py           216 行  命令行入口
-│       ├── sidecar.py       407 行  stdio JSON 行协议（Electron 调用）；--mcp 转交 MCP 服务
+│       ├── sidecar.py       681 行  stdio JSON 行协议（Electron 调用，含缓存统计）；--mcp 转交 MCP 服务
 │       ├── mcp_server.py    505 行  MCP 服务（外部 agent 调用，stdio）
 │       ├── mcp_config.py    246 行  把 MCP 条目写进各 agent 配置（备份/合并/校验）
 │       ├── models/
 │       │   ├── __init__.py     23 行  导出翻译层公开符号
-│       │   ├── base.py       326 行  ModelAdapter 基类 + 注册表 + 永久错误分类
-│       │   ├── openai_compat.py 128 行  OpenAI Chat Completions 适配器
+│       │   ├── base.py       364 行  ModelAdapter 基类 + 注册表 + 永久错误分类 + 服务端缓存统计
+│       │   ├── openai_compat.py 186 行  OpenAI Chat Completions 适配器（含 usage 缓存字段）
 │       │   ├── openai_responses.py 136 行  OpenAI Responses 适配器
 │       │   ├── anthropic_messages.py 247 行  Anthropic Messages 适配器
 │       │   └── catalog.py   146 行  上游模型清单（GET .../models）
@@ -124,22 +127,22 @@ pdfxlate/
 │           └── text_spacing.py 44 行  中英混排间距（上游照搬）
 ├── src/
 │   ├── main/
-│   │   ├── main.ts          473 行  窗口 + 应用生命周期 + IPC（自建标题栏、默认输出目录、另存为、目录列举、拖入归档）
+│   │   ├── main.ts          460 行  窗口 + 应用生命周期 + IPC（自建标题栏、另存为、目录列举（含 translated/）、拖入归档）
 │   │   └── sidecar.ts       234 行  Python 子进程管理 + JSON 行协议
 │   ├── preload/
 │   │   └── preload.ts       190 行  contextBridge，向渲染进程暴露 API
 │   └── renderer/
-│       ├── index.html       720 行  界面结构（文案走 data-i18n* 属性；图标在构建时内联）
-│       ├── app.ts          3252 行  界面逻辑（任务/设置双模式、折叠、标签页、文件夹浏览、拖放、缩放、进度、另存为、选项覆盖、侧栏拖拽、供应商/模型两栏编辑器、MCP 配置）
-│       ├── i18n.ts          641 行  中英文字符串表 + t()/applyStaticTranslations()
+│       ├── index.html       741 行  界面结构（文案走 data-i18n* 属性；图标在构建时内联）
+│       ├── app.ts          3450 行  界面逻辑（任务/设置双模式、折叠、标签页、文件夹浏览与搜索、拖放、缩放、进度、开始/取消合一、另存为、选项覆盖、侧栏拖拽、供应商/模型两栏编辑器、MCP 配置）
+│       ├── i18n.ts          661 行  中英文字符串表 + t()/applyStaticTranslations()
 │       ├── icon.svg          49 行  应用标记的**唯一来源**（标题栏内联 + 打包图标）
-│       └── style.css       1947 行  样式（含标题栏标签、查看器浮层、折叠与侧栏状态行、侧栏拖拽手柄、模型页两栏布局与开关）
+│       └── style.css       2070 行  样式（含标题栏标签、查看器浮层与常驻图钉、折叠与侧栏状态行、侧栏拖拽手柄、模型页两栏布局与开关）
 ├── assets/
 │   ├── icon.png               512×512，由 make_icon.py 从 icon.svg 生成后提交
 │   └── icon.ico               16–256 多尺寸，同上（Windows 用）
 ├── tests/
-│   ├── test_translation.py   232 行  缓存、占位符、推理标签剥离、注册表、缓存开关、超窗口告警
-│   ├── test_openai_compat.py 137 行  适配器参数透传、校验、提示词渲染
+│   ├── test_translation.py   293 行  缓存、命中统计、提示词前缀、占位符、推理标签剥离、注册表、缓存开关、超窗口告警
+│   ├── test_openai_compat.py 209 行  适配器参数透传、校验、提示词渲染、usage 缓存字段
 │   ├── test_openai_responses.py 146 行  Responses 形状映射、流式增量、截断、空回复
 │   ├── test_adapters_http.py 359 行  三个适配器打真实本地 HTTP 服务（含 SSE）
 │   ├── test_translate_segment.py 111 行  有界重试、取消、永久错误不重试
@@ -152,18 +155,22 @@ pdfxlate/
 │   ├── test_typesetting.py   172 行  字号适配纯函数（放不下时的缩字逻辑）
 │   ├── test_cli_options.py   286 行  CLI 排版选项解析与三态覆盖语义
 │   ├── test_sidecar_providers.py 181 行  providers.list 形状、密钥不外传
+│   ├── test_sidecar_cancel.py   221 行  translate.start 不阻塞请求循环、取消语义、stdout 并发写、缓存统计
+│   ├── test_output_dir.py       149 行  空 output 落到源文件旁 translated/、显式目录仍优先
+│   ├── test_output_mode.py      218 行  译文形式、页码裁剪、产物重名
 │   ├── test_mcp_server.py    600 行  MCP 工具、stdio 握手、两遍式端到端与确定性护栏
 │   ├── test_mcp_config.py   239 行  写入 agent 配置：合并/幂等/备份/坏文件不动
 │   ├── test_sidecar_mcp_flag.py 159 行  --mcp 真的能起一个 MCP 握手
 │   ├── test_pdf_spread.py    152 行  双栏派生文档：页对、宽度、缓存、坏文件
 │   ├── test_per_job_overrides.py 136 行  按次覆盖语言/推理；调用方配置对象不被改动
-│   └── test_assets_fonts.py  113 行  语言→字体映射、status() 兼容性
+│   └── test_assets_fonts.py  175 行  语言→字体映射、status() 兼容性、内置字体回退、下载完整性
 └── scripts/
     ├── copy-static.mjs       110 行  拷贝 CSS、**把 icon.svg 内联进 index.html**、校验 CSS 注释配对
     ├── make-icon.mjs          33 行  用 venv 解释器调用 make_icon.py（npm run make:icon）
     ├── make_icon.py          186 行  从 icon.svg 生成 assets/icon.png 与 .ico（PyMuPDF）
     ├── check-i18n.mjs        154 行  校验字符串表一致 + **引用的 key 确实存在**（npm run check:i18n）
-    └── build.sh               40 行  一键构建：PyInstaller → tsc → electron-builder
+    ├── stage_assets.py        67 行  把中文字体复制进 python/bundle_assets/（构建输入）
+    └── build.sh               58 行  一键构建：stage → PyInstaller → tsc → electron-builder
 ```
 
 ## 三、模块职责与关键符号
@@ -231,6 +238,11 @@ config.yaml 会改变这个回退目标**。拍平这一步是
 并把上次成功的端点记在 `assets/.hf_endpoint` 以免每次重付连接超时。
 `verify_layout_metadata()` 校验模型带 `stride` / `names` 元数据。
 
+`ensure()` 的顺序是**缓存 → 内置副本 → 网络**。PyInstaller 包里的
+`bundle_assets/`（目前是默认中文字体）会被原子复制到缓存，所以打包版不会为了字体
+去访问 GitHub——实测该链路 8/8 超时。下载完成时还会比对 `Content-Length`，服务器
+提前断开不会被当成成功。`status()` 同样认内置副本，首启横幅因此只提示缺版面模型。
+
 字体选择：`font_filename(lang)` 是**唯一来源**——CJK 查 `_CJK_FONTS` 取
 SourceHanSerif 的地区字形（CN/TW/JP/KR），其余一律 GoNotoKurrent。
 `_NOTO_LANGS` 列出 GoNoto 已知覆盖的 19 种非 CJK 文字，**它只用于区分「已识别的
@@ -241,6 +253,7 @@ GoNoto 语言」与「未知语言码」，不是「支持/不支持」的分界
 `status()` 供 UI 首次运行引导使用。它**保留** `font_zh` / `font_ja` / `font_ko` 三个旧键
 （前端 `app.ts` 仍读 `font_zh` 决定是否显示引导条），并在传入 `lang` 时追加
 `font_ready_for`，这样目标语言是 `ru`/`ar`/`th`（GoNoto）时不会被误报缺字体。
+「就绪」的判断同时看缓存与内置副本：内置字体不会让用户白下载一遍。
 `lang` 默认 `None` 且此时该键不出现，因此 `sidecar.py` 的无参调用行为不变。
 
 **`cache.py`** — `TranslationCache`。stdlib sqlite3（上游用 peewee），
@@ -250,11 +263,29 @@ GoNoto 语言」与「未知语言码」，不是「支持/不支持」的分界
 `enabled=False` 在 `get` / `set` / `clear` 全部短路，且**构造时就不开库**——
 所以关掉缓存不会留下空的 `cache.v1.db`，缓存目录只读也不会导致启动失败。
 
+`snapshot_stats()` 返回本次任务期间的 `hits` / `misses` 并在下一次调用时清零。
+计数器是进程级的（排版线程池共享），由 `sidecar` 在 `translate.start` 开始/结束
+时各取一次——桌面端一次只跑一个任务，所以不会串。**只有缓存开启且真正执行了
+查询才计数**：`cache.enabled=false` 和调用方传 `ignore_cache` 都不会虚增 miss。
+
 ### 翻译层
 
 **`models/base.py`** — `ModelAdapter` 抽象基类（`translate()` 管缓存与占位符校验，
 子类只实现 `do_translate()`）、`@register` 注册表、`PlaceholderLossError`、
 `strip_reasoning()`、`DEFAULT_PROMPT`、`build_adapter()`。
+
+**`DEFAULT_PROMPT` 故意保持短**（`${text}` 之前约 50 token）。实测这个网关的前缀
+缓存**不缓存第一个块**，且要到约 256 个 prompt token 才开始报命中：把模板加长到
+1.2 kB 后每次只命中 128 token，剩下的 112–170 token 仍按原价计费，反而比短模板更贵。
+所以成本杠杆不在服务端前缀缓存，而在本地 sqlite 缓存；
+`test_default_prompt_stays_short_for_cost` 钉住了这一点。`${text}` 仍放最后，
+否则前缀不稳定，任何缓存都无从谈起。
+
+`record_provider_cache()` / `provider_cache_snapshot()` 累计服务端 `usage` 里的
+缓存命中 token。`openai_compat` 从非流式响应里读
+`prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`（DeepSeek 风格），
+读不到再看 `prompt_tokens_details.cached_tokens`（OpenAI 风格）；字段缺失就跳过，
+不影响翻译。流式请求没有 usage，因此不计。
 
 `build_adapter(..., cache_enabled=)` 是 `CacheSettings.enabled` 的唯一入口：
 它把开关经模块级 contextvar `_CACHE_ENABLED` 传给构造函数，`ModelAdapter.__init__`
@@ -375,8 +406,23 @@ vLLM / Ollama / OpenRouter 等。一等支持 `reasoning_effort`、`extra_body`
 
 **`pdf/pipeline.py`** — 编排层。`translate()` / `translate_stream()` /
 `translate_patch()` / `download_font()`，内建取消支持。
-产 mono（纯译文）与 dual（双语对照）两个 PDF。
 上游的 doc/docx 转换与 PDF/A 输出去掉了，只处理 PDF。
+
+**产物形态由 `output_mode` 决定**（`OUTPUT_MONO` / `OUTPUT_DUAL` / `OUTPUT_BOTH`）：
+`mono` 只有译文页，`dual` 是原文页与译文页交替，`both` 两个都要（CLI 与 MCP 的默认，
+保持旧行为）。**没要的那一侧根本不构造**——`doc_en.insert_file()` + 逐页 `move_page`
+是把整份文档再序列化一遍，不是免费的。返回值里没产出的那一侧是 `b""` / `""`，
+调用方必须跳过空串（前端曾经把 `""` 当路径开成标签页）。
+
+**`pages` 有两个作用，不能只做一半**：既决定**翻译**哪几页，也决定**输出保留**哪几页。
+只用它控制翻译会得到「整份文档 + 中间几页是原文」；正常理解是「第 2-3 页」就应该拿到
+两页的产物。选择在打完补丁之后、`subset_fonts()` 之前做（不让马上要丢的页白做子集化），
+`_selected_pages()` 负责**排序、去重、丢弃越界页**，整份选中时返回 `None` 以完全跳过
+`select()`。
+
+**产物永不覆盖**：`_unique_paths()` 在重名时给出 `paper-mono (2).pdf` 这一组名字，
+mono/dual **共用同一个序号**（否则一对文件看起来像两次不相关的运行）。
+`pipeline.translate()` 与 `two_phase.write_outputs()` 都走它。
 
 **`pdf/converter.py`** — 排版回填，**项目最难的部分**。`TranslateConverter`、
 `PDFConverterEx`、`Paragraph`、`OpType`。掩码值为 0 表示原样保留，≥2 归为可译段落——
@@ -442,8 +488,28 @@ vLLM / Ollama / OpenRouter 等。一等支持 `reasoning_effort`、`extra_body`
 | `translate.start` / `translate.cancel` | 启停翻译任务 |
 
 请求 `{id, method, params}`，响应 `{id, ok, result|error}`，
-事件 `{event: "progress"|"done"|"log", ...}`。
+事件 `{event: "progress"|"done", ...}`。
 进程启动后先发一次 `{event: "ready", version}`，Electron 侧以此确认链路可用。
+
+**`translate.start` 在工作线程里跑，其余方法仍在主循环里同步执行。**
+这一点是取消能生效的前提：主循环是读 stdin 的地方，而 `translate.cancel` 就是
+stdin 上的一行。以前整份翻译在循环里跑完，取消请求只能排在管道里等作业结束——
+按钮点了没反应，就是这个原因。代价是 stdout 会被两个线程同时写，所以 `_emit()`
+持 `_EMIT_LOCK`，否则两条 JSON 可能在同一行上互相穿插，渲染进程会同时丢掉两份。
+工作线程是 daemon：进程退出不等它。
+
+取消**不是失败**：`method_translate_start` 捕获 `asyncio.CancelledError`，回复
+`{job_id, cancelled: true, outputs: []}`，且**不发 `done` 事件**。渲染进程据此把
+进度显示为「已取消」，而不是红色错误。取消的粒度是「段落之间」——已经发出的
+HTTP 请求没法中断（超时上限 120s，通常只等几秒），所以按钮有一档「正在取消…」。
+
+**`main()` 在进入请求循环前必须先 `import numpy`**（现在就是这么写的）。
+这不是热身优化：Windows 上在**子线程**里首次导入 numpy 的 C 扩展、且 stdin 是管道时，
+导入会永久卡在模块初始化里——线程不返回，一条回复都写不出来。`translate.start` 正好在
+子线程里跑，所以少了这一步，桌面端**每一个任务都会在第一条进度事件前挂住**，而进程内
+直接调用（主线程导入）却一切正常，极难定位。改这里时别把 `import numpy` 挪进
+`translate_stream()` 或别的懒加载路径；`tests/test_sidecar_cancel.py` 钉住了它出现在
+`for line in sys.stdin` 之前。
 
 `providers.list` 的结果形状是**与渲染进程的冻结合同**，改它必须同时改
 `src/renderer/app.ts` 里的 `ProvidersResponse`：
@@ -453,6 +519,12 @@ models: {别名: {model, reasoning_effort, temperature}}}}}`。
 `provider` + `model`）；**旧名不再作为别名保留**——结果形状也变了，留个别名只会把
 调用方的错藏起来。`translate.start` 现在也转发 `ignore_cache` 与
 `skip_subset_fonts`（后者原样透传，`None` 仍表示「用配置」）。
+
+`translate.start` 的回复与 `done` 事件里的 `result` 除 `outputs` 外还带两组诊断：
+`cache: {hits, misses}`（本地 sqlite 命中次数）与
+`provider_cache: {hit_tokens, miss_tokens}`（服务端 usage；对方不报就是 0）。
+取消任务的回复同样带这两组——只是统计的是取消前已经完成的部分。渲染进程把它们
+追加到完成状态行（`paintDoneProgress()`）。
 
 `pdf.info` 是**只读**的元数据探测（页数），打开文档读 `page_count` 后即关闭，
 不渲染也不修改；非 PDF、损坏文件、路径不存在都给出可读错误而不是库的 traceback。
@@ -554,23 +626,30 @@ overlay 的位置由 OS 按这个值摆放，不一致时系统三键会在栏�
 **`src/preload/preload.ts`** — `contextBridge.exposeInMainWorld("pdfxlate", ...)`，
 在 `contextIsolation` 开启的前提下向渲染进程暴露：
 `request()`（转发到 sidecar）、`onEvent()` / `onLog()`（订阅事件）、
-`defaultOutputDir()` / `saveAs()`（见下）、
-`pickPdf(locale?)` / `pickOutputDir(locale?)`（原生对话框，语言由渲染进程传入）、
-`reveal()` / `openPath()`（打开输出）、`fileUrl(path)`（绝对路径 → `file://` URL）。
+`saveAs()`（见下）、`pickPdf(locale?)`（原生对话框，语言由渲染进程传入）、
+`listPdfs(dir)`、`reveal()` / `openPath()`（打开输出）、
+`fileUrl(path)`（绝对路径 → `file://` URL）。
 
 `fileUrl()` 是**纯函数、不走 IPC**：渲染进程在 `contextIsolation` 下没有 Node，
 拿不到 `pathToFileURL`，而 Windows 的盘符、反斜杠、空格与非 ASCII 文件名都必须
 由它处理（已实测中文名 + 空格的文件能正常打开）。
 
-**默认输出目录必须由主进程解析**（`app:defaultOutputDir` → `app.getPath("documents")/pdfxlate`）。
-不要在 Python 里拼 `~/Documents`：Windows 的「文档」常被重定向到别的盘，只有 Electron
-问得到真实位置。主进程还在转发 `translate.start` 时**兜底注入**这个路径，所以任何调用方
-漏传都不会退化成引擎的工作目录。
+**输出目录不再可选**。产物写进**每个源文件所在目录下的 `translated/`**：
+`papers/paper-a.pdf` → `papers/translated/paper-a-mono.pdf`。这个默认值在
+`pdf/pipeline.py` 里解析，不在主进程——因为它是**逐文件**的：一次任务可能跨越
+几个文件夹，共用一个输出目录会把不同论文的产物混在一起。`api.translate()` 因此
+在 `output` 为空时传 `""` 而不是 `Path.cwd()`；CLI 的 `-o` 与 MCP 工具都显式传
+目录，行为不变。
 
-**这修的是一个真 bug**：以前输出目录留空时，`api.py` 退回 `Path.cwd()`，而 sidecar 的工作
-目录是**开发时的 `python/`**、**打包后的安装目录**。于是产物被写进源码树（仓库里那几份
-`-mono`/`-dual` 就是这么来的），打包后往 `Program Files` 写还可能直接失败。`.gitignore`
-里加了 `*-mono.pdf` / `*-dual.pdf` 作兜底。
+这么改顺带修掉了一个历史 bug：以前留空时退回 `Path.cwd()`，而 sidecar 的工作目录
+是**开发时的 `python/`**、**打包后的安装目录**，产物会写进源码树（仓库里那几份
+`-mono`/`-dual` 就是这么来的），打包后往 `Program Files` 写还可能直接失败。
+`.gitignore` 里的 `*-mono.pdf` / `*-dual.pdf` 留作兜底。
+
+`app:listPdfs` 除了源目录，还扫这个 `translated/` 子目录，每项返回
+`{path, translated}`（常量 `TRANSLATED_SUBDIR` 与 Python 侧同名常量必须一致）。
+译文行**没有勾选框**、带「译文」角标、文字用次要色：列出来是为了过几天还能找到，
+但它不能成为下一次任务的输入。
 
 **滚轮唤醒浮层的功能已移除。** 曾经用主进程转发滚轮事件来显隐浮层，但 PDF 查看器是
 Chromium 内置扩展的**独立 `remote` WebContents**，OS 把滚轮路由给它，顶层窗口收不到；
@@ -617,9 +696,13 @@ PDF，它是空的，两个按钮就被禁用并提示"请先翻译"：程序**�
   未选文件夹时只显示一行「尚未选择文件夹」，路径行 `hidden`。**不要再加一个独立的小按钮**：
   原来那版是个普通尺寸按钮 + 下面一行裸路径，两者没有视觉归属，而且它引用的
   `.btn--block` 类**从未定义**过。
-- **左侧栏列出所选文件夹里的全部 PDF**（`app.listPdfs`）。列表项 = **复选框 + 文件名**：
-  点文件名开标签页，勾选表示"要翻这份"。**默认不勾任何一项**——文件夹里通常同时躺着
-  原文与 `-mono`/`-dual` 译文，自动勾选会把译文再翻一遍。「开始翻译」只翻**勾中的**。
+- **左侧栏列出所选文件夹里的全部 PDF**（`app.listPdfs`），以及 `translated/` 里的产物。
+  列表项 = **复选框 + 文件名**：点文件名开标签页，勾选表示"要翻这份"。**默认不勾任何一项**
+  ——自动勾选会把译文再翻一遍。译文行**没有勾选框**（改用一个等宽的 `.file-row__tick-slot`
+  占位，保证文件名左对齐），带「译文」角标、文字用次要色。
+- **列表上方有搜索框**（`#docs-search`）。它**只影响画出来的行**，不动 `checkedFiles`：
+  被搜索藏起来的已勾选项仍然计入任务，否则打字就会悄悄改变要翻什么。无匹配时显示
+  `.file-list__empty`。locale 切换本来就会重跑 `renderFiles()`，文案自动跟上。
 - **标签栏在标题栏里**（`#tabbar`，标记与拖拽条之间）。省下一条独立标签栏的整条高度。
   `flex: 0 1 auto`：没标签时宽 0、拖拽条独占整条；标签多了才收缩滚动。
   **拖拽条必须保留 `min-width: 40px`**，否则标签铺满后窗口拖不动。
@@ -643,7 +726,9 @@ PDF，它是空的，两个按钮就被禁用并提示"请先翻译"：程序**�
   拖放边框、并在落点时对空文件列表走一遍 `handleDropped`。
 - **页号按标签各自记住**（`pageState: Map<path, {page, pages}>`）；**缩放是全局的**
   ——那是阅读偏好，每份文档不一样反而更糟。
-- 翻译完成后**产出自动开成标签**（mono + dual），替代原来的「结果」分组。
+- 翻译完成后**产出自动开成标签**，替代原来的「结果」分组。现在一次只产**一种**
+  文档（选项里的「译文形式」：交替 / 仅译文），所以只开一个标签；`showOutputs()`
+  会跳过空串那一侧——把 `""` 传给 `activateTab()` 会得到一个永远加载不出来的标签页。
 
 ### 设置 = 描述模型，选项 = 决定用哪个
 
@@ -721,11 +806,19 @@ config.yaml**——与同面板的页码、线程数、模式一致。存进 loc
 环境下不生效**（移动事件到了 `window`，手柄却收不到），所以改用一个普通标志位，既简单又
 确实可用。
 
+**仅挂 `window` 还不够——`body.is-resizing .preview__frame { pointer-events: none }` 是必需的。**
+指针一越过侧栏边界就落在那个 `<iframe>` 上，它的移动事件**根本不会冒泡给父文档**，于是宽度
+停在原地，等指针移回来才跳一下——这就是拖动时"一卡一卡"的成因，而且恰好在拖动的主方向上。
+
+**移动事件按动画帧合并**（`requestAnimationFrame`，只记最新 `clientX`）。每次写
+`--sidebar-width` 都会让侧栏、预览与查看器各自重排；鼠标事件率远高于帧率，逐事件重排就是
+连续的掉帧。
+
 ### 控件位置
 
 **适应宽度/高度 + 双栏**：`#viewer-fit`，**文档左上角**，三个内联 SVG 图标（一页纸外框 +
 双向箭头，`fit-height` 只把**箭头组**旋转 90°；双栏是两个并排的页面轮廓）。
-**翻页/缩放/打开**：`#viewer-overlay` **右下角**。**另存为**：`#viewer-saveas`
+**翻页/缩放/打开**：`#viewer-overlay` **右下角**。**另存为 + 钉住**：`#viewer-saveas`
 **右上角**。三者共用同一套 `.is-visible` / `:hover` 规则与同一个
 `flashViewerOverlay()`，外观一致，读起来是**一组控件**。都**内缩 18px**——查看器自己的
 竖向滚动条贴在最右侧，压住它下端会很难抓。
@@ -760,12 +853,16 @@ Chromium 内置查看器**没有**双页模式的 URL 参数（`spread` / `two-p
 - 末页奇数时右侧留白，**但宽度不变**：若把它做窄，查看器会把这一页放大到两倍宽，
   翻到最后一页时会突然跳一下。
 
-**第四个条件：标题栏的图钉按钮**（`#btn-toggle-overlays`）可以把三个浮层**钉住常显**，
-给不想每次去"找"控件的人用。实现只有**一个类 + 一条 CSS**（`body.overlays-pinned` 把三块
-设为 `opacity: 1`），**没有另起一套显隐逻辑**——`:hover` / `is-visible` / 计时器都照旧，
-这条规则只是让它们变得不必要。`.hidden` 是 `display: none !important`，**优先级高于钉住**，
-所以没有文档时钉住也不会凭空造出控件来。图钉在**窗口拖拽条之后、系统三键之前**，且必须
-`-webkit-app-region: no-drag`（拖拽区会静默吞点击，本项目已踩过三次）。
+**第四个条件：右上角 chip 里的图钉按钮**（`#btn-toggle-overlays`）可以把三个浮层
+**钉住常显**，给不想每次去"找"控件的人用。实现只有**一个类 + 一条 CSS**
+（`body.overlays-pinned` 把三块设为 `opacity: 1`），**没有另起一套显隐逻辑**——
+`:hover` / `is-visible` / 计时器都照旧，这条规则只是让它们变得不必要。`.hidden` 是
+`display: none !important`，**优先级高于钉住**，所以没有文档时钉住也不会凭空造出控件来。
+
+图钉**和「另存为」共用一个 chip**，而不是贴在标题栏上：它管的就是这几块浮层，放在它们
+中间才顺；共处一个 chip 也让它自动继承那套显隐规则，不必为它写第三套。按下态的样式是
+`.viewer-saveas .icon-btn.viewer-pin[aria-pressed="true"]`——**两个类加一个属性**，
+因为 `.viewer-saveas .icon-btn:hover` 与它同优先级，靠位置（写在后面）才赢得下来。
 
 **加新浮层时注意 `renderPreview()`**：它 `host.innerHTML = ""` 清空 `#preview-host`，
 浮层现在都住在里面，所以必须先把它们取出来再 `append` 回去（见 `VIEWER_OVERLAYS`），
@@ -913,6 +1010,13 @@ key 名与渲染进程的 `dialog.*` 保持一致，便于人工对照。
   `t("...")` 与 `data-i18n*` 属性并逐个查表，缺失即非零退出。
 - `python/pdfxlate.spec` — PyInstaller onedir 打包 Python 侧，
   产物作为 Electron 的 `extraResources` 打进安装包（见 `electron-builder.yml`）。
+  三处不能删：
+  1. `collect_data_files("pdfminer")` —— `pdfminer/cmap/*.pickle.gz` 是运行时按
+     `__file__` 读的数据文件；只收子模块会让打包版解析 CID 字体（中文 PDF 常见）失败。
+  2. `collect_submodules("openai")` —— SDK 有 `__getattr__` 懒加载，静态分析看不全。
+     同时 `on_error="ignore"` 跳过未安装的可选依赖（如 `mcp.cli` 需要 `typer`，服务端不需要）。
+  3. `bundle_assets/` —— 由 `scripts/stage_assets.py` 放进去的默认中文字体；
+     `assets.bundled_path()` 会优先把它复制到缓存，避免首次运行去 GitHub release 下载。
 
 ## 四、运行期数据位置
 
@@ -935,11 +1039,34 @@ key 名与渲染进程的 `dialog.*` 保持一致，便于人工对照。
 ## 五、测试与检查
 
 ```bash
-python/.venv/bin/python -m pytest tests/ -q          # Python，当前 166 passed
+# Windows 的 venv 是 .venv/Scripts/python.exe，macOS/Linux 是 .venv/bin/python
+python/.venv/bin/python -m pytest tests/ -q          # Python，当前 373 passed
 python/.venv/bin/python -m pytest tests/ -q -k cache # 单个方向
 npm run typecheck                                    # 前端类型检查
 npm run check:i18n                                   # 中英文字符串表一致性
 ```
+
+### 打包（Windows NSIS）
+
+```bash
+npm install            # 首次：装 electron 与 electron-builder
+bash scripts/build.sh  # Git Bash；stage → PyInstaller → tsc → electron-builder
+```
+
+产物：`dist/win-unpacked/`（可直接运行）与
+`dist/pdfxlate Setup 0.1.0.exe`（NSIS，per-user，无需管理员）。本次实测：
+
+- 安装包 **180 MB**，解包后 **576 MB**（Electron 228 MB + sidecar 308 MB，含字体）。
+- 干净 `LOCALAPPDATA` 下：`assets.status` 报告 `font_zh=true`（内置）、
+  `layout_model=false`；模型下载走 `hf-mirror.com` 成功；打包版 sidecar 用真实管线
+  译出一页带 54 个汉字的 PDF；`--mcp` 握手并列出四个工具。
+- 安装后的 `%LOCALAPPDATA%\Programs\pdfxlate\` 启动、单实例、关闭窗口回收 sidecar
+  均通过。
+- electron-builder 的 NSIS/winCodeSign 从 npmmirror 下载（`build.sh` 默认设置
+  `ELECTRON_BUILDER_BINARIES_MIRROR`）；不设镜像时 GitHub release 链路会超时。
+- **未签名**：SmartScreen 会提示；签名需要购买证书，不是构建配置问题。
+  在 Git Bash 里测静默安装不要直接传 `/S`（MSYS 会把 `/S` 当路径改写），
+  用 PowerShell `Start-Process -ArgumentList "/S"` 或 `cmd /c`。
 
 `test_translation.py` 用假 adapter（计数器、故意丢占位符）测缓存命中、
 `{vN}` 守卫、`<think>` 剥离、注册表冲突、`cache.enabled` 接线。
@@ -1073,8 +1200,10 @@ gitleaks detect                            # 扫 git 历史
   逻辑。与上一条同源，留待深色主题那轮一起解决。
 - **设置模式下折叠侧栏会连「← 返回」一起藏起来**，退出设置只能靠标题栏图标。图标
   常驻所以可恢复，属「图标折叠侧栏」的直接推论，未做特例。
-- **打包产物未在本环境验证**：应用图标只验到「PNG/ICO 结构正确 + 配置指向正确」，
-  `electron-builder` 的实际构建没有跑（与仓库现状一致，打包验证是早前在 Linux 上做的）。
+- **安装包未签名**：Windows SmartScreen 会在首次运行时提示；签名需要购买证书。
+  打包链本身已在本机验证：NSIS 180 MB、安装后启动、单实例、关窗回收 sidecar 均通过。
+- **版面模型仍在线下载**（75 MB，走 hf-mirror）：应用本身就需要网络调用翻译 API，
+  因此没有把模型打进安装包；默认中文字体已经内置，解决的是实测必然失败的 GitHub 下载。
 - 前端尚无自动化测试，仅 `typecheck` 通过。自建标题栏的拖拽区属于「静默吞掉点击、
   不报错」的一类问题，只靠 `typecheck` 和截图都测不出来，需经 CDP 发真实鼠标事件
   断言处理器确实执行。

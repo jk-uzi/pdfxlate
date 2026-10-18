@@ -48,6 +48,7 @@ export interface TranslateParams {
   output?: string;
   pages?: number[];
   mode?: "fast" | "ultrafast";
+  output_mode?: "mono" | "dual" | "both";
   thread?: number;
 }
 
@@ -70,22 +71,16 @@ const api = {
     ipcRenderer.invoke("sidecar:request", method, params),
 
   /**
-   * Where outputs go when the user has not picked a directory.
-   *
-   * The main process resolves it because only it can ask the OS: the Documents
-   * folder is frequently relocated, so a path built here or in Python would be
-   * a guess.
-   */
-  defaultOutputDir: (): Promise<string> => ipcRenderer.invoke("app:defaultOutputDir"),
-
-  /**
-   * PDF files directly inside `dir` (not recursive), as absolute paths.
+   * PDFs in `dir`, plus the ones under its `translated/` subfolder.
    *
    * The renderer is sandboxed, so listing a directory has to happen in the main
-   * process. Only the immediate contents are returned: this backs a flat file
-   * list, and walking a tree would make it unbounded.
+   * process. Each entry carries a `translated` flag: outputs are listed so they
+   * can be found again, but are not valid inputs for another job. Only the
+   * immediate contents are read — this backs a flat list, and walking a tree
+   * would make it unbounded.
    */
-  listPdfs: (dir: string): Promise<string[]> => ipcRenderer.invoke("app:listPdfs", dir),
+  listPdfs: (dir: string): Promise<Array<{ path: string; translated: boolean }>> =>
+    ipcRenderer.invoke("app:listPdfs", dir),
 
   /** Native "choose a folder" dialog, for browsing a folder of PDFs. */
   pickFolder: (locale?: string): Promise<string | null> =>
@@ -137,8 +132,6 @@ const api = {
    */
   pickPdf: (locale?: string): Promise<string[]> =>
     ipcRenderer.invoke("dialog:pickPdf", locale),
-  pickOutputDir: (locale?: string): Promise<string | null> =>
-    ipcRenderer.invoke("dialog:pickOutputDir", locale),
   reveal: (target: string): Promise<void> => ipcRenderer.invoke("shell:reveal", target),
   openPath: (target: string): Promise<void> => ipcRenderer.invoke("shell:openPath", target),
 

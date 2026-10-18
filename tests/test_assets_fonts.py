@@ -111,3 +111,65 @@ def test_status_reports_present_non_cjk_font(empty_assets_dir):
     # The CJK legacy keys are still False, which is the correct signal for a
     # GoNoto target: no SourceHanSerif face is needed.
     assert assets.status("ru")["font_zh"] is False
+
+
+def _bundle_with(filename: str, content: bytes, tmp_path: Path) -> Path:
+    """Create a fake PyInstaller tree and point the module at it."""
+    root = tmp_path / "bundle"
+    (root / "bundle_assets" / "fonts").mkdir(parents=True)
+    (root / "bundle_assets" / "fonts" / filename).write_bytes(content)
+    return root
+
+
+def test_status_counts_a_bundled_font(empty_assets_dir, tmp_path, monkeypatch):
+    root = _bundle_with("SourceHanSerifCN-Regular.ttf", b"font", tmp_path)
+    monkeypatch.setattr(assets.sys, "_MEIPASS", str(root), raising=False)
+
+    # Nothing is in the download cache, but the installer ships the font, so
+    # the first-run banner must not ask the user to download it.
+    assert assets.status()["font_zh"] is True
+    assert assets.status("zh")["font_ready_for"] is True
+
+
+def test_ensure_copies_bundled_font_without_the_network(
+    empty_assets_dir, tmp_path, monkeypatch
+):
+    root = _bundle_with("SourceHanSerifCN-Regular.ttf", b"bundled-font", tmp_path)
+    monkeypatch.setattr(assets.sys, "_MEIPASS", str(root), raising=False)
+
+    def no_network(*args, **kwargs):
+        raise AssertionError("a bundled asset must not hit the network")
+
+    monkeypatch.setattr(assets.requests, "get", no_network)
+
+    path = assets.ensure_font("zh")
+    assert path == empty_assets_dir / "fonts" / "SourceHanSerifCN-Regular.ttf"
+    assert path.read_bytes() == b"bundled-font"
+
+
+def test_truncated_download_is_rejected(tmp_path, monkeypatch):
+    """A short body must not be renamed into place as a valid asset."""
+    dest = tmp_path / "file.bin"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    class FakeResponse:
+        headers = {"Content-Length": "10"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def raise_for_status(self):
+            return None
+
+        def iter_content(self, size):
+            yield b"12345"
+
+    monkeypatch.setattr(assets, "_ATTEMPTS", 1)
+    monkeypatch.setattr(assets.requests, "get", lambda *a, **k: FakeResponse())
+
+    with pytest.raises(OSError, match="incomplete download"):
+        assets._download_one("https://example.invalid/file", dest)
+    assert not dest.exists()

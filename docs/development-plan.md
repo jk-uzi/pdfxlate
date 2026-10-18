@@ -17,7 +17,7 @@
 
 ## 二、代码划分
 
-独立仓库：`./`
+独立仓库：`./`（与上游的完整克隆 `references/PDFMathTranslate/` 并列）
 
 职责边界：
 
@@ -271,4 +271,4 @@ PyInstaller spec + electron-builder 三平台配置。验证：在 Linux 打出 
 
 可独立分发的跨平台桌面应用：拖入 PDF → 选模型 → 出双语对照 + 纯译文两个 PDF。支持任意 OpenAI 兼容端点（自定义 base_url / api_key / model / 推理强度 / 任意私有参数），另附 CLI 与 Python API 两个入口用于调试和批处理。
 
-**注意**：新项目位于仓库根目录，**不修改**现有 PDFMathTranslate 仓库任何文件（仅作只读参考）。
+**注意**：新项目位于仓库根目录（与上游克隆 `references/PDFMathTranslate/` 并列），**不修改**现有 PDFMathTranslate 仓库任何文件（仅作只读参考）。

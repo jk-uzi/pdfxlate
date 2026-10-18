@@ -256,21 +256,6 @@ body {
   background: #eef0f3;
 }
 
-/* The pin sits after the drag strip, so it needs no left margin of its own —
-   and it does need to opt out of the drag region it sits beside. */
-.titlebar__pin {
-  margin-left: 4px;
-  margin-right: 4px;
-  -webkit-app-region: no-drag;
-  color: var(--muted);
-}
-
-/* Pressed: the corner controls are pinned on screen. */
-.titlebar__pin[aria-pressed="true"] {
-  background: #e4e8ee;
-  color: var(--accent);
-}
-
 /* The mark is inlined into index.html at build time (see copy-static.mjs), so
    it is styled as an element rather than as a background image. */
 .titlebar__mark {
@@ -1083,6 +1068,17 @@ body.is-resizing .sidebar {
 }
 
 /*
+ * The pointer leaves this document the moment it crosses into the PDF viewer,
+ * which is an `<iframe>` with its own event target. Its moves never reach the
+ * parent, so the width froze until the pointer came back — the drag stuttered in
+ * exactly the direction people drag it. Taking the frame out of hit-testing for
+ * the duration keeps every move in this document.
+ */
+body.is-resizing .preview__frame {
+  pointer-events: none;
+}
+
+/*
  * Collapsed sidebar, driven from a class on `<body>` rather than per element:
  * there are two sidebars (task and settings) and both must move together.
  *
@@ -1453,6 +1449,16 @@ input[readonly] {
   color: #fff;
 }
 
+.btn--danger:hover:not(:disabled) {
+  filter: brightness(0.93);
+}
+
+/* Between pressing cancel and the engine actually stopping: visibly busy, and
+   not clickable again — a second press would do nothing anyway. */
+.btn.is-cancelling {
+  cursor: progress;
+}
+
 .btn--small {
   padding: 7px 10px;
 }
@@ -1484,6 +1490,11 @@ input[readonly] {
 }
 
 /* --- file / result lists ------------------------------------------------- */
+
+/* Search above the list, on the same axis as the folder picker. */
+.docs-search {
+  margin-top: 10px;
+}
 
 .file-list {
   list-style: none;
@@ -1553,6 +1564,37 @@ input[readonly] {
 
 .file-row__name.is-active {
   font-weight: 600;
+}
+
+/*
+ * An output row: listed so it stays findable, but not a candidate for another
+ * job. It keeps the tick column as an empty slot so all names start at the same
+ * x — losing that alignment makes the list look broken rather than tagged.
+ */
+.file-row__tick-slot {
+  flex: 0 0 auto;
+  width: 13px;
+  height: 13px;
+}
+
+.file-row.is-translated .file-row__name {
+  color: var(--muted);
+}
+
+.file-row__tag {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #eef0f3;
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.file-list__empty {
+  padding: 6px;
+  color: var(--muted);
+  font-size: 12.5px;
 }
 
 /*
@@ -1844,7 +1886,19 @@ input[readonly] {
    `currentColor` so it follows the theme — an inline SVG is part of the
    document and inherits `color`, which an <img> reference could not. Strokes
    are thick on purpose: thin ones dissolve at the 18px this renders at. */
-.titlebar__pin svg {
+.viewer-pin {
+  /* Fixed square, sized to land on the same box as the text glyph beside it:
+     18px of drawing + 3px padding + 1px border. Left to its padding the SVG
+     would make this the tallest button in the chip and grow the chip with it. */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px;
+  width: 26px;
+  height: 26px;
+}
+
+.viewer-pin svg {
   display: block;
   width: 18px;
   height: 18px;
@@ -1868,6 +1922,7 @@ input[readonly] {
   top: 18px;
   display: flex;
   align-items: center;
+  gap: 2px;
   padding: 6px;
   border: 1px solid #2c2f31;
   border-radius: var(--radius);
@@ -1892,6 +1947,15 @@ input[readonly] {
 .viewer-saveas .icon-btn:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.12);
   color: #ffffff;
+}
+
+/* Pinned. Specificity is deliberately level with the `:hover` rule above and
+   this sits after it, so the lit state survives the pointer resting on the
+   button. A translucent tint rather than the opaque light-theme highlight,
+   which would look like a hole punched in the dark chip. */
+.viewer-saveas .icon-btn.viewer-pin[aria-pressed="true"] {
+  background: rgba(47, 111, 235, 0.3);
+  color: #b7cdff;
 }
 
 /*

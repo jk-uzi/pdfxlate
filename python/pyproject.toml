@@ -2,6 +2,7 @@
 name = "pdfxlate"
 version = "0.1.0"
 description = "Layout-preserving PDF translation with any OpenAI-compatible model"
+license = { text = "AGPL-3.0-or-later" }
 requires-python = ">=3.11,<3.13"
 dependencies = [
     # --- PDF parsing and typesetting --------------------------------
@@ -40,7 +41,11 @@ cuda = ["onnxruntime-gpu"]
 # cryptography, and the desktop bundle is already ~253 MB without them.  Only
 # users who wire the server into an agent need this extra.
 mcp = ["mcp>=2.3.0"]
-dev = ["pytest", "pyinstaller"]
+# The release bundle advertises MCP in the settings UI, so the environment used
+# to build it must contain the SDK; otherwise PyInstaller silently ships
+# without it and `--mcp` fails on a user's machine.  Keeping it in `dev` makes
+# `pip install -e '.[dev]'` (the documented setup) produce a complete bundle.
+dev = ["pytest", "pyinstaller", "mcp>=2.3.0"]
 
 [project.scripts]
 pdfxlate = "pdfxlate.cli:main"

@@ -7,9 +7,14 @@
 # native libraries, and onefile would extract them to a temp directory on
 # every launch — slow, and prone to antivirus interference on Windows.
 
-from PyInstaller.utils.hooks import collect_dynamic_libs, collect_submodules
+from PyInstaller.utils.hooks import (
+    collect_data_files,
+    collect_dynamic_libs,
+    collect_submodules,
+)
 
 import importlib.util
+from pathlib import Path
 
 
 def _collect_if_installed(*packages):
@@ -17,11 +22,20 @@ def _collect_if_installed(*packages):
 
     The mcp SDK is an optional extra (see pyproject.toml), so a bundle built
     without it must still build — it just ships without the MCP entry point.
+
+    ``mcp.cli`` is excluded: it imports ``typer`` (the SDK's ``cli`` extra),
+    which the server does not need, and collect_submodules imports every
+    submodule to discover its children. ``on_error="ignore"`` covers other
+    optional-dependency modules the same way.
     """
     found = []
     for package in packages:
         if importlib.util.find_spec(package) is not None:
-            found += collect_submodules(package)
+            found += collect_submodules(
+                package,
+                filter=lambda name: not name.startswith("mcp.cli"),
+                on_error="ignore",
+            )
     return found
 
 
@@ -38,6 +52,13 @@ hiddenimports = [
     # unknown provider for both.
     "pdfxlate.models.openai_responses",
     "pdfxlate.models.anthropic_messages",
+    # The OpenAI SDK lazily resolves resource/type modules through
+    # ``__getattr__``; static analysis cannot see that dispatch. Collect the
+    # package so a packaged adapter never dies on a missing openai.* module.
+    *collect_submodules("openai", on_error="ignore"),
+    # PyMuPDF imports this from inside a method when Document.subset_fonts()
+    # runs. It is a direct dependency, but naming it here removes any doubt.
+    "fontTools.subset",
     # The MCP server is an alternative entry point into the same bundle, so a
     # packaged build can serve an agent as well as the desktop app.  It is a
     # hidden import because nothing in the sidecar entry point references it, so
@@ -61,7 +82,20 @@ for package in ("onnxruntime", "cv2", "numpy", "pymupdf", "fontTools"):
     except Exception:
         pass
 
-datas = []
+datas = [
+    # pdfminer loads its CMap tables from pdfminer/cmap/*.pickle.gz at runtime
+    # via os.path.dirname(__file__). collect_submodules() alone does not bring
+    # those files, and without them CID-keyed PDFs (common for Chinese and
+    # Japanese documents) fail to parse in the packaged app.
+    *collect_data_files("pdfminer"),
+]
+
+# Fonts staged by scripts/stage_assets.py. Bundling the default Chinese face
+# removes the only first-run download that was reliably unreachable (GitHub
+# release assets); the layout model still downloads from the HF mirror.
+_bundle_assets = Path("bundle_assets")
+if _bundle_assets.is_dir():
+    datas.append((str(_bundle_assets), "bundle_assets"))
 
 a = Analysis(
     ["pdfxlate/sidecar.py"],

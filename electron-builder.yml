@@ -4,7 +4,10 @@ copyright: Copyright © 2026 pdfxlate contributors
 
 directories:
   output: dist
-  buildResources: build
+  # `build/` is gitignored packaging output and does not exist in a clean
+  # checkout; electron-builder warns (and some resource lookups fail) when it
+  # points at a missing directory. The icon paths below are explicit.
+  buildResources: assets
 
 # The app mark. Kept in `assets/` rather than the conventional `build/` because
 # `.gitignore` excludes `build/` as packaging output, and the icon is source
@@ -15,6 +18,12 @@ icon: assets/icon.png
 files:
   - out/**/*
   - package.json
+  # The AGPL text has to travel with the installed program, not only with the
+  # repository.
+  - LICENSE
+  # Source maps are useful in development, not in a release: they double the
+  # renderer/main payload and expose source paths.
+  - "!**/*.map"
 
 # The PyInstaller onedir output is bundled as a resource directory and located
 # at runtime via process.resourcesPath (see src/main/sidecar.ts).
@@ -45,6 +54,9 @@ nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
   perMachine: false
+  # Shows the AGPL notice before installing. The path is relative to the
+  # project root (or buildResources); electron-builder accepts plain text.
+  license: LICENSE
 
 # --- macOS -----------------------------------------------------------------
 mac:

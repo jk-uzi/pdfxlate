@@ -925,9 +925,9 @@ CSS 那路**又是被 provider 渠道校验拦下**（`upstream 400`，与内容
 路径写进占位符，并在发起任务时显式带上——**所见即所用**。CLI 保持 `Path.cwd()`（命令行
 输出到当前目录是惯例），`api.py` 的库层语义不动。
 
-**实测确认修好了**：留空输出目录跑一次真翻译，产物落在
-`<开发机路径>`，且 `python/` 前后**文件数不变**（0 → 0）。
-`.gitignore` 加了 `*-mono.pdf` / `*-dual.pdf` 作兜底。
+**实测确认修好了**：留空输出目录跑一次真翻译，产物落在源文件旁的 `translated/`
+子目录（`D:\...` 那台验证机上就是 `...\Documents\pdfxlate\`），且 `python/` 前后**文件数不变**
+（0 → 0）。`.gitignore` 加了 `*-mono.pdf` / `*-dual.pdf` 作兜底。
 
 ### 滚轮显示浮层：三次探针才找对路子
 
@@ -2218,3 +2218,298 @@ false，弹窗把这个其实已经配好的模型当成新的，导入后 `mode
 
 CDP 实测：进度条 315px 占满；齿轮 28×28、圆角 8px、单个 `path`（无 `rect`）、与状态文字同行
 且在右；重复检测如上。截图确认侧栏底部与按钮形态。
+
+## 2026-10-17（续）：一个按钮启停、真正能取消、输出到 translated/、文档搜索、拖拽不再卡
+
+### 1. 开始/取消合成一个按钮
+
+原本 `#btn-translate`（蓝）和 `#btn-cancel`（红、默认 `hidden`）并排。点开始后
+第二个按钮凭空出现在右边，整行高度和宽度都跳一下，而且两个元素各自被不同代码
+开关，很容易出现"都显示"或"都不显示"。
+
+改成**同一个按钮三种状态**，由一个 `paintTranslateButton()` 统一决定：
+空闲 = 「开始翻译」+ `.btn--primary`；运行中 = 「取消翻译」+ `.btn--danger`；
+按下取消后 = 「正在取消…」+ 禁用。点击时按 `activeJobId` 是否为 `null` 分流。
+删除 `#btn-cancel` 与 `updateTranslateButton()`。
+
+### 2. 取消以前根本没到过引擎
+
+**根因**：`sidecar.py` 的 `main()` 是 `for line in sys.stdin: handle(request)`，而
+`method_translate_start` 在**这个循环里同步跑完整份翻译**。`translate.cancel` 是
+标准输入上的一行——作业结束前主循环根本回不到 `readline`，请求就一直躺在管道里。
+所以不是取消逻辑写错了，是**请求从未被读到**。这也解释了为什么按钮点了"没反应"，
+而不是"报错"。
+
+**修法**：
+
+- `handle()` 对 `translate.start` 起一个 daemon 线程，主循环立刻回去读 stdin；
+  其余方法仍同步执行（`_BACKGROUND_METHODS` 白名单，不按"慢"来猜）。
+- `_emit()` 持 `_EMIT_LOCK`。两个线程同时写 stdout 会把两条 JSON 拼在同一行上，
+  渲染进程一次丢两份。这和"加锁很稳妥"无关——不加锁是真的会坏。
+- `method_translate_start` 捕获 `asyncio.CancelledError`，回
+  `{cancelled: true, outputs: []}`，**且不发 `done` 事件**。取消是正常结束。
+
+**实测**：一个每段耗时 5s 的假端点，点取消后 **1.34s** 停下，进度显示「已取消」，
+按钮复位，`translated/` 里没有半成品文件。
+
+### 3. 输出目录去掉，固定写进源文件旁的 `translated/`
+
+`papers/paper-a.pdf` → `papers/translated/paper-a-mono.pdf`。
+
+默认值放在 `pdf/pipeline.py` 的 `translate()` 里，因为它是**逐文件**解析的：一次任务
+可能跨越几个文件夹，共用一个目录会把不同论文的产物混在一起。`api.translate()` 于是
+在 `output` 为空时传 `""`（而不是原来的 `Path.cwd()`）。CLI 的 `-o` 与 MCP 工具都显式
+传目录，行为不变；`two_phase.output_paths()` 是 MCP 自己的约定，没动。
+
+前端删掉整个输出目录 label、`#field-output`、`#btn-pick-output`；主进程删掉
+`defaultOutputDir()` / `withDefaultOutput()` / `app:defaultOutputDir` /
+`dialog:pickOutputDir` 与 `DIALOG_STRINGS.selectOutput`。
+
+**列出译文**（按你选的"始终列出并加标记"）：`app:listPdfs` 返回
+`{path, translated}[]`，除源目录外再扫 `translated/`。译文行**没有勾选框**，用一个
+等宽的 `.file-row__tick-slot` 占位保持文件名左对齐，带「译文」角标、文字用次要色。
+没有做成"禁用勾选框"——一个灰掉的框只会让人问"为什么不能勾"，而没有框就说明
+"这不是可选项"。
+
+### 4. 文档搜索
+
+`#docs-search` 放在文件夹选择器与列表之间。**只过滤画出来的行，不动 `checkedFiles`**：
+被搜索藏起来的已勾选项仍然计入任务，否则打字就会悄悄改变要翻什么。无匹配时显示
+`.file-list__empty`。
+
+### 5. 侧栏拖拽"一卡一卡"
+
+**根因**：指针一越过侧栏边界就落在预览区的 `<iframe>` 上。它是**独立文档**，移动
+事件不会冒泡到父页面，挂在 `window` 上的监听收不到 → 宽度停住；等指针移回来才跳
+一下。之前那轮已经知道 iframe 吞事件（所以监听挂在 window），但没意识到**指针进入
+iframe 之后父文档连事件都没有**。
+
+**修法**：`body.is-resizing .preview__frame { pointer-events: none }` —— 拖拽期间
+iframe 退出命中测试，所有移动都留在本页。另外用 `requestAnimationFrame` 合并移动
+（只记最新 `clientX`）：每次写 `--sidebar-width` 都会让侧栏、预览与查看器各自重排，
+而鼠标事件率远高于帧率，逐事件重排就是连续掉帧。
+
+### 验证
+
+`pytest` **340 passed**（原 328 + `test_sidecar_cancel.py` 6 + `test_output_dir.py` 6）、
+`typecheck`、`check:i18n`（198 keys）、`build` 全绿。
+
+CDP 在真实 Electron 里跑了 **22 项断言，全过**：
+
+- 列表：3 份源文件 + `translated/` 里的 1 份译文；译文行无勾选框、有「译文」角标；
+- 搜索 `beta` → 只剩 1 行；搜不到时显示空状态；**按钮禁用状态不受过滤影响**；
+- 空闲按钮是「开始翻译」+ `.btn--primary`，DOM 里已无 `#btn-cancel`；
+- 运行中同一按钮变「取消翻译」+ `.btn--danger`；再点变「正在取消…」且禁用；
+- 取消后 **1.34s** 回到「开始翻译」，进度「已取消 — 未完成的文件没有写出」；
+- `translated/` 里没有半成品；
+- 拖拽 5 个采样点（300/380/460/520/430）宽度逐一跟上，拖拽时 iframe
+  `pointer-events: none`，松手后 `body.is-resizing` 已清除。
+
+进度文案改了一次：初版 `progress.cancelled` 是「已取消。」，而左侧固定显示
+`stage.cancelled`（「已取消」），渲染成「已取消 — 已取消。」。改成说明实际结果
+（「未完成的文件没有写出。」）后才有信息量。
+
+## 2026-10-17（续二）：译文形式可选、页码范围裁掉输出、产物不覆盖
+
+### 1. 「译文形式」：交替 / 仅译文，默认交替
+
+以前**永远产出两个文件**：`-mono`（纯译文）与 `-dual`（原文页、译文页交替）。用户要的是
+二选一。选项面板加 `#field-output-mode`：
+
+| 值 | 文案 | 产物 |
+|---|---|---|
+| `dual`（默认） | 交替（原文 + 译文） | 8 页输入 → 16 页 |
+| `mono` | 仅译文 | 8 页输入 → 8 页 |
+
+**没有做成"少写一个文件"，而是少建一份文档**。`translate_stream(..., output_mode=)`：
+`mono` 只序列化译文文档，`dual` 才走 `doc_en.insert_file()` + 逐页 `move_page`；
+`both` 保留两者，给 CLI 和 MCP 用（它们的行为不变）。没要的那一侧返回 `b""`，
+`pipeline.translate()` 据此不写盘，`outputs` 里对应字段是空串。
+
+**前端差点因此出 bug**：`showOutputs()` 原来无条件遍历 `[dual, mono]`，空串会被
+`activateTab("")` 开成一个永远加载不出来的标签页。现在先过滤空串。CDP 验证：只有交替
+文件时**只开一个标签**。
+
+选项**不持久化**——它是"这一次"的选择，且默认值就是交替的形式。
+
+### 2. 页码范围现在也裁掉输出
+
+以前 `pages` 只控制"翻译哪几页"，输出仍是整份文档：填 `2-3` 得到的是整本，其中第 2-3 页
+是译文、其余是原文。用户的预期是"第 2-3 页"就该拿到两页。
+
+改为**双重语义**：翻译哪几页 + 输出保留哪几页。`_selected_pages()` 排序去重、丢掉越界页
+（`1-99` 在 10 页文档上是正常输入），整份选中时返回 `None`，连 `select()` 都不调。
+裁剪位置在**打完补丁之后、`subset_fonts()` 之前**——不给马上要丢的页做字体子集化。
+
+`two_phase` 的两遍式收集/回填走同一个 `translate_stream`，所以 MCP 的页码语义也跟着
+变成"输出只含这几页"，这正是这个参数本来的意思。
+
+### 3. 产物永不覆盖
+
+`_unique_paths()`：`paper-mono.pdf` 已存在 → `paper-mono (2).pdf`。mono 与 dual **共用
+一个序号**（`paper-mono (2)` 配 `paper-dual (2)`），否则一对文件看起来像两次无关的运行。
+`pipeline.translate()` 与 `two_phase.write_outputs()` 都走它。
+
+**一个实现细节**：`(2)` 必须放在扩展名之前，而不是直接接在完整文件名后——初版写成
+`f"{stem}{marker}{suffix}"` 得到 `paper (2)-mono.pdf`，看起来像另一个文件。现在按各
+后缀自己的 `.pdf` 拆开再拼。
+
+### 4. 顺手修掉一个真回归：Windows 上第一个任务会挂死
+
+上一轮把 `translate.start` 挪到工作线程后，**numpy 的 C 扩展第一次是在子线程里导入的**。
+在 Windows 上、且 stdin 是管道时（Electron 正是这样），这个导入会永久卡在模块初始化里：
+线程不返回，一条进度事件都不发。进程内直接调用却完全正常，所以之前的测试全绿。
+
+本次 CDP 验证一开始就撞上了：界面永远停在「正在启动…」。逐层剥离后确认——
+同一个 sidecar 子进程、同一份配置，直接 `api.translate()` 9 秒出结果，走 sidecar 则
+20 秒后 faulthandler 显示线程停在 `numpy/_core/multiarray.py → create_module`。
+
+修法：`main()` 在进入 `for line in sys.stdin` 之前先 `import numpy`（主线程）。
+`tests/test_sidecar_cancel.py` 加了两条断言，其中一条直接检查源码里这行在循环之前。
+
+### 验证
+
+`pytest` **361 passed**（原 340 + `test_output_mode.py` 19 + 取消相关 2）、`typecheck`、
+`check:i18n`（201 keys）、`build` 全绿。
+
+**真实管线端到端 16 项**（4 页样例 PDF + stub 翻译器，不联网）：
+
+- `dual` → 8 页；第 1 页原文、第 2 页译文、第 3 页第 2 页原文；
+- `mono` → 4 页，每页都是译文，且**没有**写出 dual 文件；
+- 页码 `2-3`：`dual` → 4 页且从第 2 页开始，`mono` → 2 页；
+- 连跑两次：多出 ` (2)` 文件，第一份的字节未变。
+
+**Electron 界面 9 项**：下拉存在、两项、默认 `dual`、中英文案正确；跑真实作业后
+`translated/` 里只有 `paper-dual.pdf`、只开一个标签；切到 `mono` 再跑，只多出
+`paper-mono.pdf`，dual 未被改动。
+
+
+## 翻译缓存：本地已经在命中，服务端前缀缓存这条路走不通
+
+用户反馈「命中率为 0」。先分清两个缓存：
+
+- **本地 sqlite 缓存**（`cache.v1.db`）一直都在工作。检查时库里有 1327 条记录，
+  其中 967 条是 `deepseek-v4.1-flash` 的真实译文，WAL 也在持续写入。它按
+  「引擎 + 参数 + 段落原文」精确匹配，所以新论文第一次翻必然接近 0；同一份 PDF
+  在参数不变时重跑才会接近 100%。这不是故障，也不需要再造一层缓存。
+- **服务端提示词缓存**（网关返回的 `prompt_cache_hit_tokens`）才是真正为 0 的那个。
+
+### 探测：网关支持缓存，但加长提示词是亏的
+
+用当前网关做了三组探针：
+
+| 固定前缀 | prompt tokens | 第二次请求命中 |
+|---|---|---|
+| 约 2.9 kB | 564 | 384 |
+| 约 1.2 kB | 298 | 128 |
+| 约 0.9 kB | 235 | 0 |
+
+规律是 `hit = max(0, floor(tokens / 128) - 1) * 128`：**第一个 128-token 块永远
+不缓存**，之后每块 128。也就是说，要让前缀产生命中，前缀本身至少要到 256 token；
+而前缀越长，未命中的部分（至少 128 token）就越多。原来的短模板在 `${text}` 之前
+只有约 50 token，按原价计费；任何“可缓存”的加长版本都要多付至少 78 token 的全价，
+**命中省下的 10% 抵不过新增的固定开销**。因此最终**回退到原始短模板**，
+只保留 `prompt_cache_hit_tokens` 的采集——它仍然能告诉你网关有没有在别处命中。
+
+### 保留的改动
+
+1. `cache.py`：`snapshot_stats()` 提供 hits / misses；只有缓存开启且真正查询才计数，
+   `cache.enabled=false` 与 `ignore_cache` 都不会虚增 miss。
+2. `models/base.py`：`record_provider_cache()` / `provider_cache_snapshot()` 累计
+   服务端 usage，进程级、按任务清零。
+3. `models/openai_compat.py`：非流式响应里读
+   `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`，读不到再退到
+   `prompt_tokens_details.cached_tokens`；字段缺失就静默跳过。流式请求没有 usage，
+   当前配置 `stream: false`，正好覆盖。
+4. `sidecar.py`：`translate.start` 开始清零，结束时把
+   `cache: {hits, misses}` 与 `provider_cache: {hit_tokens, miss_tokens}` 同时放进
+   回复和 `done` 事件；取消的回复也带（统计取消前已完成的部分）。
+5. `app.ts` / `i18n.ts`：完成状态追加「本地缓存命中 x/y 段」和
+   「服务端提示词缓存 x/y tokens」，中英各两条。以后“命中率”不再是猜的。
+
+真机端到端（临时生成的 4 页 PDF，只翻第 1 页，共 9 段；这一轮用的是加长版提示词，
+仅用于验证计数器）：
+
+- 第 1 次：本地 `0 hit / 9 miss`，服务端 `1152 hit / 1767 miss`（9 段 × 128）。
+- 第 2 次：本地 `9 hit / 0 miss`，服务端 `0/0`——一次 API 都没发。
+
+**本地缓存才是省钱的部分**：同一份文档重跑、先跑交替再跑仅译文、任务中断后重跑，
+都不会再付第二遍钱。服务端缓存只对“本来就该发很长固定前缀”的场景有意义，本项目不是。
+
+测试：`pytest` 370 项通过，`typecheck` / `check:i18n`（203 键）/ `build` 全绿；
+`test_default_prompt_stays_short_for_cost` 防止以后有人再把提示词“优化”长。
+
+
+## 2026-10-17（发布前）：打包审计与 Windows 安装包验证
+
+第一版准备发布，按「装到别人电脑上能不能跑」逐项检查。结论：代码本身没问题，
+打包链和首次运行资源有硬伤；已修并实际产出 NSIS 安装包。
+
+### 会直接让构建失败的
+
+1. `scripts/build.sh` 只认 `.venv/bin/python`。Windows 的 venv 是
+   `.venv/Scripts/python.exe`，脚本在 Git Bash 里第一步就退出。改成两种布局自动识别。
+2. `electron-builder` 不在 `devDependencies`，`npx electron-builder` 会临时去
+   registry 拉最新版，构建不可复现。加 `electron-builder@^26`。
+3. electron-builder 缓存为空，NSIS / winCodeSign 要从 GitHub release 下载，而实测
+   `github.com` release 链路 8/8 超时。`build.sh` 默认设置
+   `ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/`，
+   本次构建从镜像成功下载 NSIS 3.0.4.1、nsis-resources、7zip。
+
+### 装得上但换台电脑会坏的
+
+4. **PyInstaller 漏了 pdfminer 的 CMap 数据**。`pdfminer/cmap/*.pickle.gz` 是按
+   `__file__` 读的，`collect_submodules("pdfminer")` 只收模块不收数据；打包版遇到
+   CID 字体（中文 PDF 常见）会解析失败。加 `collect_data_files("pdfminer")`。
+5. **中文字体只从 GitHub release 下载**，干净机器上必然失败。新增
+   `scripts/stage_assets.py`，构建时把默认中文字体复制进 `python/bundle_assets/`，
+   spec 打进 `_internal/bundle_assets`；`assets.ensure()` 按「缓存 → 内置 → 网络」
+   顺序，`status()` 也认内置副本。GoNoto 能取到就一起打（本次第二次构建成功取到）。
+6. **sidecar 会闪控制台窗口**：PyInstaller `console=True`，`spawn` 没传
+   `windowsHide`。补上。
+7. **没有单实例锁**：两个窗口、两个 sidecar 共用配置和缓存。加
+   `requestSingleInstanceLock()` + 第二次启动聚焦已有窗口；Windows 下补
+   `setAppUserModelId("com.pdfxlate.app")`。
+8. **mcp 进不进包取决于 venv**：`dev` extra 不含 mcp，但界面始终宣传 MCP，
+   README 还写着“桌面包不带 mcp”。`dev` 加 `mcp>=2.3.0`；spec 收集 mcp 子模块时
+   排除 `mcp.cli`（它 import `typer`，服务端不需要）并 `on_error="ignore"`。
+9. **没有 LICENSE**：项目是 AGPL-3.0-or-later，分发必须带协议文本。新增
+   `LICENSE`（34 KB 全文），`pyproject.toml` 加 license 字段，NSIS 安装向导加许可页，
+   asar 里也带一份。
+
+另外两处小修：`assets._download_one()` 比对 `Content-Length`，截断下载不再被当成
+成功；`npm run build` 前清 `out/`，避免旧文件混进包；electron-builder 的 `files`
+排除 `*.map`、`buildResources` 指向存在的 `assets/`。
+
+### 实际验证（不是只看配置）
+
+1. `bash scripts/build.sh` 成功：`dist/win-unpacked/` + `dist/pdfxlate Setup 0.1.0.exe`。
+   安装包 180 MB，解包 576 MB（Electron 228 MB + sidecar 308 MB，含 14 MB 中文字体
+   和 15 MB GoNoto）。
+2. **干净用户目录下的打包 sidecar**（临时 `LOCALAPPDATA`/`APPDATA`）：
+   - `assets.status` → `font_zh=true`（内置）、`layout_model=false`；
+   - `assets.download` 从 hf-mirror 下载 75 MB 模型成功；
+   - 用本地假 OpenAI 端点跑真实管线：9 段、6 次调用、输出 PDF 含 54 个汉字，
+     说明 onnxruntime、pdfminer、fontTools 子集化、openai SDK 在冻结包里都能用；
+   - `--mcp` 完成 initialize，列出 `list_providers` / `extract_segments` /
+     `typeset_translations` / `translate_pdf`。
+3. **打包后的 Electron**（临时 `--user-data-dir` + `LOCALAPPDATA`）：
+   - 渲染进程加载，preload API 可用，`ping` 返回 0.1.0，config dir 指向临时目录；
+   - 首启横幅可见（只缺模型）、`font_zh=true`；
+   - 第二个实例自动退出（exit 0），只保留一个 sidecar；
+   - `window.close()` 后 app 退出、sidecar 归零。
+4. **NSIS 安装/卸载**：静默装到 `%LOCALAPPDATA%\Programs\pdfxlate`，安装后的 exe
+   重复上述 Electron 冒烟全过；卸载后目录清除。注意 Git Bash 传 `/S` 会被 MSYS
+   改写路径（曾误装到 `D:\pdfxlate`），测试时用 PowerShell
+   `Start-Process -ArgumentList "/S"`。
+
+### 仍未解决 / 不在本轮
+
+- **未签名**：SmartScreen 会提示，需要购买代码签名证书。
+- **MSI**：首版只出 NSIS `.exe`；要 MSI 需加 target 并下载 WiX。
+- **版面模型仍在线下载**：应用本身需要网络调用翻译 API，且 hf-mirror 实测可用；
+  默认中文字体已内置，解决的是确定会失败的 GitHub 下载。
+- `npm audit` 报 10 个 dev-only 漏洞（electron-builder 依赖树）；`--omit=dev` 为 0，
+  不进安装包。
+
+测试：373 passed，typecheck / check:i18n（203 键）/ build 全绿。

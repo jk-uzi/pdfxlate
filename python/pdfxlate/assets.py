@@ -206,6 +206,29 @@ def _verify(path: Path, asset: Asset) -> bool:
     return True
 
 
+def _bundle_root() -> Path | None:
+    """Directory holding assets shipped inside the PyInstaller bundle.
+
+    ``sys._MEIPASS`` is PyInstaller's extraction root (``_internal`` for an
+    onedir build). It is absent in a source checkout, which is what makes the
+    bundled check a no-op there.
+    """
+    base = getattr(sys, "_MEIPASS", None)
+    if not base:
+        return None
+    root = Path(base) / "bundle_assets"
+    return root if root.is_dir() else None
+
+
+def bundled_path(asset: Asset) -> Path | None:
+    """Return the copy of ``asset`` shipped inside the app, if there is one."""
+    root = _bundle_root()
+    if root is None:
+        return None
+    candidate = root / asset.subdir / asset.filename if asset.subdir else root / asset.filename
+    return candidate if candidate.is_file() else None
+
+
 def _download_one(url: str, dest: Path, on_progress=None) -> None:
     """Stream ``url`` into ``dest`` atomically.
 
@@ -231,6 +254,11 @@ def _download_one(url: str, dest: Path, on_progress=None) -> None:
                         done += len(chunk)
                         if on_progress:
                             on_progress(done, total)
+            # A server that closes early can end iter_content() without
+            # raising. Without this check the truncated file is renamed into
+            # place and looked like a valid cache entry forever.
+            if total and done != total:
+                raise OSError(f"incomplete download: {done} of {total} bytes")
             part.replace(dest)
             return
         except Exception as exc:  # noqa: BLE001 - retry, then fall through to next mirror
@@ -251,11 +279,34 @@ def _download_one(url: str, dest: Path, on_progress=None) -> None:
 
 
 def ensure(asset: Asset, on_progress=None, force: bool = False) -> Path:
-    """Return the local path to ``asset``, downloading it if needed."""
+    """Return the local path to ``asset``, downloading it if needed.
+
+    Order: an already-cached file, then the copy shipped inside the app, then
+    the network. A bundled file is copied into the cache rather than used in
+    place so every runtime write (notably ONNX Runtime's ``.optimized`` model)
+    stays in the user's writable data directory.
+    """
     dest = asset.target
     if dest.exists() and not force and _verify(dest, asset):
         return dest
     dest.parent.mkdir(parents=True, exist_ok=True)
+
+    if not force:
+        bundled = bundled_path(asset)
+        if bundled is not None and _verify(bundled, asset):
+            part = dest.with_suffix(dest.suffix + ".part")
+            try:
+                logger.info("installing bundled %s", asset.filename)
+                shutil.copy2(bundled, part)
+                part.replace(dest)
+                return dest
+            except OSError:
+                part.unlink(missing_ok=True)
+                logger.warning(
+                    "could not copy bundled %s; falling back to download",
+                    asset.filename,
+                    exc_info=True,
+                )
 
     errors: list[str] = []
     for url in asset.urls:
@@ -304,14 +355,19 @@ def status(lang: str | None = None) -> dict[str, bool]:
     ``None`` and the key is omitted then, which keeps ``sidecar.py``'s
     argument-less ``assets.status`` call byte-for-byte compatible.
     """
+    def present(asset: Asset) -> bool:
+        # "Ready" means the user will not have to download it: either it is
+        # already cached, or the installer shipped it.
+        return asset.target.exists() or bundled_path(asset) is not None
+
     result = {
-        "layout_model": layout_model_asset().target.exists(),
-        "font_zh": font_asset("zh").target.exists(),
-        "font_ja": font_asset("ja").target.exists(),
-        "font_ko": font_asset("ko").target.exists(),
+        "layout_model": present(layout_model_asset()),
+        "font_zh": present(font_asset("zh")),
+        "font_ja": present(font_asset("ja")),
+        "font_ko": present(font_asset("ko")),
     }
     if lang is not None:
-        result["font_ready_for"] = font_asset(lang).target.exists()
+        result["font_ready_for"] = present(font_asset(lang))
     return result
 
 

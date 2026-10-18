@@ -453,14 +453,8 @@ def test_sampling_falls_back_to_per_paragraph_on_bad_batch():
 
 
 def _find_sample_pdf() -> Path | None:
-    candidates = [
-        _WORKTREE_ROOT / "references/PDFMathTranslate/test/file/translate.cli.plain.text.pdf",
-        Path("D:/Users/20812/Desktop/pdfxlate/references/PDFMathTranslate/test/file/translate.cli.plain.text.pdf"),
-    ]
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    return None
+    # Relative to the test file, so the path resolves on any machine.
+    return _WORKTREE_ROOT / "references/PDFMathTranslate/test/file/translate.cli.plain.text.pdf"
 
 
 def _asset_ready(cfg: config_mod.AppConfig) -> bool:

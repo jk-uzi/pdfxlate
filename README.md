@@ -67,7 +67,8 @@ The MCP server makes the same choice for the same reasons.
 # 1. Python engine
 cd python
 python3 -m venv .venv
-.venv/bin/pip install -e .
+.venv/bin/pip install -e .        # macOS / Linux
+# .venv\Scripts\pip install -e .  # Windows
 cd ..
 
 # 2. Desktop shell
@@ -100,10 +101,12 @@ cd python
 .venv/bin/pdfxlate --list-models          # provider -> model tree
 ```
 
-The first translation downloads the layout model (75 MB) and a CJK font. Both
-are cached under the platform cache directory and shared between the CLI and
-the desktop app. Where `huggingface.co` is unreachable, the downloader falls
-back to `hf-mirror.com` automatically.
+The first translation downloads the layout model (75 MB, from the HuggingFace
+mirror where the official host is blocked). A CJK font is also needed: the
+packaged installer ships the default Chinese face, while a source checkout
+downloads it on first use. Both are cached under the platform cache directory
+and shared between the CLI and the desktop app. Where `huggingface.co` is
+unreachable, the downloader falls back to `hf-mirror.com` automatically.
 
 ## Configuration
 
@@ -191,14 +194,17 @@ only its own entry, leaving everything else in it alone. For any other MCP
 client, paste the snippet by hand.
 
 ```bash
-cd python && .venv/bin/pip install -e ".[mcp]"
+# From a source checkout, install the optional extra first:
+cd python
+.venv/Scripts/pip install -e ".[mcp]"    # Windows
+.venv/bin/pip install -e ".[mcp]"        # macOS / Linux
 ```
 
-The `mcp` SDK is an optional extra, so the desktop bundle does not carry it. The
-snippet the app shows already accounts for that: from a source checkout it runs
-the engine as a module, and from a packaged install it runs the bundled binary
-with `--mcp` — the only way in, since an onedir bundle has no separate
-interpreter to run a module with.
+The release bundle **does** include the SDK: the settings UI always advertises
+MCP, so a packaged install can run the bundled binary with `--mcp` directly —
+the only way in, since an onedir bundle has no separate interpreter to run a
+module with. (`dev` deliberately includes `mcp` so a normal `pip install -e
+".[dev]"` produces a complete bundle.)
 
 A hand-written config looks like this (on Windows, `.venv\Scripts\python.exe`):
 
@@ -273,14 +279,29 @@ provider. The PDF pipeline needs no changes — it only requires
 ## Building installers
 
 ```bash
-./scripts/build.sh
+npm install                 # once; installs electron and electron-builder
+bash scripts/build.sh       # Git Bash on Windows
 ```
 
-This builds the Python sidecar with PyInstaller, compiles the TypeScript, and
-packages with electron-builder. Output lands in `dist/`.
+The script stages the default Chinese font into the sidecar bundle, builds the
+Python sidecar with PyInstaller, compiles the TypeScript, and packages with
+electron-builder. Output lands in `dist/`:
+
+- `dist/win-unpacked/` — runnable app directory (useful for a smoke test)
+- `dist/pdfxlate Setup <version>.exe` — NSIS installer for Windows
+- `npm run pack` builds only the unpacked directory
+
+The first electron-builder run downloads NSIS and winCodeSign. `build.sh`
+points it at the npmmirror binary mirror by default because `github.com`
+release assets are unreachable from some networks; override with
+`ELECTRON_BUILDER_BINARIES_MIRROR` if you prefer another mirror.
 
 PyInstaller output is platform-specific, so each target must be built on its
 own OS (or in CI with an OS matrix).
+
+The default Chinese font ships inside the installer. The 75 MB layout model is
+still downloaded on first run (from the HuggingFace mirror), because the app
+needs network access for the translation API anyway.
 
 Signing is not configured. Unsigned builds trigger Gatekeeper on macOS and a
 SmartScreen warning on Windows.
@@ -289,6 +310,7 @@ SmartScreen warning on Windows.
 
 ```bash
 cd python && .venv/bin/python -m pytest ../tests -q
+# Windows: .venv\Scripts\python -m pytest ..\tests -q
 npm run typecheck     # main/preload and renderer
 npm run check:i18n    # English/Chinese string tables stay in sync
 ```
