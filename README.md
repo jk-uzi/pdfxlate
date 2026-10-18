@@ -46,6 +46,9 @@
     智谱 GLM、Groq、xAI、OpenRouter、SiliconFlow，以及本地的 vLLM / Ollama / LM Studio。
   另外支持 OpenAI Responses 与 Anthropic Messages 两种 API 形态。
   一个供应商只配一次地址与密钥，下面可以挂任意多个模型。
+- **外部 Agent CLI**：在「设置 → Agents」里把 Claude Code、Codex、
+  WorkBuddy/CodeBuddy、ZCode、DeepSeek Harness 的模型接进来，用它们各自的登录与
+  额度翻译，不需要 API key；CLI 不在 PATH 时可以手动指定路径。
 - **桌面端**：左侧浏览文件夹并勾选要翻译的文件，右侧是同窗口内的 PDF 预览；打开过的
   文件以标签页排列，可以拖动排序。翻译产物与源文件并排显示在列表里，并标记为「译文」，
   因此可以直接对照原文和结果。

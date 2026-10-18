@@ -157,8 +157,10 @@ pydantic 校验，启动即报错而非跑到一半失败。`AppConfig.resolve(p
 ## 五、sidecar 协议（换行分隔 JSON）
 
 **请求** `{id, method, params}`，实际实现的方法（见 `sidecar.py` 的 `METHODS`）：
-`ping` / `config.get` / `config.save` / `providers.list` / `assets.status` /
-`assets.download` / `translate.start` / `translate.cancel`
+`ping` / `config.get` / `config.save` / `providers.list` / `providers.test` /
+`providers.models` / `agents.list` / `agents.models` / `agents.test` /
+`assets.status` / `assets.download` / `pdf.info` / `pdf.spread` /
+`translate.start` / `translate.cancel` / `mcp.snippet` / `mcp.installConfig`
 
 > 打开输出目录、文件对话框这类操作由 Electron 主进程直接处理（`shell:reveal`、
 > `dialog:pickPdf` 等 IPC 通道），不走 sidecar —— 它们本来就是 Electron 的职责，
@@ -199,6 +201,50 @@ pydantic 校验，启动即报错而非跑到一半失败。`AppConfig.resolve(p
 **「不移植上游 MCP」这条决策已推翻**：上游的 `mcp_server.py` 用 v1 的 `FastMCP`
 （v2 已删除该类，直接 import 会报 `ModuleNotFoundError`），且只做「用服务端配置的模型」
 一条路。本项目自研，并额外支持 sampling——即**真正用 agent 自己的模型翻译**。
+
+### 外部 agent CLI 作为翻译后端（Agents 设置）
+
+MCP 是「别的 agent 用 pdfxlate 的模型」；Agents 是反方向——**pdfxlate 用别的 agent
+的模型**。目标不是复制它们的密钥，而是借用用户已经登录的 CLI 与订阅额度。设置左栏
+因此新增「Agents」，首批支持 Claude Code、Codex、WorkBuddy/CodeBuddy、ZCode、
+DeepSeek Harness 五个 CLI。
+
+四个决策值得记：
+
+1. **spawn CLI，不读密钥**。OAuth/订阅额度只存在于 CLI 自己的登录态里，读
+   `~/.claude`、`~/.codex` 的凭据既脆弱又越界；调用 CLI 的 headless 模式（`claude -p`、
+   `codex exec`、`dsh --profile headless`、`codebuddy -p`、`zcode -p`）是唯一既尊重
+   登录态、又不复制密钥的方式。代价是每次翻译多一次进程启动。
+2. **仍然是 provider + model 两层**。agent 是一种 `kind: agent_cli` 的供应商，`agent`
+   字段指向具体 CLI；模型别名就是 CLI 的模型 id。这样 `resolve()`、`all_models()`、
+   选项下拉、缓存、CLI/MCP 全部复用，不需要第二套配置树。设置 › 模型只编辑 HTTP
+   供应商，agent 供应商由 Agents 面板编辑，避免同一份配置有两个编辑器。
+3. **批量翻译**。逐段起进程的代价不可接受（一篇论文 250+ 段），所以适配器内建一个
+   批队列：最多 8 段 / 12000 字符（argv 传 prompt 的 ZCode 是 8000）/ 首段到达后
+   0.2 秒触发一次，一次进程翻一批。CLI 被要求返回
+   `{"translations": [...]}`；解析失败先严格重试，再拆单段，最后才报错。用户自定义
+   prompt 时批大小固定为 1，保证自定义语义不变。
+4. **检测只回状态，不回原始输出**。`claude auth status`、`codex login status` 的输出
+   可能带掩码密钥；sidecar 只回 `ok/missing/unknown`，错误里的 stderr 截断到 300
+   字符。可执行文件按「`agents.paths` 覆盖 → 环境变量 → PATH → 平台标准目录 /
+   Windows 卸载注册表」解析；`agents.paths` 让用户能指向非标准安装位置。
+
+v1 的限制（写进 UI 提示与文档）：
+
+- **WorkBuddy** 只认独立 `codebuddy`/`cbc` CLI；只有桌面版时提示安装，不强行调用
+  桌面版里缺模块的 CLI。
+- **ZCode** 的 CLI 没有 `--model`，只能用 ZCode 当前选中的模型（`default`）。
+- **DSH** 使用 `headless` profile；非默认模型通过临时 `--patch` 覆盖
+  `agent-default-model`，不修改用户的 profile。
+- agent 的 temperature/top_p/max_tokens/reasoning 参数 v1 不映射，由 CLI 自己的配置
+  决定；这些供应商的「推理强度」控件在界面上禁用。
+- agent CLI 视为本地可信程序；翻译文本会发给它背后的模型，额度与条款由该 CLI 承担。
+
+实现落在 `python/pdfxlate/agents/`（定义 / 检测 / 模型列表 / 进程运行时 / 批队列）、
+`models/agent_cli.py`（适配器）与 `src/renderer/` 的 Agents 面板；sidecar 新增
+`agents.list` / `agents.models` / `agents.test`。参考实现是本地安装的 Open Design
+0.25.0（其 `AGENT_DEFS` / `agentId` / `agentModels` 结构），但代码全部自研，不 import
+它的运行时。
 
 ## 六、Electron 外壳
 

@@ -51,6 +51,10 @@ they were. Point it at any OpenAI-compatible model endpoint.
   Ollama / LM Studio. OpenAI Responses and Anthropic Messages shapes are also
   supported. A provider holds the endpoint and key once, with any number of
   models underneath.
+- **External agent CLIs:** in Settings → Agents, point the translator at a model
+  from Claude Code, Codex, WorkBuddy/CodeBuddy, ZCode or DeepSeek Harness and use
+  that CLI's own login and quota — no API key needed. A CLI outside `PATH` can
+  be located with a manual path.
 - **Desktop app:** browse a folder in the left sidebar and tick the files to
   translate; the PDF preview sits in the right pane of the same window. Opened
   documents become tabs you can drag into a different order. Translation outputs
