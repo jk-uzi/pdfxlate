@@ -11,10 +11,13 @@ testing, and they are tested without spawning anything.
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
+import os
 import re
 import time
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import yaml
@@ -152,6 +155,307 @@ _TolerantLoader.add_multi_constructor("tag:yaml.org,2002:js", _ignore_js)
 _TolerantLoader.add_multi_constructor("!", _ignore_js)
 
 
+# --- DSH desktop profile ----------------------------------------------------
+#
+# ``dsh --profile headless --dump-config`` only knows the headless profile's
+# own model, which is a single built-in route.  The models a user actually
+# configured live in the desktop profile's patch layer:
+#
+#     ~/.dsh/profiles/desktop/cordis.patch.yml
+#
+# That file is an entry list; ``llm-pi-ai`` carries the provider dictionary and
+# ``agent-default-model`` the current selection.  Reading it is read-only: the
+# file is never written, and a ``--patch`` overlay is what passes a selection
+# to the headless run.
+
+#: Dict keys that hold a credential rather than a credential *name*.  They are
+#: dropped before a provider config is returned or written into a patch; only
+#: ``apiKeyEnv`` (the name of an environment variable) survives.
+_SECRET_KEYS = frozenset(
+    {
+        "key",
+        "apikey",
+        "apikeyvalue",
+        "token",
+        "accesstoken",
+        "refreshtoken",
+        "secret",
+        "clientsecret",
+        "password",
+        "passwd",
+        "authorization",
+        "auth",
+        "credential",
+        "credentials",
+        "xapikey",
+        "xauthtoken",
+    }
+)
+
+
+def dsh_home() -> Path:
+    """The DSH state directory (``$DSH_HOME``, else ``~/.dsh``)."""
+    override = (os.environ.get("DSH_HOME") or "").strip()
+    return Path(override).expanduser() if override else Path.home() / ".dsh"
+
+
+def dsh_desktop_profile_path() -> Path | None:
+    """``<DSH_HOME>/profiles/desktop/cordis.patch.yml``, if it exists."""
+    path = dsh_home() / "profiles" / "desktop" / "cordis.patch.yml"
+    try:
+        return path if path.is_file() else None
+    except OSError:
+        return None
+
+
+def _normalized_key(key: Any) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(key).lower())
+
+
+_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_SECRET_SUFFIXES = ("apikey", "token", "secret", "password", "credential")
+
+
+def _is_secret_key(key: Any) -> bool:
+    normalized = _normalized_key(key)
+    if normalized in _SECRET_KEYS:
+        return True
+    return any(normalized.endswith(suffix) for suffix in _SECRET_SUFFIXES)
+
+
+def sanitize_provider_config(config: Any) -> Any:
+    """Copy a provider config, dropping every credential value.
+
+    The desktop profile stores the *name* of the environment variable that
+    holds a key (``apiKeyEnv``), not the key itself, but a hand-edited file can
+    contain an ``apiKey`` or an authorization header.  Those never leave this
+    function: the returned structure is safe to show in the UI and safe to
+    write into a temporary ``--patch`` file.
+    """
+    if isinstance(config, dict):
+        clean: dict[Any, Any] = {}
+        for key, value in config.items():
+            normalized = _normalized_key(key)
+            if normalized == "apikeyenv":
+                # Keep the name only when it actually looks like a variable
+                # name; a pasted secret must not be mistaken for one.
+                if isinstance(value, str) and _ENV_NAME_RE.match(value.strip()):
+                    clean[key] = value.strip()
+                continue
+            if _is_secret_key(key):
+                continue
+            if normalized == "headers" and isinstance(value, dict):
+                clean[key] = {
+                    header: header_value
+                    for header, header_value in value.items()
+                    if not _is_secret_key(header)
+                }
+                continue
+            clean[key] = sanitize_provider_config(value)
+        return clean
+    if isinstance(config, list):
+        return [sanitize_provider_config(item) for item in config]
+    return config
+
+
+def _provider_routes(routes: Any) -> list[tuple[str, dict[str, Any]]]:
+    """Normalise ``llm-pi-ai.config.providers`` to ``[(name, config)]``."""
+    if isinstance(routes, dict):
+        return [
+            (str(name or ""), route)
+            for name, route in routes.items()
+            if isinstance(route, dict)
+        ]
+    if isinstance(routes, list):
+        return [
+            (str(route.get("provider") or route.get("id") or ""), route)
+            for route in routes
+            if isinstance(route, dict)
+        ]
+    return []
+
+
+def _profile_source_text(source: str | os.PathLike[str]) -> str | None:
+    """Read a path argument, or return a YAML string unchanged."""
+    if isinstance(source, os.PathLike):
+        try:
+            return Path(source).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+    text = str(source or "")
+    # The signature is ``text_or_path``: a short single-line string that names
+    # an existing file is a path, everything else is YAML.
+    if text and "\n" not in text:
+        try:
+            candidate = Path(text)
+            if candidate.is_file():
+                return candidate.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            pass
+    return text
+
+
+def parse_dsh_desktop_profile(
+    text_or_path: str | os.PathLike[str],
+) -> dict[str, Any]:
+    """Parse the desktop profile's patch layer.
+
+    Returns ``{"models", "providers", "default"}``:
+
+    * ``models`` — ``[{id, label, provider, current}]`` where ``id`` is the
+      composite ``provider/model`` spelling.  Model ids may themselves contain
+      ``/`` (OpenRouter does this), so only the first slash separates provider
+      from model.
+    * ``providers`` — the full (sanitised) config of every enabled provider,
+      ready to be embedded in a ``--patch`` overlay.
+    * ``default`` — ``(provider, model)`` from ``agent-default-model``, or
+      ``None``.
+
+    A missing/unreadable/invalid file yields empty structures rather than an
+    exception: the model list is a convenience, and the settings panel must
+    still render.
+    """
+    empty = {"models": [], "providers": {}, "default": None}
+    text = _profile_source_text(text_or_path)
+    if not text:
+        return empty
+    try:
+        data = yaml.load(text, Loader=_TolerantLoader)
+    except yaml.YAMLError:
+        return empty
+    entries = data if isinstance(data, list) else []
+
+    default: tuple[str, str] | None = None
+    provider_configs: dict[str, dict[str, Any]] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        entry_id = entry.get("id")
+        config = entry.get("config")
+        if not isinstance(config, dict):
+            continue
+        if entry_id == "agent-default-model":
+            provider = str(config.get("provider") or "").strip()
+            model = str(config.get("model") or "").strip()
+            if model:
+                default = (provider, model)
+        elif entry_id == "llm-pi-ai":
+            for name, route in _provider_routes(config.get("providers")):
+                provider = str(
+                    name or route.get("provider") or route.get("id") or ""
+                ).strip()
+                if not provider or route.get("enabled") is False:
+                    continue
+                provider_configs[provider] = sanitize_provider_config(route)
+
+    models: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for provider, route in provider_configs.items():
+        display = str(
+            route.get("displayName") or route.get("display_name") or provider
+        ).strip() or provider
+        route_models = route.get("models")
+        if isinstance(route_models, dict):
+            route_models = [
+                {"id": key, **(value if isinstance(value, dict) else {})}
+                for key, value in route_models.items()
+            ]
+        if not isinstance(route_models, list):
+            continue
+        for model in route_models:
+            if not isinstance(model, dict):
+                continue
+            model_id = str(model.get("id") or model.get("model") or "").strip()
+            if not model_id:
+                continue
+            composite = f"{provider}/{model_id}"
+            if composite in seen:
+                continue
+            seen.add(composite)
+            name = str(
+                model.get("name")
+                or model.get("displayName")
+                or model.get("display_name")
+                or model_id
+            ).strip() or model_id
+            models.append(
+                {
+                    "id": composite,
+                    "label": f"{name} ({display})",
+                    "provider": provider,
+                    "current": default == (provider, model_id),
+                }
+            )
+    return {"models": models, "providers": provider_configs, "default": default}
+
+
+_DSH_DESKTOP_CACHE: dict[str, tuple[tuple[int, int], dict[str, Any]]] = {}
+
+
+def load_dsh_desktop_profile(refresh: bool = False) -> dict[str, Any]:
+    """Read and cache the desktop profile, keyed on its mtime and size.
+
+    ``refresh=True`` re-reads even when the signature is unchanged, mirroring
+    the model-list cache's refresh flag.
+    """
+    path = dsh_desktop_profile_path()
+    if path is None:
+        return {"models": [], "providers": {}, "default": None}
+    try:
+        stat = path.stat()
+    except OSError:
+        return {"models": [], "providers": {}, "default": None}
+    key = str(path)
+    signature = (stat.st_mtime_ns, stat.st_size)
+    cached = _DSH_DESKTOP_CACHE.get(key)
+    if not refresh and cached is not None and cached[0] == signature:
+        return cached[1]
+    parsed = parse_dsh_desktop_profile(path)
+    _DSH_DESKTOP_CACHE[key] = (signature, parsed)
+    return parsed
+
+
+def dsh_provider_config(provider: str | None) -> dict[str, Any] | None:
+    """The sanitised desktop-profile config for one provider, or ``None``."""
+    if not provider:
+        return None
+    providers = load_dsh_desktop_profile().get("providers") or {}
+    config = providers.get(provider)
+    return copy.deepcopy(config) if isinstance(config, dict) else None
+
+
+def dsh_default_model() -> tuple[str, str] | None:
+    """The desktop profile's ``agent-default-model``, else the dump's default."""
+    default = load_dsh_desktop_profile().get("default")
+    if isinstance(default, tuple) and len(default) == 2 and default[1]:
+        return default
+    return _DSH_DEFAULT
+
+
+def _desktop_model_providers(refresh: bool = False) -> dict[str, set[str]]:
+    """Map a bare model id to the desktop providers that serve it."""
+    providers = load_dsh_desktop_profile(refresh=refresh).get("providers") or {}
+    mapping: dict[str, set[str]] = {}
+    for provider, config in providers.items():
+        if not isinstance(config, dict):
+            continue
+        route_models = config.get("models")
+        if isinstance(route_models, dict):
+            model_ids = [str(key) for key in route_models]
+        elif isinstance(route_models, list):
+            model_ids = [
+                str(model.get("id") or model.get("model") or "").strip()
+                for model in route_models
+                if isinstance(model, dict)
+            ]
+        else:
+            continue
+        for model_id in model_ids:
+            if model_id:
+                mapping.setdefault(model_id, set()).add(provider)
+    return mapping
+
+
 def parse_dsh_config(text: str) -> dict[str, Any]:
     """Extract models from ``dsh --profile headless --dump-config``.
 
@@ -236,6 +540,16 @@ def parse_dsh_config(text: str) -> dict[str, Any]:
     return {"models": found, "providers": providers, "default": default}
 
 
+def desktop_provider_for_model(model: str) -> str | None:
+    """The desktop provider serving a bare model id, when it is unambiguous."""
+    if not model:
+        return None
+    owners = _desktop_model_providers().get(model)
+    if owners and len(owners) == 1:
+        return next(iter(owners))
+    return None
+
+
 def provider_for_model(
     agent: str,
     model: str,
@@ -243,9 +557,11 @@ def provider_for_model(
 ) -> str | None:
     """The provider route DSH needs for ``model``, if known.
 
-    Accepts an explicit ``provider/model`` spelling as well as an id from the
-    last ``--dump-config`` parse.  ``None`` means "use the current default",
-    which the runtime expresses by omitting ``--patch``.
+    Accepts the composite ``provider/model`` spelling the Agents panel stores
+    as well as a bare id from the desktop profile or the last ``--dump-config``
+    parse.  ``None`` means "no provider route is known": the runtime then
+    writes only the ``agent-default-model`` overlay and lets DSH report the
+    unknown selection.
 
     A configured model can reach the adapter before the Agents panel ever asked
     for a model list, so the dump is run lazily once when the id is unknown.
@@ -256,12 +572,24 @@ def provider_for_model(
     global _DSH_PROVIDERS, _DSH_DEFAULT, _DSH_PROVIDER_LOADED
     if agent != "dsh" or not model or model == "default":
         return None
+
+    # A bare model id can itself contain a slash (OpenRouter's
+    # ``deepseek/deepseek-v4.1-flash-1017``).  Prefer an exact desktop match
+    # before interpreting the slash as a provider separator.
+    owners = _desktop_model_providers().get(model)
+    if owners and len(owners) == 1:
+        return next(iter(owners))
+
     if "/" in model:
         provider, _, tail = model.partition("/")
         if provider and tail:
             return provider
     if model in _DSH_PROVIDERS:
         return _DSH_PROVIDERS[model]
+    if owners:
+        # Ambiguous: the same bare id is served by several providers and only
+        # the UI's composite spelling can tell them apart.
+        return None
     if not _DSH_PROVIDER_LOADED:
         _DSH_PROVIDER_LOADED = True
         if command:
@@ -375,14 +703,40 @@ def list_models(
     refresh: bool = False,
     paths: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Return ``{"models": [{id,label}], "source": "cli"|"fallback", "error"?}``.
+    """Return ``{"models": [{id,label}], "source": "profile"|"cli"|"fallback",
+    "error"?}``.
 
-    Never raises for a missing or misbehaving CLI: the fallback list plus an
-    ``error`` string is what the settings panel shows.
+    DSH prefers the desktop profile's real model list; the other agents use
+    their own enumeration commands.  Never raises for a missing or misbehaving
+    CLI: the fallback list plus an ``error`` string is what the settings panel
+    shows.
     """
     defn = get_agent_def(agent)
     configured = detect.configured_paths() if paths is None else paths
     resolved = detect.resolve_agent(defn, configured, refresh=refresh)
+
+    if agent == "dsh":
+        # The desktop profile is the only place the user's real model list
+        # lives; the headless dump knows one built-in route.  Try it first, and
+        # only fall through to the dump when it has nothing to say.
+        cached = _cached(agent, resolved, refresh)
+        if cached is not None:
+            return cached
+        desktop = load_dsh_desktop_profile(refresh=refresh)
+        desktop_models = desktop.get("models") or []
+        if desktop_models:
+            return _store(
+                agent,
+                resolved,
+                {
+                    "models": [
+                        {"id": "default", "label": "Current model"},
+                        *desktop_models,
+                    ],
+                    "source": "profile",
+                },
+            )
+
     if not resolved.installed:
         return fallback_models(agent, not_installed_message(resolved))
 
@@ -406,11 +760,19 @@ def list_models(
 
 __all__ = [
     "FALLBACK_MODELS",
+    "desktop_provider_for_model",
+    "dsh_default_model",
+    "dsh_desktop_profile_path",
+    "dsh_home",
+    "dsh_provider_config",
     "fallback_models",
     "list_models",
+    "load_dsh_desktop_profile",
     "not_installed_message",
     "parse_codebuddy_help",
     "parse_codex_models",
     "parse_dsh_config",
+    "parse_dsh_desktop_profile",
     "provider_for_model",
+    "sanitize_provider_config",
 ]

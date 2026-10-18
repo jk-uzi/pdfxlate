@@ -21,18 +21,85 @@ from pdfxlate.agents.defs import AGENT_DEFS, get_agent_def  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
-def _clear_caches():
+def _clear_caches(tmp_path, monkeypatch):
+    # Never read the developer's real ~/.dsh in a unit test.
+    monkeypatch.setenv("DSH_HOME", str(tmp_path / "dsh-home"))
     detect._RESOLVE_CACHE.clear()
     detect._DETECT_CACHE.clear()
     catalog._MODELS_CACHE.clear()
+    catalog._DSH_DESKTOP_CACHE.clear()
     catalog._DSH_PROVIDERS = {}
+    catalog._DSH_DEFAULT = None
     catalog._DSH_PROVIDER_LOADED = False
     yield
     detect._RESOLVE_CACHE.clear()
     detect._DETECT_CACHE.clear()
     catalog._MODELS_CACHE.clear()
+    catalog._DSH_DESKTOP_CACHE.clear()
     catalog._DSH_PROVIDERS = {}
+    catalog._DSH_DEFAULT = None
     catalog._DSH_PROVIDER_LOADED = False
+
+
+#: Synthetic desktop profile: two enabled providers, one disabled, three
+#: composite models (one model id contains a slash), and a current default.
+DESKTOP_PROFILE = """\
+- id: agent-default-model
+  name: "@deepseek-ai/dsh-agent-default-model"
+  config:
+    provider: w1
+    model: model-a
+- id: llm-pi-ai
+  name: "@deepseek-ai/dsh-llm-pi-ai"
+  config:
+    providers:
+      w1:
+        displayName: Relay One
+        api: openai-responses
+        baseURL: https://relay-one.invalid/v1
+        apiKeyEnv: W1_API_KEY
+        apiKey: sk-should-never-leak
+        headers:
+          Authorization: Bearer sk-should-never-leak
+          X-Trace: keep-me
+        models:
+          - id: model-a
+            name: Model A
+          - id: vendor/model-b
+            name: Model B
+      w:
+        displayName: Relay Two
+        api: openai-chat
+        baseURL: https://relay-two.invalid/v1
+        apiKeyEnv: W_API_KEY
+        models:
+          - id: model-a
+            name: Model A
+      off:
+        enabled: false
+        apiKeyEnv: OFF_API_KEY
+        models:
+          - id: hidden
+            name: Hidden
+"""
+
+
+def _write_desktop_profile(tmp_path: Path, text: str = DESKTOP_PROFILE) -> Path:
+    home = tmp_path / "dsh-home"
+    profile = home / "profiles" / "desktop" / "cordis.patch.yml"
+    profile.parent.mkdir(parents=True, exist_ok=True)
+    profile.write_text(text, encoding="utf-8")
+    return home
+
+
+def _resolved_dsh(path: str = "fake-dsh") -> detect.ResolvedAgent:
+    return detect.ResolvedAgent(
+        defn=get_agent_def("dsh"),
+        installed=True,
+        command=(path,),
+        path=path,
+        reason=None,
+    )
 
 
 def _file(tmp_path: Path, name: str = "agent.cmd") -> Path:
@@ -441,6 +508,161 @@ def test_dsh_config_tolerates_js_tags():
 def test_dsh_config_invalid_yaml_returns_empty():
     parsed = catalog.parse_dsh_config("[[[ not: yaml")
     assert parsed == {"models": [], "providers": {}, "default": None}
+
+
+# --- DSH desktop profile ---------------------------------------------------
+
+
+def test_dsh_desktop_profile_path_honours_dsh_home(tmp_path, monkeypatch):
+    home = _write_desktop_profile(tmp_path)
+    monkeypatch.setenv("DSH_HOME", str(home))
+    expected = home / "profiles" / "desktop" / "cordis.patch.yml"
+    assert catalog.dsh_desktop_profile_path() == expected
+    assert catalog.load_dsh_desktop_profile(refresh=True)["default"] == (
+        "w1",
+        "model-a",
+    )
+
+
+def test_dsh_desktop_profile_path_missing_returns_none(tmp_path, monkeypatch):
+    monkeypatch.setenv("DSH_HOME", str(tmp_path / "nowhere"))
+    assert catalog.dsh_desktop_profile_path() is None
+    assert catalog.load_dsh_desktop_profile() == {
+        "models": [],
+        "providers": {},
+        "default": None,
+    }
+    assert catalog.parse_dsh_desktop_profile(tmp_path / "missing.yml") == {
+        "models": [],
+        "providers": {},
+        "default": None,
+    }
+
+
+def test_parse_dsh_desktop_profile_lists_composite_models():
+    parsed = catalog.parse_dsh_desktop_profile(DESKTOP_PROFILE)
+    assert parsed["default"] == ("w1", "model-a")
+
+    ids = [model["id"] for model in parsed["models"]]
+    assert ids == ["w1/model-a", "w1/vendor/model-b", "w/model-a"]
+    # Only the first slash separates provider from model.
+    assert parsed["models"][1]["provider"] == "w1"
+    assert parsed["models"][1]["label"] == "Model B (Relay One)"
+
+    current = {model["id"]: model["current"] for model in parsed["models"]}
+    assert current == {
+        "w1/model-a": True,
+        "w1/vendor/model-b": False,
+        "w/model-a": False,
+    }
+
+    # Only the enabled providers are kept, and only the env-var *name* survives.
+    assert set(parsed["providers"]) == {"w1", "w"}
+    assert parsed["providers"]["w1"]["apiKeyEnv"] == "W1_API_KEY"
+    assert "apiKey" not in parsed["providers"]["w1"]
+    assert parsed["providers"]["w1"]["headers"] == {"X-Trace": "keep-me"}
+    assert "sk-should-never-leak" not in repr(parsed)
+
+
+def test_parse_dsh_desktop_profile_tolerates_js_tags_and_bad_yaml():
+    text = """\
+- id: timer
+  disabled: !!js 'process.platform === "win32"'
+- id: agent-default-model
+  config:
+    provider: w1
+    model: model-a
+- id: llm-pi-ai
+  config:
+    providers:
+      w1:
+        models:
+          - id: model-a
+            name: Model A
+"""
+    parsed = catalog.parse_dsh_desktop_profile(text)
+    assert [model["id"] for model in parsed["models"]] == ["w1/model-a"]
+    assert parsed["models"][0]["label"] == "Model A (w1)"
+    assert catalog.parse_dsh_desktop_profile("[[[ not: yaml") == {
+        "models": [],
+        "providers": {},
+        "default": None,
+    }
+
+
+def test_list_models_dsh_uses_the_desktop_profile(tmp_path, monkeypatch):
+    home = _write_desktop_profile(tmp_path)
+    monkeypatch.setenv("DSH_HOME", str(home))
+    monkeypatch.setattr(catalog.detect, "resolve_agent", lambda *a, **k: _resolved_dsh())
+
+    result = catalog.list_models("dsh")
+    assert result["source"] == "profile"
+    assert [model["id"] for model in result["models"]] == [
+        "default",
+        "w1/model-a",
+        "w1/vendor/model-b",
+        "w/model-a",
+    ]
+    assert result["models"][0] == {"id": "default", "label": "Current model"}
+    assert result["models"][1]["current"] is True
+
+    # The cached answer survives a profile edit until an explicit refresh.
+    profile = home / "profiles" / "desktop" / "cordis.patch.yml"
+    profile.write_text(
+        DESKTOP_PROFILE.replace("name: Model A", "name: Model A2", 1),
+        encoding="utf-8",
+    )
+    assert catalog.list_models("dsh") == result
+    refreshed = catalog.list_models("dsh", refresh=True)
+    assert refreshed["models"][1]["label"] == "Model A2 (Relay One)"
+
+
+def test_list_models_dsh_falls_back_to_dump_config(tmp_path, monkeypatch):
+    monkeypatch.setenv("DSH_HOME", str(tmp_path / "empty-dsh"))
+    monkeypatch.setattr(catalog.detect, "resolve_agent", lambda *a, **k: _resolved_dsh())
+    monkeypatch.setattr(
+        catalog.detect,
+        "_run_probe",
+        lambda command, args, timeout: (
+            0,
+            "- id: agent-default-model\n"
+            "  config:\n"
+            "    provider: deepseek-official\n"
+            "    model: deepseek-v4-flash\n"
+            "- id: llm-pi-ai\n"
+            "  config:\n"
+            "    providers:\n"
+            "      deepseek-official:\n"
+            "        models:\n"
+            "          - id: deepseek-pro\n",
+            "",
+        ),
+    )
+    result = catalog.list_models("dsh", refresh=True)
+    assert result["source"] == "cli"
+    assert [model["id"] for model in result["models"]] == [
+        "default",
+        "deepseek-v4-flash",
+        "deepseek-pro",
+    ]
+
+
+def test_dsh_provider_for_model_uses_the_desktop_profile(tmp_path, monkeypatch):
+    home = _write_desktop_profile(tmp_path)
+    monkeypatch.setenv("DSH_HOME", str(home))
+    catalog._DSH_PROVIDERS = {}
+    # No lazy dump probe: everything below is answered by the desktop profile.
+    catalog._DSH_PROVIDER_LOADED = True
+
+    assert catalog.provider_for_model("dsh", "w1/model-a") == "w1"
+    assert catalog.provider_for_model("dsh", "w1/vendor/model-b") == "w1"
+    # A bare model id containing a slash is matched exactly before splitting.
+    assert catalog.provider_for_model("dsh", "vendor/model-b") == "w1"
+    # model-a is served by two providers, so a bare id is ambiguous.
+    assert catalog.provider_for_model("dsh", "model-a") is None
+    assert catalog.provider_for_model("dsh", "unknown-model") is None
+    assert catalog.provider_for_model("dsh", "default") is None
+    assert catalog.provider_for_model("claude", "sonnet") is None
 
 
 def test_dsh_provider_for_model():
