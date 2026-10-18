@@ -23,6 +23,9 @@ dependencies = [
     "tenacity",
     # --- Infrastructure --------------------------------------------
     "requests",
+    # WorkBuddy desktop auth decrypts AES-256-GCM credential fields with the
+    # desktop app's at-rest key (see agents/workbuddy_desktop.py).
+    "cryptography",
     "pyyaml",
     "pydantic>=2",
     "tqdm",
@@ -38,9 +41,9 @@ dependencies = [
 ultrafast = ["pdf-inspector>=1.25.2,<2"]
 cuda = ["onnxruntime-gpu"]
 # Expose the translator to a coding agent over MCP.  Kept out of the core
-# dependencies on purpose: mcp 2.x pulls in starlette, uvicorn, pyjwt and
-# cryptography, and the desktop bundle is already ~253 MB without them.  Only
-# users who wire the server into an agent need this extra.
+# dependencies on purpose: mcp 2.x pulls in starlette, uvicorn and pyjwt, and
+# the desktop bundle is already ~253 MB without them.  Only users who wire the
+# server into an agent need this extra.
 mcp = ["mcp>=2.3.0"]
 # The release bundle advertises MCP in the settings UI, so the environment used
 # to build it must contain the SDK; otherwise PyInstaller silently ships

@@ -23,7 +23,7 @@ from typing import Any, Mapping, Sequence
 
 import yaml
 
-from pdfxlate.agents import detect
+from pdfxlate.agents import detect, workbuddy_desktop
 from pdfxlate.agents.defs import AgentDef, get_agent_def
 
 logger = logging.getLogger(__name__)
@@ -951,6 +951,40 @@ def _probe_models(
     return [], None
 
 
+def _desktop_status() -> dict[str, Any]:
+    """The WorkBuddy desktop card status, never fatal."""
+    try:
+        return workbuddy_desktop.desktop_status()
+    except Exception as exc:  # noqa: BLE001 - a status probe must not break the list
+        logger.debug("could not read the WorkBuddy desktop status", exc_info=True)
+        return {
+            "available": False,
+            "auth": "unknown",
+            "app_path": None,
+            "error": str(exc),
+        }
+
+
+def _desktop_model_rows(models: Sequence[Mapping[str, Any]]) -> list[dict[str, str]]:
+    """Turn the desktop catalog into the Agents panel's model rows."""
+    rows: list[dict[str, str]] = []
+    for model in models:
+        model_id = str(model.get("id") or "").strip()
+        if not model_id:
+            continue
+        credit = str(model.get("credits") or model.get("credit") or "").strip()
+        row: dict[str, str] = {
+            "id": model_id,
+            "label": workbuddy_desktop.model_label(
+                str(model.get("name") or model_id), credit
+            ),
+        }
+        if credit:
+            row["credit"] = credit
+        rows.append(row)
+    return rows
+
+
 def not_installed_message(resolved: detect.ResolvedAgent) -> str:
     defn = resolved.defn
     reason = resolved.reason or "not_installed"
@@ -981,13 +1015,14 @@ def list_models(
     refresh: bool = False,
     paths: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Return ``{"models": [{id,label}], "source": "profile"|"cli"|"fallback",
-    "error"?}``.
+    """Return ``{"models": [{id,label}], "source":
+    "profile"|"cli"|"desktop"|"fallback", "error"?}``.
 
-    DSH prefers the desktop profile's real model list; the other agents use
-    their own enumeration commands.  Never raises for a missing or misbehaving
-    CLI: the fallback list plus an ``error`` string is what the settings panel
-    shows.
+    DSH prefers the desktop profile's real model list; WorkBuddy falls back to
+    its desktop app when no standalone CLI exists; the other agents use their
+    own enumeration commands.  Never raises for a missing or misbehaving
+    backend: the fallback list plus an ``error`` string is what the settings
+    panel shows.
     """
     defn = get_agent_def(agent)
     configured = detect.configured_paths() if paths is None else paths
@@ -1031,6 +1066,46 @@ def list_models(
         if not resolved.installed:
             return fallback_models(agent, not_installed_message(resolved))
         return fallback_models(agent)
+
+    if agent == "workbuddy" and not (resolved.installed and resolved.command):
+        # The desktop app is a complete backend by itself: its own login, the
+        # gateway's CLI roster, and no CLI to install.  Only taken when the
+        # standalone `codebuddy`/`cbc` CLI is absent, so an installed CLI keeps
+        # exactly the behaviour it had before.
+        cached = _cached(agent, resolved, refresh)
+        if cached is not None:
+            return cached
+        status = _desktop_status()
+        if status.get("available"):
+            try:
+                credential = workbuddy_desktop.workbuddy_credential(refresh=refresh)
+                fetched = workbuddy_desktop.fetch_models(credential)
+            except workbuddy_desktop.WorkBuddyError as exc:
+                result = fallback_models(agent, str(exc))
+                result["desktop"] = _desktop_status()
+                return _store(agent, resolved, result)
+            except Exception as exc:  # noqa: BLE001 - never break the panel
+                logger.debug("WorkBuddy desktop catalog failed", exc_info=True)
+                result = fallback_models(agent, str(exc))
+                result["desktop"] = status
+                return _store(agent, resolved, result)
+
+            rows = _desktop_model_rows(fetched)
+            if rows:
+                return _store(
+                    agent,
+                    resolved,
+                    {
+                        "models": rows,
+                        "source": "desktop",
+                        "desktop": _desktop_status(),
+                    },
+                )
+            result = fallback_models(
+                agent, "the WorkBuddy desktop app returned no usable models"
+            )
+            result["desktop"] = _desktop_status()
+            return _store(agent, resolved, result)
 
     if not resolved.installed:
         return fallback_models(agent, not_installed_message(resolved))

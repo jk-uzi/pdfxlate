@@ -98,6 +98,12 @@ def list_agents(
         entry["models"] = models.get("models", [])
         entry["models_source"] = models.get("source", "fallback")
         entry["models_error"] = models.get("error")
+        # WorkBuddy's desktop status is optional and only present when the
+        # catalog looked at that backend; the renderer treats absence as "not
+        # applicable" so the CLI-only agents keep their old shape.
+        desktop = models.get("desktop")
+        if isinstance(desktop, dict):
+            entry["desktop"] = desktop
         agents.append(entry)
 
     pool.shutdown(wait=False, cancel_futures=True)

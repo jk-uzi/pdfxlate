@@ -2135,6 +2135,18 @@ body.overlays-pinned .viewer-saveas {
   text-align: left;
 }
 
+/* WorkBuddy's desktop status: a login state, not a CLI version. */
+.agent-card__desktop {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 10.5px;
+  line-height: 1.6;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
 .agent-card__reason {
   margin: 8px 0 0;
 }
@@ -2230,6 +2242,17 @@ body.overlays-pinned .viewer-saveas {
   background: #eaeef2;
   color: var(--muted);
   font-size: 10.5px;
+}
+
+/* WorkBuddy's credit price, when the backend reports it separately. */
+.agent-model-row__credit {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: #eef2f6;
+  color: var(--muted);
+  font-size: 10.5px;
+  white-space: nowrap;
 }
 
 /* DSH's own default model; informational, not a selection state. */

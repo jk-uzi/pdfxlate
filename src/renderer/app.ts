@@ -87,6 +87,23 @@ interface AgentModelOption {
   current?: boolean;
   /** Whether the CLI can actually be asked to use this model. */
   selectable?: boolean;
+  /** WorkBuddy's credit price (e.g. `x0.29 credits`), when reported. */
+  credit?: string;
+}
+
+/**
+ * WorkBuddy's desktop app, as a backend in its own right.
+ *
+ * Only present for the WorkBuddy card, and only when the engine looked at the
+ * desktop app (no standalone `codebuddy`/`cbc` CLI). `auth` is deliberately
+ * coarse for the same reason as `AgentStatus.auth`: no token or payload ever
+ * leaves the engine.
+ */
+interface AgentDesktopStatus {
+  available: boolean;
+  auth: "ok" | "missing" | "unknown";
+  app_path?: string | null;
+  error?: string | null;
 }
 
 /**
@@ -105,11 +122,13 @@ interface AgentStatus {
   auth: "ok" | "missing" | "unknown" | null;
   reason: string | null;
   models: AgentModelOption[];
-  models_source: "cli" | "profile" | "fallback" | null;
+  models_source: "cli" | "profile" | "desktop" | "fallback" | null;
   models_error: string | null;
   install_url: string | null;
   docs_url: string | null;
   supported: boolean;
+  /** WorkBuddy only: the desktop app can translate without its CLI. */
+  desktop?: AgentDesktopStatus | null;
 }
 
 // Named JobProgress rather than ProgressEvent: the latter is a DOM built-in
@@ -3202,12 +3221,14 @@ function normalizeAgentModels(models: unknown): AgentModelOption[] {
     const provider = (entry as { provider?: unknown }).provider;
     const current = (entry as { current?: unknown }).current;
     const selectable = (entry as { selectable?: unknown }).selectable;
+    const credit = (entry as { credit?: unknown }).credit;
     options.push({
       id,
       label: typeof label === "string" && label ? label : id,
       ...(typeof provider === "string" && provider ? { provider } : {}),
       ...(current === true ? { current: true } : {}),
       ...(typeof selectable === "boolean" ? { selectable } : {}),
+      ...(typeof credit === "string" && credit ? { credit } : {}),
     });
   }
   return options;
@@ -3238,6 +3259,33 @@ function agentName(agentId: string, fallback: string): string {
   }
 }
 
+/** The desktop status when it is actually usable, else null. */
+function agentDesktop(agent: AgentStatus): AgentDesktopStatus | null {
+  const desktop = agent.desktop;
+  return desktop && desktop.available ? desktop : null;
+}
+
+/**
+ * Whether this card runs through the WorkBuddy desktop app.
+ *
+ * Only when the standalone CLI is absent: an installed `codebuddy`/`cbc` keeps
+ * the CLI path (and its existing card) unchanged.
+ */
+function agentUsesDesktop(agent: AgentStatus): boolean {
+  return agent.id === "workbuddy" && !agent.installed && agentDesktop(agent) !== null;
+}
+
+function agentDesktopLabel(desktop: AgentDesktopStatus): string {
+  switch (desktop.auth) {
+    case "ok":
+      return t("agents.workbuddyDesktopSignedIn");
+    case "missing":
+      return t("agents.workbuddyDesktopSignedOut");
+    default:
+      return t("agents.workbuddyDesktopUnknown");
+  }
+}
+
 type AgentState = "installed" | "missing" | "auth" | "unknown" | "unavailable";
 
 /**
@@ -3250,6 +3298,12 @@ type AgentState = "installed" | "missing" | "auth" | "unknown" | "unavailable";
  * new would be misleading.
  */
 function agentState(agent: AgentStatus): AgentState {
+  const desktop = agentUsesDesktop(agent) ? agentDesktop(agent) : null;
+  if (desktop) {
+    if (desktop.auth === "missing") return "auth";
+    if (desktop.auth === "ok") return "installed";
+    return "unknown";
+  }
   if (agent.supported === false) return "unavailable";
   if (!agent.installed) return agentConfigured(agent.id) ? "unavailable" : "missing";
   if (agent.auth === "missing") return "auth";
@@ -3489,12 +3543,14 @@ async function refreshAgentModels(
   try {
     const result = await api.request<{
       models: AgentModelOption[];
-      source: "cli" | "profile" | "fallback";
+      source: "cli" | "profile" | "desktop" | "fallback";
       error?: string;
+      desktop?: AgentDesktopStatus | null;
     }>("agents.models", { agent: agent.id, refresh: true });
     agent.models = normalizeAgentModels(result.models);
     agent.models_source = result.source ?? null;
     agent.models_error = result.error ?? null;
+    if (result.desktop) agent.desktop = result.desktop;
     // A fallback list is still an answer; its reason is shown as a persistent
     // hint on the card (see `agentModelsSection`), so only the refresh itself
     // needs confirming here.
@@ -3596,6 +3652,8 @@ interface AgentModelRow {
   testModel: string;
   /** DSH's provider route, for display and diagnostics. */
   provider?: string;
+  /** WorkBuddy's credit price, shown as a badge when the label omits it. */
+  credit?: string;
   /** Whether DSH currently uses this model as its default. */
   current: boolean;
   /**
@@ -3631,6 +3689,7 @@ function agentModelRows(agent: AgentStatus): AgentModelRow[] {
       custom: false,
       testModel: entry?.model || model.id,
       ...(model.provider ? { provider: model.provider } : {}),
+      ...(model.credit ? { credit: model.credit } : {}),
       current: model.current === true,
       // Absent means selectable: the other agents have no such restriction.
       selectable: model.selectable !== false,
@@ -3706,6 +3765,16 @@ function agentModelRow(
     element.append(badge);
   }
 
+  // WorkBuddy labels already carry the credit price; a backend that reports it
+  // separately gets the same information as a small badge instead of a second
+  // copy glued onto the label.
+  if (row.credit && !row.label.includes(row.credit)) {
+    const badge = document.createElement("span");
+    badge.className = "agent-model-row__credit";
+    badge.textContent = row.credit;
+    element.append(badge);
+  }
+
   // DSH reports which model its own default points at. The badge is purely
   // informational: ticking the row is what makes pdfxlate select it.
   if (row.current) {
@@ -3723,9 +3792,10 @@ function agentModelRow(
   test.type = "button";
   test.className = "btn btn--small";
   test.textContent = t("agents.test");
-  // Testing spawns the CLI, so there is nothing to test when it is not there —
-  // and a model the CLI cannot switch to would only fail.
-  test.disabled = !agent.installed || !row.selectable;
+  // Testing spawns the CLI (or, for WorkBuddy, posts to its desktop gateway),
+  // so there is nothing to test when the backend is not there — and a model
+  // the CLI cannot switch to would only fail.
+  test.disabled = (!agent.installed && !agentUsesDesktop(agent)) || !row.selectable;
   test.addEventListener("click", () => void testAgentModel(agent, row, test));
   element.append(test);
 
@@ -3779,7 +3849,9 @@ function agentModelsSection(
   if (agent.models_error) {
     const warning = document.createElement("p");
     warning.className = "hint";
-    warning.textContent = t("agents.modelsFallback", { error: agent.models_error });
+    warning.textContent = agentUsesDesktop(agent)
+      ? t("agents.workbuddyDesktopError", { error: agent.models_error })
+      : t("agents.modelsFallback", { error: agent.models_error });
     section.append(warning);
   }
 
@@ -3854,6 +3926,7 @@ function agentPathEditor(agent: AgentStatus): HTMLElement {
 function agentCard(agent: AgentStatus): HTMLElement {
   const state = agentState(agent);
   const conflict = agentConflict(agent.id);
+  const desktop = agentUsesDesktop(agent) ? agentDesktop(agent) : null;
 
   const card = document.createElement("article");
   card.className = "agent-card";
@@ -3872,23 +3945,33 @@ function agentCard(agent: AgentStatus): HTMLElement {
 
   const meta = document.createElement("div");
   meta.className = "agent-card__meta";
-  if (agent.version) {
+  if (desktop) {
+    // The desktop app has no CLI version to show; its login state is the one
+    // piece of information the user acts on.
+    const status = document.createElement("span");
+    status.className = "agent-card__desktop";
+    status.textContent = agentDesktopLabel(desktop);
+    meta.append(status);
+  } else if (agent.version) {
     const version = document.createElement("span");
     version.className = "agent-card__version";
     version.textContent = t("agents.version", { version: agent.version });
     meta.append(version);
   }
-  if (agent.path) {
+  const shownPath = (desktop && desktop.app_path) || agent.path;
+  if (shownPath) {
     const path = document.createElement("span");
     path.className = "agent-card__path";
-    path.textContent = agent.path;
-    path.title = agent.path;
+    path.textContent = shownPath;
+    path.title = shownPath;
     meta.append(path);
   }
   if (meta.childElementCount) card.append(meta);
 
   const reason = agentReasonLabel(agent.reason);
-  if (reason) {
+  // "App only, install the CLI" is exactly what the desktop backend removes;
+  // every other reason is about the CLI too, so none of them applies here.
+  if (reason && !desktop) {
     const line = document.createElement("p");
     line.className = "hint agent-card__reason";
     line.textContent = reason;
@@ -3899,18 +3982,32 @@ function agentCard(agent: AgentStatus): HTMLElement {
   if (state === "auth") {
     const hint = document.createElement("p");
     hint.className = "hint agent-card__reason";
-    hint.textContent = t("agents.authHint");
+    hint.textContent = desktop
+      ? t("agents.workbuddyLogin")
+      : t("agents.authHint");
     card.append(hint);
   } else if (state === "unavailable" && !agent.installed && agentConfigured(agent.id)) {
     const hint = document.createElement("p");
     hint.className = "hint agent-card__reason";
     hint.textContent = t("agents.configuredUnavailable");
     card.append(hint);
+  } else if (desktop && desktop.auth === "unknown") {
+    const hint = document.createElement("p");
+    hint.className = "hint agent-card__reason";
+    hint.textContent = t("agents.workbuddyDesktopUnknownHint");
+    card.append(hint);
+  } else if (desktop && desktop.auth === "ok") {
+    const hint = document.createElement("p");
+    hint.className = "hint agent-card__reason";
+    hint.textContent = t("agents.workbuddyDesktopHint");
+    card.append(hint);
   }
 
   const links = document.createElement("div");
   links.className = "agent-card__links";
-  if (!agent.installed && agent.install_url) {
+  // With the desktop app working there is nothing to install; the login hint
+  // above is the actionable advice instead of the CLI download link.
+  if (!agent.installed && !desktop && agent.install_url) {
     links.append(agentLink(agent.install_url, "agents.install"));
   }
   if (agent.docs_url) links.append(agentLink(agent.docs_url, "agents.docs"));
@@ -3921,11 +4018,14 @@ function agentCard(agent: AgentStatus): HTMLElement {
   // place to untick a model whose CLI is gone. Presence, not the checkbox
   // state, decides — a switched-off entry must stay reachable.
   const hasConfigured = Object.keys(draftProvider(agent.id)?.models ?? {}).length > 0;
-  if (agent.installed || hasConfigured) {
+  if (agent.installed || desktop || hasConfigured) {
     card.append(agentModelsSection(agent, rows, conflict));
   }
 
-  card.append(agentPathEditor(agent));
+  // The path override names a CLI executable.  In desktop mode there is no CLI
+  // to point at, and `agents.paths.workbuddy` cannot configure the app, so the
+  // editor would only suggest a setting that does nothing.
+  if (!desktop) card.append(agentPathEditor(agent));
   return card;
 }
 

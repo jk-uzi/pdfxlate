@@ -171,9 +171,9 @@ const EN: Table = {
 
   // --- settings › agents (external agent CLIs as translation backends) ---
   "agents.intro":
-    "Use an agent CLI already installed on this machine — and the login it already has — as a translation backend. Tick a model to make it available in Options.",
+    "Use an agent CLI already installed on this machine — or the WorkBuddy desktop app — and the login it already has, as a translation backend. Tick a model to make it available in Options.",
   "agents.termsHint":
-    "Only the CLI's headless mode is called; no credentials are copied. Usage counts against that agent's own plan.",
+    "Only the CLI's headless mode (or the WorkBuddy desktop app's own gateway) is called; no credentials are copied. Usage counts against that agent's own plan.",
   "agents.rescan": "Rescan",
   "agents.detecting": "Detecting installed agents…",
   "agents.empty": "The engine reported no agents.",
@@ -194,6 +194,17 @@ const EN: Table = {
     "Sign in by running the CLI itself; this app never reads or stores its credentials.",
   "agents.configuredUnavailable":
     "Configured earlier, but the CLI is not installed now. Its models stay listed in Options until you untick them below.",
+  "agents.workbuddyDesktopSignedIn": "Desktop app · signed in",
+  "agents.workbuddyDesktopSignedOut": "Desktop app · not signed in",
+  "agents.workbuddyDesktopUnknown": "Desktop app · sign-in state unknown",
+  "agents.workbuddyLogin":
+    "Open the WorkBuddy desktop app and sign in, then click Rescan. This app reuses that login and never copies its token.",
+  "agents.workbuddyDesktopHint":
+    "Translation runs through the signed-in WorkBuddy desktop app and uses that account's quota.",
+  "agents.workbuddyDesktopUnknownHint":
+    "The desktop app is installed, but its saved login could not be read. Open WorkBuddy once, then click Rescan.",
+  "agents.workbuddyDesktopError":
+    "Could not read the WorkBuddy desktop session: {error}",
   "agents.name.claude": "Claude Code",
   "agents.name.codex": "Codex CLI",
   "agents.name.workbuddy": "WorkBuddy / CodeBuddy",
@@ -475,9 +486,9 @@ const ZH: Table = {
   "model.cancel": "取消",
 
   "agents.intro":
-    "把本机已安装的 agent CLI（连同它自己的登录态）当作翻译后端。勾选模型后即可在「选项」里选用。",
+    "把本机已安装的 agent CLI 或 WorkBuddy 桌面版（连同它自己的登录态）当作翻译后端。勾选模型后即可在「选项」里选用。",
   "agents.termsHint":
-    "只以 headless 模式调用 CLI，不复制任何密钥；消耗的是该 agent 自己的额度。",
+    "只以 headless 模式调用 CLI（或走 WorkBuddy 桌面版自己的网关），不复制任何密钥；消耗的是该 agent 自己的额度。",
   "agents.rescan": "重新检测",
   "agents.detecting": "正在检测已安装的 agent…",
   "agents.empty": "引擎没有返回任何 agent。",
@@ -494,6 +505,16 @@ const ZH: Table = {
   "agents.authHint": "请先在命令行里完成该 CLI 的登录；本应用不会读取或保存它的凭据。",
   "agents.configuredUnavailable":
     "之前配置过，但现在没有检测到该 CLI。在下面取消勾选之前，它的模型仍会出现在「选项」里。",
+  "agents.workbuddyDesktopSignedIn": "桌面版 · 已登录",
+  "agents.workbuddyDesktopSignedOut": "桌面版 · 未登录",
+  "agents.workbuddyDesktopUnknown": "桌面版 · 登录状态未知",
+  "agents.workbuddyLogin":
+    "打开 WorkBuddy 桌面版登录后点「重新检测」。本应用复用该登录态，不会复制 token。",
+  "agents.workbuddyDesktopHint":
+    "翻译通过已登录的 WorkBuddy 桌面版完成，消耗该账号的额度。",
+  "agents.workbuddyDesktopUnknownHint":
+    "已检测到桌面版，但读不到它保存的登录信息。先打开一次 WorkBuddy，再点「重新检测」。",
+  "agents.workbuddyDesktopError": "读取 WorkBuddy 桌面版登录态失败：{error}",
   "agents.name.claude": "Claude Code",
   "agents.name.codex": "Codex CLI",
   "agents.name.workbuddy": "WorkBuddy / CodeBuddy",
