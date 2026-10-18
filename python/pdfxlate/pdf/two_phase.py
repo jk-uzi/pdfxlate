@@ -439,7 +439,14 @@ def output_paths(file: str) -> tuple[Path, Path]:
 
 
 def write_outputs(file: str, mono: bytes, dual: bytes) -> tuple[str, str]:
+    """Write both documents beside the input; never replace an earlier result."""
     mono_path, dual_path = output_paths(file)
+    target = mono_path.parent
+    paths = pipeline._unique_paths(
+        target, mono_path.stem.removesuffix("-mono"), ["-mono.pdf", "-dual.pdf"]
+    )
+    mono_path = paths["-mono.pdf"]
+    dual_path = paths["-dual.pdf"]
     mono_path.write_bytes(mono)
     dual_path.write_bytes(dual)
     return str(mono_path), str(dual_path)

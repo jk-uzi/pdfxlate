@@ -80,36 +80,6 @@
       </div>
 
       <div class="titlebar__drag"></div>
-
-      <!--
-        Keeps the document's corner controls on screen instead of having them
-        appear on hover. Placed after the drag strip so it sits just left of the
-        native window buttons, which the OS paints in the reserved strip.
-
-        The tooltip is set from app.ts rather than with `data-i18n-title`: it
-        names whichever action pressing the button performs, so it depends on
-        the state and cannot come from a static attribute.
-      -->
-      <button
-        id="btn-toggle-overlays"
-        class="titlebar__icon titlebar__pin"
-        aria-pressed="false"
-      >
-        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-          <!--
-            A pin: the head, the point, and a stem between them. One drawing
-            for both states — the pressed state is shown by the button's own
-            highlight, since a second glyph would only add a thing to keep in
-            step.
-          -->
-          <g stroke="currentColor" stroke-width="2" stroke-linecap="round"
-             stroke-linejoin="round" fill="none">
-            <path d="M9 3h6" />
-            <path d="M10 3v6.5L7.5 13v1.5h9V13L14 9.5V3" />
-            <path d="M12 14.5V21" />
-          </g>
-        </svg>
-      </button>
     </header>
 
     <div class="workspace">
@@ -153,6 +123,12 @@
                 </span>
                 <span class="folder-picker__action" data-i18n="docs.pickFolderShort"></span>
               </button>
+              <input
+                id="docs-search"
+                class="docs-search"
+                type="search"
+                data-i18n-placeholder="docs.search"
+              />
               <ul id="file-list" class="file-list"></ul>
             </div>
           </details>
@@ -195,6 +171,20 @@
                     <option value="ultrafast" data-i18n="options.modeUltrafast"></option>
                   </select>
                 </label>
+                <!--
+                  Which document a job produces: source and translation
+                  alternating (the default) or the translation alone. Not
+                  remembered between runs — it is a choice about this job, and
+                  the alternating form is what "translate a paper" usually
+                  means.
+                -->
+                <label>
+                  <span data-i18n="options.outputMode"></span>
+                  <select id="field-output-mode">
+                    <option value="dual" data-i18n="options.outputDual"></option>
+                    <option value="mono" data-i18n="options.outputMono"></option>
+                  </select>
+                </label>
                 <label>
                   <span data-i18n="options.threads"></span>
                   <input id="field-thread" type="number" min="1" max="64" value="4" />
@@ -202,13 +192,6 @@
                 <label>
                   <span data-i18n="options.pages"></span>
                   <input id="field-pages" type="text" placeholder="1,3-5" />
-                </label>
-                <label>
-                  <span data-i18n="options.output"></span>
-                  <div class="row row--tight">
-                    <input id="field-output" type="text" readonly />
-                    <button id="btn-pick-output" class="btn btn--small">…</button>
-                  </div>
                 </label>
               </div>
             </div>
@@ -218,8 +201,13 @@
         <!-- Pinned: stays reachable however long the groups get. -->
         <div class="sidebar__actions">
           <div class="sidebar__actions-row">
+            <!--
+              One button for the whole lifecycle. It starts a job, then becomes
+              the way to stop it — a second button appearing beside it made the
+              row jump and left the primary action changing meaning under the
+              pointer.
+            -->
             <button id="btn-translate" class="btn btn--primary grow" disabled data-i18n="options.translate"></button>
-            <button id="btn-cancel" class="btn btn--danger hidden" data-i18n="options.cancel"></button>
           </div>
 
           <!--
@@ -396,11 +384,40 @@
           </div>
 
           <!--
-            "Save a copy" for whichever document is on screen. Top-right rather
-            than with the paging controls: it acts on the document, not on the
-            view. Hidden until wanted, like the overlay below it.
+            "Save a copy" for whichever document is on screen, and the pin that
+            keeps this chip and the other corner controls on screen. Top-right
+            rather than with the paging controls: both act on the document
+            rather than on the view, and the pin belongs next to the controls it
+            governs. Sharing this chip means it fades in with them instead of
+            needing reveal rules of its own. Hidden until wanted, like the
+            overlay below it.
+
+            The pin's tooltip is set from app.ts rather than with
+            `data-i18n-title`: it names whichever action pressing the button
+            performs, so it depends on the state and cannot come from a static
+            attribute.
           -->
           <div class="viewer-saveas" id="viewer-saveas">
+            <button
+              id="btn-toggle-overlays"
+              class="icon-btn viewer-pin"
+              aria-pressed="false"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <!--
+                  A pin: the head, the point, and a stem between them. One
+                  drawing for both states — the pressed state is shown by the
+                  button's own highlight, since a second glyph would only add a
+                  thing to keep in step.
+                -->
+                <g stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                   stroke-linejoin="round" fill="none">
+                  <path d="M9 3h6" />
+                  <path d="M10 3v6.5L7.5 13v1.5h9V13L14 9.5V3" />
+                  <path d="M12 14.5V21" />
+                </g>
+              </svg>
+            </button>
             <button id="btn-save-as" class="icon-btn" data-i18n-title="preview.saveAs" disabled>⤓</button>
           </div>
         </div>

@@ -89,10 +89,13 @@ def translate(
     lang_in: str | None = None,
     lang_out: str | None = None,
     reasoning_effort: str | None = None,
+    output_mode: str = "both",
 ) -> list[tuple[str, str]]:
     """Translate PDF files and write ``-mono``/``-dual`` outputs.
 
     Returns a list of ``(mono_path, dual_path)`` tuples, one per input file.
+    A side the ``output_mode`` did not ask for is ``""`` and is not written;
+    ``output_mode`` is ``"mono"``, ``"dual"`` or ``"both"``.
     ``ignore_cache`` forces every paragraph to be retranslated for this call,
     bypassing cache reads and writes.  ``profile`` is a deprecated alias for
     ``provider``.
@@ -129,7 +132,9 @@ def translate(
     resolved_mode = mode or cfg.translation.mode
     ultrafast = resolved_mode == "ultrafast"
     resolved_thread = thread or cfg.translation.thread
-    resolved_output = output or str(Path.cwd())
+    # Empty means "beside the source".  Resolved per file in the pipeline, so a
+    # batch over several folders does not lump every output into one place.
+    resolved_output = output or ""
 
     model_obj = None
     if not ultrafast:
@@ -153,6 +158,7 @@ def translate(
         ultrafast=ultrafast,
         progress=progress,
         ocr_settings=cfg.ocr,
+        output_mode=output_mode,
     )
 
 

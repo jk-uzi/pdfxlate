@@ -49,6 +49,75 @@ NOTO_NAME = "noto"
 # Progress callback: (stage, current, total, message).
 ProgressFn = Optional[Callable[[str, int, int, str], None]]
 
+#: Folder created beside each source document when no output directory is given.
+#:
+#: A fixed ASCII name rather than a translated one: it lives on disk next to the
+#: user's papers, not in the UI, and the same path must mean the same thing on
+#: every platform and in every interface language.
+OUTPUT_SUBDIR = "translated"
+
+#: Which documents a run produces.
+#:
+#: ``mono`` is translated pages only, ``dual`` interleaves each source page with
+#: its translation, and ``both`` produces the two files (what the CLI and the
+#: MCP tools have always done).  Building the one that was not asked for is not
+#: free — it is a second full serialisation of the document — so the mode
+#: decides what gets built, not only what gets written.
+OUTPUT_MONO = "mono"
+OUTPUT_DUAL = "dual"
+OUTPUT_BOTH = "both"
+OUTPUT_MODES = (OUTPUT_MONO, OUTPUT_DUAL, OUTPUT_BOTH)
+
+
+def _selected_pages(pages: Optional[list[int]], page_count: int) -> Optional[list[int]]:
+    """Normalise a page selection, or ``None`` when everything is included.
+
+    Sorted and de-duplicated because the caller may type ``3,1-2`` and the
+    order is not a request about the output's order; out-of-range pages are
+    dropped because a range is often written loosely (``1-99`` on a 10-page
+    paper).  ``None``/empty means "every page", which is the common case and
+    keeps ``select()`` out of the path entirely.
+    """
+    if not pages:
+        return None
+    chosen = sorted({p for p in pages if 0 <= p < page_count})
+    if not chosen or len(chosen) == page_count:
+        return None
+    return chosen
+
+
+def _unique_paths(target: Path, stem: str, suffixes: list[str]) -> dict[str, Path]:
+    """Free paths for ``stem + suffix``, all sharing one `` (n)`` marker.
+
+    A translation is a result, not a scratch file: re-running a job must not
+    destroy the previous output.  The same rule the main process uses when a
+    dropped file would collide, so the two places behave alike.
+
+    The marker goes before the extension (``paper-mono (2).pdf``) and is shared
+    rather than chosen per file, so a run that produced ``paper-mono (2).pdf``
+    also names its dual ``paper-dual (2).pdf`` — pairing them up by name is how
+    a person reads the folder.
+    """
+
+    def free(marker: str) -> dict[str, Path] | None:
+        candidates = {}
+        for suffix in suffixes:
+            # Split each side's own tail off so the number lands before ".pdf":
+            # "-mono.pdf" -> "-mono" + marker + ".pdf".
+            tail = Path(f"x{suffix}")
+            name = f"{stem}{suffix[: -len(tail.suffix)]}{marker}{tail.suffix}"
+            candidates[suffix] = target / name
+        if all(not p.exists() for p in candidates.values()):
+            return candidates
+        return None
+
+    if found := free(""):
+        return found
+    for n in range(2, 1000):
+        if found := free(f" ({n})"):
+            return found
+    raise FileExistsError(f"too many files named like {stem}*{suffixes[0]}")
+
 
 def check_files(files: list[str]) -> list[str]:
     files = [f for f in files if not f.startswith(("http://", "https://"))]
@@ -357,9 +426,28 @@ def translate_stream(
     perf=None,
     progress: ProgressFn = None,
     ocr_settings=None,
+    output_mode: str = OUTPUT_BOTH,
     **kwarg: Any,
 ):
-    """Translate a PDF given as bytes; returns ``(mono_bytes, dual_bytes)``."""
+    """Translate a PDF given as bytes.
+
+    Returns ``(mono_bytes, dual_bytes)``; the side that ``output_mode`` did not
+    ask for is ``b""``.
+
+    ``output_mode`` decides which documents are built at all — ``mono``
+    (translated pages only), ``dual`` (each source page followed by its
+    translation) or ``both``.
+
+    ``pages`` has two jobs, and they are different: it selects which pages are
+    *translated*, and it also **cuts the output down to those pages**.  A page
+    range is a request for that part of the paper, so a range of 2-3 is a
+    two-page result — not the whole document with the other pages left
+    untranslated.
+    """
+    if output_mode not in OUTPUT_MODES:
+        raise ValueError(
+            f"output_mode must be one of {', '.join(OUTPUT_MODES)}; got {output_mode!r}"
+        )
     if ultrafast and not thread:
         thread = 16
     own_perf = perf is None
@@ -471,14 +559,35 @@ def translate_stream(
     if perf:
         perf.step("apply_patches")
 
-    doc_en.insert_file(doc_zh)
-    for id in range(page_count):
-        doc_en.move_page(page_count + id, id * 2 + 1)
+    # Cut the output down *before* assembling the interleaved copy and before
+    # font subsetting, so no work is spent on pages that are about to be
+    # dropped.  Both documents take the same selection, in the same order, so
+    # the source/translation pairing stays aligned.
+    keep = _selected_pages(pages, page_count)
+    if keep is not None:
+        doc_zh.select(keep)
+        doc_en.select(keep)
+        if perf:
+            perf.step("page_select")
+    kept = len(keep) if keep is not None else page_count
+
+    want_dual = output_mode in (OUTPUT_DUAL, OUTPUT_BOTH)
+    want_mono = output_mode in (OUTPUT_MONO, OUTPUT_BOTH)
+
+    # `doc_en` holds the source pages and `doc_zh` the translated ones; the
+    # interleaved document pairs them page by page.  Skipped entirely when it
+    # was not asked for — that assembly is a full second copy of the document.
+    if want_dual:
+        doc_en.insert_file(doc_zh)
+        for id in range(kept):
+            doc_en.move_page(kept + id, id * 2 + 1)
     if perf:
         perf.step("bilingual_assembly")
     if not (skip_subset_fonts or ultrafast):
-        doc_zh.subset_fonts(fallback=True)
-        doc_en.subset_fonts(fallback=True)
+        if want_mono:
+            doc_zh.subset_fonts(fallback=True)
+        if want_dual:
+            doc_en.subset_fonts(fallback=True)
     if perf:
         perf.step("font_subset")
 
@@ -489,12 +598,13 @@ def translate_stream(
             logger.warning("serialize failed (%s); retrying with aggressive cleanup", exc)
             return doc.write(deflate=True, garbage=4, clean=True, use_objstms=1)
 
-    result = (serialize(doc_zh), serialize(doc_en))
+    mono_bytes = serialize(doc_zh) if want_mono else b""
+    dual_bytes = serialize(doc_en) if want_dual else b""
     if perf:
         perf.step("pdf_serialize")
         if own_perf:
             perf.report()
-    return result
+    return mono_bytes, dual_bytes
 
 
 def translate(
@@ -512,9 +622,19 @@ def translate(
     ultrafast: bool = False,
     progress: ProgressFn = None,
     ocr_settings=None,
+    output_mode: str = OUTPUT_BOTH,
     **kwarg: Any,
 ):
-    """Translate PDF files; returns ``[(mono_path, dual_path), ...]``."""
+    """Translate PDF files; returns ``[(mono_path, dual_path), ...]``.
+
+    An output the ``output_mode`` did not ask for is returned as an empty
+    string, and its file is never written.  Existing files are never replaced:
+    a second run of the same paper lands as ``name (2)``.
+    """
+    if output_mode not in OUTPUT_MODES:
+        raise ValueError(
+            f"output_mode must be one of {', '.join(OUTPUT_MODES)}; got {output_mode!r}"
+        )
     if not files:
         raise PDFValueError("No files to process.")
 
@@ -558,16 +678,34 @@ def translate(
             perf=perf,
             progress=progress,
             ocr_settings=ocr_settings,
+            output_mode=output_mode,
         )
-        file_mono = Path(output) / f"{filename}-mono.pdf"
-        file_dual = Path(output) / f"{filename}-dual.pdf"
-        file_mono.parent.mkdir(parents=True, exist_ok=True)
-        file_mono.write_bytes(s_mono)
-        file_dual.write_bytes(s_dual)
+        # An empty `output` means "beside the source": each file gets its own
+        # `translated/` subfolder, so a job over files from several folders
+        # keeps every output with the paper it came from.  Callers that want one
+        # shared directory (the CLI's `-o`, the MCP tools) still pass one.
+        target = Path(output) if output else Path(file).resolve().parent / OUTPUT_SUBDIR
+        target.mkdir(parents=True, exist_ok=True)
+
+        # Only the documents that were actually built, and never on top of an
+        # earlier result — a second run of the same paper adds a numbered copy.
+        sides = []
+        if s_mono:
+            sides.append(("-mono.pdf", s_mono))
+        if s_dual:
+            sides.append(("-dual.pdf", s_dual))
+        paths = _unique_paths(target, filename, [s for s, _ in sides]) if sides else {}
+        for suffix, data in sides:
+            Path(paths[suffix]).write_bytes(data)
         if perf:
             perf.step("output_write")
             perf.report()
-        result_files.append((str(file_mono), str(file_dual)))
+        result_files.append(
+            (
+                str(paths.get("-mono.pdf", "")),
+                str(paths.get("-dual.pdf", "")),
+            )
+        )
 
     return result_files
 

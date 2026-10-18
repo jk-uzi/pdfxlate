@@ -30,8 +30,6 @@ type Table = Record<string, string>;
 const EN: Table = {
   "app.subtitle": "Layout-preserving PDF translation",
 
-  "titlebar.pinOverlays": "Keep the page controls on screen",
-  "titlebar.unpinOverlays": "Let the page controls hide again",
   "titlebar.toggleSidebar": "Collapse or expand the sidebar",
 
   "status.starting": "starting…",
@@ -88,6 +86,9 @@ const EN: Table = {
   "docs.pickFolderShort": "Choose…",
   "docs.noFolder": "No folder chosen",
   "docs.includeInJob": "Include in the next translation",
+  "docs.translated": "translated",
+  "docs.search": "Search documents…",
+  "docs.noMatch": "No document matches that search.",
 
   "model.title": "Model",
   "model.providerListTitle": "Providers",
@@ -178,11 +179,13 @@ const EN: Table = {
   "options.modeFast": "fast — ONNX layout detection",
   "options.modeUltrafast": "ultrafast — native text positions",
   "options.threads": "Threads",
+  "options.outputMode": "Output",
+  "options.outputDual": "Alternating — source, then translation",
+  "options.outputMono": "Translation only",
   "options.pages": "Pages (optional)",
-  "options.output": "Output directory",
-  "options.outputPlaceholder": "(default folder in Documents)",
   "options.translate": "Translate",
-  "options.cancel": "Cancel",
+  "options.cancel": "Cancel translation",
+  "options.cancelling": "Cancelling…",
 
   // --- preview pane ---
   "preview.emptyTitle": "No document open",
@@ -208,6 +211,8 @@ const EN: Table = {
   "preview.spreadPending": "Building the facing-page view…",
   "preview.spreadFailed": "Could not build the facing-page view: {error}",
   "preview.saveAs": "Save a copy",
+  "preview.pinOverlays": "Keep the page controls on screen",
+  "preview.unpinOverlays": "Let the page controls hide again",
   "preview.openFile": "Open in the default app",
   "preview.revealFile": "Show in folder",
   "preview.title": "Preview",
@@ -216,6 +221,7 @@ const EN: Table = {
   "progress.starting": "Starting…",
   "progress.done": "Finished.",
   "progress.failed": "Translation failed: {error}",
+  "progress.cancelled": "incomplete files were not written.",
 
 
   // `log.title` went with the log group; the panel heading is now
@@ -225,7 +231,6 @@ const EN: Table = {
   "log.providersFailed": "could not load providers: {error}",
   "log.engineFactsFailed": "could not read engine details: {error}",
   "log.pageCountFailed": "could not read the page count: {error}",
-  "log.defaultOutputFailed": "could not resolve the default output folder: {error}",
   "log.savedAs": "saved a copy to {path}",
   "log.saveAsFailed": "could not save a copy: {error}",
   "log.folderFailed": "could not list the folder: {error}",
@@ -244,9 +249,9 @@ const EN: Table = {
   "stage.starting": "starting",
   "stage.done": "done",
   "stage.error": "error",
+  "stage.cancelled": "cancelled",
 
   "dialog.selectPdf": "Select PDF files",
-  "dialog.selectOutput": "Select output directory",
   "dialog.engineErrorTitle": "Could not start the translation engine",
   "dialog.engineErrorHint":
     "If running from source, make sure the Python environment is set up:",
@@ -255,8 +260,6 @@ const EN: Table = {
 const ZH: Table = {
   "app.subtitle": "保持版式的 PDF 文献翻译",
 
-  "titlebar.pinOverlays": "让页面控件常驻显示",
-  "titlebar.unpinOverlays": "恢复为鼠标移入才显示",
   "titlebar.toggleSidebar": "折叠或展开侧栏",
 
   "status.starting": "启动中…",
@@ -312,6 +315,9 @@ const ZH: Table = {
   "docs.pickFolderShort": "选择…",
   "docs.noFolder": "尚未选择文件夹",
   "docs.includeInJob": "加入下一次翻译",
+  "docs.translated": "译文",
+  "docs.search": "搜索文档…",
+  "docs.noMatch": "没有匹配的文档。",
 
   "model.title": "模型",
   "model.providerListTitle": "服务商",
@@ -402,11 +408,13 @@ const ZH: Table = {
   "options.modeFast": "fast — ONNX 版面检测",
   "options.modeUltrafast": "ultrafast — 原生文本位置",
   "options.threads": "并发线程",
+  "options.outputMode": "译文形式",
+  "options.outputDual": "交替（原文 + 译文）",
+  "options.outputMono": "仅译文",
   "options.pages": "页码范围（可选）",
-  "options.output": "输出目录",
-  "options.outputPlaceholder": "（默认在「文档」目录）",
   "options.translate": "开始翻译",
-  "options.cancel": "取消",
+  "options.cancel": "取消翻译",
+  "options.cancelling": "正在取消…",
 
   "preview.emptyTitle": "尚未打开文档",
   "preview.emptyHint": "将 PDF 拖到此处，或用左侧的「选择文件…」。",
@@ -431,6 +439,8 @@ const ZH: Table = {
   "preview.spreadPending": "正在生成左右对照视图…",
   "preview.spreadFailed": "无法生成左右对照视图：{error}",
   "preview.saveAs": "另存为",
+  "preview.pinOverlays": "让页面控件常驻显示",
+  "preview.unpinOverlays": "恢复为鼠标移入才显示",
   "preview.openFile": "用默认应用打开",
   "preview.revealFile": "在文件夹中显示",
   "preview.title": "预览",
@@ -439,6 +449,7 @@ const ZH: Table = {
   "progress.starting": "正在启动…",
   "progress.done": "已完成。",
   "progress.failed": "翻译失败：{error}",
+  "progress.cancelled": "未完成的文件没有写出。",
 
 
   "log.engineFailed": "引擎启动失败：{error}",
@@ -446,7 +457,6 @@ const ZH: Table = {
   "log.providersFailed": "无法加载服务商：{error}",
   "log.engineFactsFailed": "无法读取引擎信息：{error}",
   "log.pageCountFailed": "无法读取页数：{error}",
-  "log.defaultOutputFailed": "无法解析默认输出目录：{error}",
   "log.savedAs": "已另存为 {path}",
   "log.saveAsFailed": "另存为失败：{error}",
   "log.folderFailed": "无法列出文件夹：{error}",
@@ -463,9 +473,9 @@ const ZH: Table = {
   "stage.starting": "启动",
   "stage.done": "完成",
   "stage.error": "错误",
+  "stage.cancelled": "已取消",
 
   "dialog.selectPdf": "选择 PDF 文件",
-  "dialog.selectOutput": "选择输出目录",
   "dialog.engineErrorTitle": "无法启动翻译引擎",
   "dialog.engineErrorHint": "若从源码运行，请确认 Python 环境已配置：",
 };

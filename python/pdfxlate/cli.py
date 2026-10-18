@@ -52,6 +52,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["fast", "ultrafast"],
         help="fast uses ONNX layout detection; ultrafast uses native text positions",
     )
+    parser.add_argument(
+        "--output-mode",
+        choices=["mono", "dual", "both"],
+        default="both",
+        help="mono = translated pages only, dual = source/translation alternating",
+    )
     parser.add_argument("--thread", "-t", type=int, help="Concurrent translation workers")
     parser.add_argument("--lang-in", help="Source language code")
     parser.add_argument("--lang-out", help="Target language code")
@@ -207,6 +213,7 @@ def main(argv: list[str] | None = None) -> int:
             vfont=args.vfont or "",
             vchar=args.vchar or "",
             ignore_cache=args.ignore_cache,
+            output_mode=args.output_mode,
         )
     except Exception as exc:  # noqa: BLE001 - surface a clean message
         logging.error("%s", exc)
@@ -214,9 +221,12 @@ def main(argv: list[str] | None = None) -> int:
             raise
         return 1
 
+    # The side that was not built is reported as an empty path; printing a
+    # blank "-> " line for it would only suggest something went wrong.
     for mono, dual in results:
-        print(f"translated -> {mono}")
-        print(f"           -> {dual}")
+        for path in (mono, dual):
+            if path:
+                print(f"translated -> {path}")
     return 0
 
 

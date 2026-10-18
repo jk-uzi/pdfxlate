@@ -63,11 +63,28 @@ logger = logging.getLogger(__name__)
 _JOBS: dict[str, dict[str, Any]] = {}
 _JOBS_LOCK = threading.Lock()
 
+#: Serialises writes to stdout.
+#:
+#: A translation runs on its own thread while the loop keeps reading stdin, so
+#: a progress event and the reply to ``translate.cancel`` can be produced at the
+#: same instant.  Without this lock two threads can interleave halves of two
+#: JSON documents on one line and the renderer loses both.
+_EMIT_LOCK = threading.Lock()
+
+#: Methods that must not block the request loop.
+#:
+#: The loop is what receives ``translate.cancel``; running a whole translation
+#: inline meant the cancel request sat in the pipe until the job finished, so
+#: cancelling appeared to do nothing at all.
+_BACKGROUND_METHODS = frozenset({"translate.start"})
+
 
 def _emit(payload: dict[str, Any]) -> None:
     """Write one JSON line to stdout and flush immediately."""
-    sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    sys.stdout.flush()
+    line = json.dumps(payload, ensure_ascii=False) + "\n"
+    with _EMIT_LOCK:
+        sys.stdout.write(line)
+        sys.stdout.flush()
 
 
 def _respond(req_id: Any, result: Any) -> None:
@@ -438,7 +455,17 @@ def method_translate_start(params: dict) -> dict:
             lang_in=params.get("lang_in"),
             lang_out=params.get("lang_out"),
             reasoning_effort=params.get("reasoning_effort"),
+            # Which document to build. The app sends "mono" or "dual"; an older
+            # caller that omits it keeps the historical pair of files.
+            output_mode=params.get("output_mode") or "both",
         )
+    except asyncio.CancelledError:
+        # A cancel is a normal end, not a failure: the renderer asked for it and
+        # must not show an error for obeying.  No `done` event either — the
+        # caller that is awaiting this reply is the one that cancelled, and it
+        # learns the outcome from the result.
+        logger.info("translation job %s cancelled", job_id)
+        return {"job_id": job_id, "cancelled": True, "outputs": []}
     finally:
         with _JOBS_LOCK:
             _JOBS.pop(job_id, None)
@@ -541,6 +568,24 @@ def handle(request: dict[str, Any]) -> None:
     if method not in METHODS:
         _fail(req_id, ValueError(f"unknown method {method!r}"))
         return
+
+    if method in _BACKGROUND_METHODS:
+        # Off the request loop so the next stdin line — in practice a
+        # `translate.cancel` — can be read while the job runs.  Daemon, because
+        # the process must still be able to exit with a job in flight.
+        threading.Thread(
+            target=_run_method,
+            args=(method, req_id, params),
+            name=f"sidecar-{method}",
+            daemon=True,
+        ).start()
+        return
+
+    _run_method(method, req_id, params)
+
+
+def _run_method(method: str, req_id: Any, params: dict[str, Any]) -> None:
+    """Call one method and report its outcome, whatever thread we are on."""
     try:
         _respond(req_id, METHODS[method](params))
     except Exception as exc:  # noqa: BLE001 - report any failure to the UI
@@ -583,6 +628,18 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     paths.ensure_dirs()
+
+    # Load numpy on the **main** thread before the request loop starts.
+    #
+    # Not an optimisation.  On Windows, importing numpy's C extension for the
+    # first time from a worker thread while stdin is a pipe deadlocks: the
+    # thread sits inside the extension's module init forever and no reply is
+    # ever written.  `translate.start` runs on a worker thread — that is what
+    # makes cancellation reachable — so without this warm-up every job started
+    # by the desktop app hung before its first progress event.  Measured: the
+    # same import takes 0.2s here and never completes from the thread.
+    import numpy  # noqa: F401  (imported for the side effect)
+
     _emit({"event": "ready", "version": __version__})
 
     for line in sys.stdin:

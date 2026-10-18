@@ -84,13 +84,27 @@ interface JobProgress {
   message: string;
 }
 
+
+type SidecarEvent = JobProgress | DoneEvent | { event: "ready"; version: string };
+
 interface DoneEvent {
   event: "done";
   job_id?: string;
   result: { outputs: Array<{ mono: string; dual: string }> };
 }
 
-type SidecarEvent = JobProgress | DoneEvent | { event: "ready"; version: string };
+/**
+ * One row in the documents list.
+ *
+ * `translated` marks a file the engine produced (it lives in the source
+ * folder's `translated/` subfolder). Such a row is listed so its output is easy
+ * to find again, but it cannot be ticked: translating a translation is never
+ * what anyone means.
+ */
+interface PdfEntry {
+  path: string;
+  translated: boolean;
+}
 
 interface PdfxlateApi {
   onReady(cb: (payload: { ok: boolean; error?: string }) => void): () => void;
@@ -98,8 +112,7 @@ interface PdfxlateApi {
   onEvent(cb: (event: SidecarEvent) => void): () => void;
   onLog(cb: (line: string) => void): () => void;
   request<T>(method: string, params?: Record<string, unknown>): Promise<T>;
-  defaultOutputDir(): Promise<string>;
-  listPdfs(dir: string): Promise<string[]>;
+  listPdfs(dir: string): Promise<PdfEntry[]>;
   pickFolder(locale?: string): Promise<string | null>;
   importPdf(source: string, destDir: string): Promise<string>;
   saveAs(source: string, suggestedName: string, locale?: string): Promise<string | null>;
@@ -110,7 +123,6 @@ interface PdfxlateApi {
   /** System clipboard; `navigator.clipboard` is unavailable from `file://`. */
   copyText(text: string): Promise<void>;
   pickPdf(locale?: string): Promise<string[]>;
-  pickOutputDir(locale?: string): Promise<string | null>;
   reveal(target: string): Promise<void>;
   openPath(target: string): Promise<void>;
   /** Absolute path -> `file://` URL. Synchronous: it is a pure conversion. */
@@ -145,13 +157,22 @@ const $ = <T extends HTMLElement>(id: string): T =>
  */
 let folderFiles: string[] = [];
 let checkedFiles = new Set<string>();
+/**
+ * Paths the engine produced, i.e. files under a source folder's `translated/`.
+ *
+ * Kept as a set rather than derived from the path on every paint: the folder
+ * scan and a finished job are two different sources of truth for it, and the
+ * row needs one cheap answer.
+ */
+let translatedFiles = new Set<string>();
 /** The folder being browsed, or null before one is chosen. */
 let currentFolder: string | null = null;
 
 const FOLDER_STORAGE_KEY = "pdfxlate.folder";
 
-let outputDir: string | null = null;
 let activeJobId: string | null = null;
+/** True between pressing cancel and the job actually stopping. */
+let cancellingJob = false;
 
 type EngineState = "pending" | "ok" | "error";
 let engineState: EngineState = "pending";
@@ -339,8 +360,8 @@ function paintOverlaysPinned(): void {
   // can see them. The tooltip names what pressing the button will do, so it
   // reads as an action rather than as a state to decode.
   const label = overlaysPinned
-    ? t("titlebar.unpinOverlays")
-    : t("titlebar.pinOverlays");
+    ? t("preview.unpinOverlays")
+    : t("preview.pinOverlays");
   button.title = label;
   button.setAttribute("aria-label", label);
 }
@@ -431,13 +452,22 @@ function restoreSidebarWidth(): void {
  * effect under synthetic (and, in this app's case, real) pointer input here —
  * measured: moves reached `window` while the handle never saw them. Acting on a
  * plain flag instead is both simpler and demonstrably working.
+ *
+ * Moves are coalesced onto an animation frame. Each width write makes the
+ * sidebar, the preview and the PDF viewer's own layout recalculate, and a mouse
+ * emits far more moves than the display has frames; doing that work once per
+ * event is what made the drag stutter.
  */
 const resizer = $("sidebar-resizer");
 let resizing = false;
+/** Latest pointer x seen while a frame is already scheduled. */
+let pendingResizeX: number | null = null;
+let resizeFrame = 0;
 
 resizer.addEventListener("pointerdown", (e) => {
   e.preventDefault();
   resizing = true;
+  pendingResizeX = e.clientX;
   document.body.classList.add("is-resizing");
 });
 
@@ -445,12 +475,24 @@ window.addEventListener("pointermove", (e) => {
   if (!resizing) return;
   // The sidebar starts at the window's left edge, so the pointer's x is the
   // width being asked for.
-  applySidebarWidth(e.clientX, false);
+  pendingResizeX = e.clientX;
+  if (resizeFrame) return;
+  resizeFrame = requestAnimationFrame(() => {
+    resizeFrame = 0;
+    if (pendingResizeX === null) return;
+    applySidebarWidth(pendingResizeX, false);
+    pendingResizeX = null;
+  });
 });
 
 function endResize(): void {
   if (!resizing) return;
   resizing = false;
+  if (resizeFrame) {
+    cancelAnimationFrame(resizeFrame);
+    resizeFrame = 0;
+  }
+  pendingResizeX = null;
   document.body.classList.remove("is-resizing");
   // Persist on release rather than on every move, so a drag writes once.
   const current = parseFloat(
@@ -734,7 +776,7 @@ function applyEngineState(payload: { ok: boolean; error?: string }): void {
   } else {
     appendLog(t("log.engineFailed", { error: payload.error ?? t("log.unknownError") }));
   }
-  updateTranslateButton();
+  paintTranslateButton();
 }
 
 /** Read the engine's version and config location for the General panel. */
@@ -836,12 +878,16 @@ async function openFolder(dir: string): Promise<void> {
     } catch {
       // Storage may be unavailable; the folder still works for this session.
     }
-    mergeFolderFiles(found);
+    // Rebuilt from the scan rather than merged: a `translated/` folder that has
+    // been emptied or renamed must not leave stale rows behind.
+    translatedFiles = new Set(found.filter((e) => e.translated).map((e) => e.path));
+    mergeFolderFiles(found.map((e) => e.path));
   } catch (err) {
     // A remembered folder that has since been deleted is an ordinary outcome.
     appendLog(t("log.folderFailed", { error: String(err) }));
     currentFolder = null;
     folderFiles = [];
+    translatedFiles = new Set();
     renderFiles();
   }
 }
@@ -887,22 +933,42 @@ function renderFolderLabel(): void {
 function renderFiles(): void {
   const list = $("file-list");
   list.innerHTML = "";
-  for (const file of folderFiles) {
+
+  // Filtering only affects what is drawn: a ticked file that the search hides
+  // stays ticked, so typing in the box never silently changes the job.
+  const needle = $<HTMLInputElement>("docs-search").value.trim().toLowerCase();
+  const visible = needle
+    ? folderFiles.filter((file) => baseName(file).toLowerCase().includes(needle))
+    : folderFiles;
+
+  for (const file of visible) {
     const li = document.createElement("li");
     li.className = "file-row";
+    const translated = translatedFiles.has(file);
+    if (translated) li.classList.add("is-translated");
 
     // The checkbox marks what a job will translate, which is a different
-    // question from which file the preview is showing.
-    const tick = document.createElement("input");
-    tick.type = "checkbox";
-    tick.className = "file-row__tick";
-    tick.checked = checkedFiles.has(file);
-    tick.title = t("docs.includeInJob");
-    tick.addEventListener("change", () => {
-      if (tick.checked) checkedFiles.add(file);
-      else checkedFiles.delete(file);
-      updateTranslateButton();
-    });
+    // question from which file the preview is showing. An output has no
+    // checkbox at all: translating a translation is never the intent, and a
+    // disabled tick would only invite the question of why it cannot be used.
+    if (!translated) {
+      const tick = document.createElement("input");
+      tick.type = "checkbox";
+      tick.className = "file-row__tick";
+      tick.checked = checkedFiles.has(file);
+      tick.title = t("docs.includeInJob");
+      tick.addEventListener("change", () => {
+        if (tick.checked) checkedFiles.add(file);
+        else checkedFiles.delete(file);
+        paintTranslateButton();
+      });
+      li.append(tick);
+    } else {
+      // Keeps the names aligned with the rows that do have a tick.
+      const spacer = document.createElement("span");
+      spacer.className = "file-row__tick-slot";
+      li.append(spacer);
+    }
 
     // The name opens the document, rather than a separate button: a list of
     // files reads as something you click to open.
@@ -913,18 +979,36 @@ function renderFiles(): void {
     name.classList.toggle("is-open", openTabs.includes(file));
     name.classList.toggle("is-active", activeTab === file);
     name.addEventListener("click", () => openDocument(file));
+    li.append(name);
 
-    li.append(tick, name);
+    if (translated) {
+      const tag = document.createElement("span");
+      tag.className = "file-row__tag";
+      tag.textContent = t("docs.translated");
+      li.append(tag);
+    }
+
     list.append(li);
   }
+
+  if (!visible.length && (needle || folderFiles.length)) {
+    const empty = document.createElement("li");
+    empty.className = "file-list__empty";
+    empty.textContent = t("docs.noMatch");
+    list.append(empty);
+  }
+
   renderFolderLabel();
-  updateTranslateButton();
+  paintTranslateButton();
 }
 
 $("btn-pick-folder").addEventListener("click", async () => {
   const dir = await api.pickFolder(getLocale());
   if (dir) await openFolder(dir);
 });
+
+// Only the painted rows change; the ticked set is deliberately left alone.
+$("docs-search").addEventListener("input", () => renderFiles());
 
 // --- tabs ------------------------------------------------------------------
 
@@ -3082,60 +3166,6 @@ $("opt-lang-out").addEventListener("change", (e) =>
   storeOption("langOut", (e.target as HTMLSelectElement).value),
 );
 
-/**
- * The directory the engine writes to when the user has not chosen one.
- *
- * Held so the output field can show it and a job can pass it explicitly, which
- * keeps what the UI promises and what the engine does in step. The main process
- * also fills it in as a backstop, so an omitted value can never fall through to
- * the engine's working directory.
- */
-let defaultOutput: string | null = null;
-
-async function loadDefaultOutput(): Promise<void> {
-  try {
-    defaultOutput = await api.defaultOutputDir();
-  } catch (err) {
-    appendLog(t("log.defaultOutputFailed", { error: String(err) }));
-    return;
-  }
-  paintOutputPlaceholder();
-}
-
-/**
- * Show the resolved default in the field's placeholder.
- *
- * The element has no `data-i18n-placeholder`, so this is its only writer; the
- * real path beats a translated description, and `title` carries the whole path
- * for when the field is too narrow to show even the abbreviated form.
- */
-function paintOutputPlaceholder(): void {
-  const field = $<HTMLInputElement>("field-output");
-  if (defaultOutput) {
-    field.placeholder = abbreviatePath(defaultOutput);
-    field.title = defaultOutput;
-  } else {
-    // Resolution failed; the descriptive text beats a blank field implying
-    // there is no default at all.
-    field.placeholder = t("options.outputPlaceholder");
-  }
-}
-
-/** Trim a path to its last two segments for display. */
-function abbreviatePath(full: string): string {
-  const parts = full.split(/[\\/]/).filter(Boolean);
-  return parts.length <= 2 ? full : parts.slice(-2).join("\\");
-}
-
-$("btn-pick-output").addEventListener("click", async () => {
-  const dir = await api.pickOutputDir(getLocale());
-  if (dir) {
-    outputDir = dir;
-    $<HTMLInputElement>("field-output").value = dir;
-    $<HTMLInputElement>("field-output").title = dir;
-  }
-});
-
 // --- translate -------------------------------------------------------------
 
 function parsePages(spec: string): number[] | undefined {
@@ -3155,62 +3185,111 @@ function parsePages(spec: string): number[] | undefined {
   return pages.length ? pages : undefined;
 }
 
-function updateTranslateButton(): void {
+/**
+ * Paint the one button that both starts and stops a job.
+ *
+ * Three states, in one place: a second button appearing beside this one made
+ * the row jump, and it also meant two pieces of code had to agree about which
+ * was visible. Here the state is a single variable, so they cannot disagree.
+ */
+function paintTranslateButton(): void {
   const button = $<HTMLButtonElement>("btn-translate");
-  button.disabled =
-    engineState !== "ok" || checkedFiles.size === 0 || activeJobId !== null;
+  const running = activeJobId !== null;
+
+  button.classList.toggle("btn--primary", !running);
+  button.classList.toggle("btn--danger", running);
+  button.classList.toggle("is-cancelling", cancellingJob);
+
+  if (running) {
+    button.disabled = cancellingJob;
+    button.textContent = t(cancellingJob ? "options.cancelling" : "options.cancel");
+  } else {
+    button.disabled = engineState !== "ok" || checkedFiles.size === 0;
+    button.textContent = t("options.translate");
+  }
 }
 
+/** Start a job, or ask the running one to stop. */
 $("btn-translate").addEventListener("click", async () => {
+  if (activeJobId !== null) {
+    await cancelTranslate();
+    return;
+  }
   if (!checkedFiles.size) return;
+
   const files = [...checkedFiles];
   const mode = $<HTMLSelectElement>("field-mode").value as "fast" | "ultrafast";
   const picked = selectedModel();
   activeJobId = "pending";
-  updateTranslateButton();
-  $("btn-cancel").classList.remove("hidden");
+  cancellingJob = false;
+  paintTranslateButton();
   setProgress("starting", 0, 1, { key: "progress.starting" });
 
   try {
-    const result = await api.request<{ job_id: string; outputs: Array<{ mono: string; dual: string }> }>(
-      "translate.start",
-      {
-        files,
-        // The Options panel is the only thing that decides which model a run
-        // uses. Settings shows the same providers but its selection is an
-        // editing cursor, so reading it here would let browsing the settings
-        // change the next job.
+    const result = await api.request<{
+      job_id: string;
+      cancelled?: boolean;
+      outputs: Array<{ mono: string; dual: string }>;
+    }>("translate.start", {
+      files,
+      // The Options panel is the only thing that decides which model a run
+      // uses. Settings shows the same providers but its selection is an
+      // editing cursor, so reading it here would let browsing the settings
+      // change the next job.
         provider: picked?.provider,
         model: picked?.model,
         lang_in: optionValues.langIn || undefined,
         lang_out: optionValues.langOut || undefined,
         reasoning_effort: optionValues.reasoning || undefined,
-        // Pass the resolved default explicitly rather than leaving it undefined:
-        // what the field shows and what the engine writes must be the same
-        // thing. The main process still fills it in if this is ever missing.
-        output: outputDir ?? defaultOutput ?? undefined,
         pages: parsePages($<HTMLInputElement>("field-pages").value),
         mode,
+        output_mode: $<HTMLSelectElement>("field-output-mode").value,
         thread: Number($<HTMLInputElement>("field-thread").value) || undefined,
-      },
-    );
-    showOutputs(result.outputs);
+    });
+    if (result.cancelled) {
+      setProgress("cancelled", 0, 1, { key: "progress.cancelled" });
+    } else {
+      showOutputs(result.outputs);
+    }
   } catch (err) {
-    setProgress("error", 0, 1, { key: "progress.failed", params: { error: String(err) } });
+    // A failure caused by cancelling is already reported as "cancelled"; the
+    // engine stopping mid-paragraph can surface as an ordinary error.
+    if (cancellingJob) {
+      setProgress("cancelled", 0, 1, { key: "progress.cancelled" });
+    } else {
+      setProgress("error", 0, 1, { key: "progress.failed", params: { error: String(err) } });
+    }
   } finally {
     activeJobId = null;
-    $("btn-cancel").classList.add("hidden");
-    updateTranslateButton();
+    cancellingJob = false;
+    paintTranslateButton();
   }
 });
 
-$("btn-cancel").addEventListener("click", async () => {
+/**
+ * Ask the engine to stop.
+ *
+ * The button stays busy until `translate.start` settles, because the engine can
+ * only stop between paragraphs — an in-flight model request has to be waited
+ * out. Saying "cancelling" instead of returning to "translate" immediately is
+ * the honest report of that window.
+ */
+async function cancelTranslate(): Promise<void> {
+  if (activeJobId === null || cancellingJob) return;
+  cancellingJob = true;
+  paintTranslateButton();
   try {
     await api.request("translate.cancel", {});
   } catch (err) {
-    appendLog(t("log.cancelFailed", { error: String(err) }));
+    // Finding no job means it finished between the click and the request; that
+    // is a race, not a failure worth logging.
+    if (!/no such job/i.test(String(err))) {
+      appendLog(t("log.cancelFailed", { error: String(err) }));
+    }
+    cancellingJob = false;
+    paintTranslateButton();
   }
-});
+}
 
 // --- progress + results ----------------------------------------------------
 
@@ -3253,6 +3332,13 @@ function handleProgress(event: JobProgress): void {
   setProgress(event.stage, event.current, event.total, { raw: event.message });
 }
 
+/**
+ * Final status line, including whether the caches paid off.
+ *
+ * The local counter is the one the app controls: a miss is a paragraph that
+ * cost an API call.  The provider counter is best effort — endpoints that do
+ * not report prompt-cache usage simply omit it.
+ */
 function handleDone(event: DoneEvent): void {
   setProgress("done", 1, 1, { key: "progress.done" });
   showOutputs(event.result.outputs);
@@ -3262,27 +3348,34 @@ function handleDone(event: DoneEvent): void {
  * Surface a finished job's files as tabs.
  *
  * There is no results list any more: an output is just a PDF, so the honest
- * thing is to open it the same way any other PDF is opened. Both files are
- * opened, and the translation is the one left in front — it is what the job was
- * for, while the dual is for reading side by side.
+ * thing is to open it the same way any other PDF is opened.
+ *
+ * A job now produces one document, not two: the side the Options panel asked
+ * for arrives with the other side as an empty string. Opening "" would create
+ * a tab that can never load, so the empty side is skipped. The one that is left
+ * in front is the asked-for document; if both were produced, the translated
+ * one wins — it is what the job was for, and the interleaved copy is for
+ * reading side by side.
  *
  * Files that land outside the browsed folder are added to the list too, so they
  * remain reachable rather than existing only as a tab.
  */
 function showOutputs(outputs: Array<{ mono: string; dual: string }>): void {
-  if (!outputs.length) return;
-  const opened: string[] = [];
-  for (const pair of outputs) {
-    for (const file of [pair.dual, pair.mono]) {
-      if (!openTabs.includes(file)) openTabs.push(file);
-      if (!folderFiles.includes(file)) folderFiles.push(file);
-      opened.push(file);
-    }
+  const produced = outputs.flatMap((pair) => [pair.mono, pair.dual]).filter(Boolean);
+  if (!produced.length) return;
+
+  for (const file of produced) {
+    if (!openTabs.includes(file)) openTabs.push(file);
+    if (!folderFiles.includes(file)) folderFiles.push(file);
+    // Known outputs go straight into the translated set, so the rows appear
+    // with their tag and without a tick immediately — a rescan would be a
+    // filesystem round trip for something the job just told us.
+    translatedFiles.add(file);
   }
   renderFiles();
-  // Activate the last mono pushed above: the frame the job was run for.
-  const firstMono = outputs[0].mono;
-  activateTab(firstMono);
+  // Prefer the translated-only document when it exists, else whatever was
+  // produced (with a single output that is the same thing).
+  activateTab(outputs[0].mono || produced[0]);
   expandGroup("group-docs");
 }
 
@@ -3295,14 +3388,13 @@ function appendLog(line: string): void {
   if (atBottom) pane.scrollTop = pane.scrollHeight;
 }
 
-updateTranslateButton();
+paintTranslateButton();
 renderTabs();
 renderFiles();
 loadOptionValues();
 paintOptionSelects();
 updatePreviewControls();
 renderPreview();
-void loadDefaultOutput();
 
 /**
  * Restore the folder browsed last time.
