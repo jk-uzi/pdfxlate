@@ -2567,6 +2567,47 @@ GitHub 从 LICENSE 识别出 AGPL-3.0。
 公开内容抽查三个文件无绝对路径；pytest 373 通过、i18n 203 键同步、
 typecheck 干净。原始历史的完整备份留在仓库外的 bundle 里（桌面 `pdfxlate-backup-pre-release/`）。
 
+> 署名后来改回了真实身份，见下一节「改回真实署名」。本节保留的是当时的决定过程。
+
 > **强推的残留**：GitHub 侧带旧邮箱的对象在服务端 GC 之前可能仍可通过 SHA 抓取。要彻底
 > 断掉只能删库重建；本仓库当时 0 star / 0 fork / 0 issue，损失极小，但删库不可逆，所以
 > 没有做。以后若要发布「必须绝对干净」的仓库，新建一个比强推更可靠。
+
+## 改回真实署名，双语 README 与首个正式发布
+
+上一节记录的 noreply 匿名身份只维持了一轮：对外发布时决定改用真实身份，把全部提交的
+作者与提交者重新写成 `jk-uzi <2081217232@qq.com>`，并强推 `develop` 与 `main`。
+`filter-branch` 只改 `--env-filter`，不动树、不动消息、不动时间；重写前后
+`HEAD^{tree}` 与 `git diff` 都为空，说明内容一个字节没变。改完同样清掉
+`refs/original`、过期 reflog 并 `gc --prune=now`。
+
+### README 做成中英双语
+
+GitHub 只能显示一个 `README.md`，所以默认放中文，英文版另存 `README.en.md`，两份顶部
+互相链接。这样仓库首页默认就是中文，英文读者点一下即可切换。两份文档逐节对应，
+不是机翻：数字、命令、限制条件必须在两版里一致。
+
+写的时候顺手修掉旧英文 README 的六处事实错误：
+
+- 项目**不读取 `.env`**（没有 dotenv 依赖），`${VAR}` 只从进程环境展开，
+  `.env.example` 仅列出常用变量名；
+- 模型下载是**先试 `huggingface.co`、失败回退 `hf-mirror.com`**，不是「只能用镜像」；
+- `--config-dir` **只重定向配置目录**，缓存与资源始终用平台目录（`paths.py` 的模块
+  注释写了原因）；CLI 的帮助文本原来写错，改成只描述配置目录；
+- `TESSDATA_PREFIX` 并未被代码读取，OCR 前缀来自 `ocr.tessdata_prefix`；
+- 命令行默认产出 `both`，**界面里只有单语/双语两个选项**；
+- 只有 Windows 安装包与 Linux AppImage 实际构建并验证过，macOS 仅配置、未验证。
+
+### 界面截图
+
+README 里的截图是打包后的真实应用，不是设计稿：`dist/win-unpacked/pdfxlate.exe`
+配一个独立 `--user-data-dir` 启动（独立的单实例锁，不影响日常配置），用
+`--remote-debugging-port` 通过 CDP 预置语言与文件夹、展开选项面板、点开译文行，再
+`Page.captureScreenshot`。演示目录里放一份原文与它对应的 `-mono.pdf`，侧栏就能同时
+展示源文件与带「译文」标记的输出。截图 305 KB，远低于 pre-commit 的 2 MB 上限。
+
+### 安装包作为 Release 资产
+
+用 `gh release create` 把已验证的安装包挂到 `v0.1.0`，发布说明写清未签名导致的
+SmartScreen 提示、首次运行要联网下载模型、以及安装包的大小与 SHA256。没有重建安装包：
+asar 内的渲染进程与主进程文件与当前 `out/` 逐字节相同，已核对。
