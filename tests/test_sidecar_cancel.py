@@ -190,3 +190,32 @@ def test_background_start_does_not_import_heavy_modules_itself():
     warm = main_body.index("import numpy")
     loop = main_body.index("for line in sys.stdin")
     assert warm < loop, "numpy must be imported before the request loop starts"
+
+
+def test_translate_start_reports_cache_stats(monkeypatch, capsys):
+    """The reply and the `done` event both carry the counters the UI shows."""
+    from pdfxlate import cache as cache_mod
+    from pdfxlate.models.base import (
+        provider_cache_snapshot,
+        record_provider_cache,
+    )
+
+    def fake_translate(files, **kwargs):
+        # Stand in for one hit, one miss and provider-reported cache usage.
+        cache_mod._record_lookup(True)
+        cache_mod._record_lookup(False)
+        record_provider_cache(384, 180)
+        return [("m.pdf", "")]
+
+    monkeypatch.setattr(api_mod, "translate", fake_translate)
+    result = sidecar.method_translate_start({"files": ["a.pdf"]})
+
+    assert result["cache"] == {"hits": 1, "misses": 1}
+    assert result["provider_cache"] == {"hit_tokens": 384, "miss_tokens": 180}
+
+    done = [m for m in _messages(capsys) if m.get("event") == "done"]
+    assert done[0]["result"]["cache"] == {"hits": 1, "misses": 1}
+    assert done[0]["result"]["provider_cache"] == {
+        "hit_tokens": 384,
+        "miss_tokens": 180,
+    }

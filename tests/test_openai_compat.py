@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import pytest
@@ -135,3 +136,74 @@ def test_custom_prompt_template(isolated_cache):
     )
     messages = adapter.build_messages("abc")
     assert messages[0]["content"] == "Translate to zh: abc"
+
+
+def _response_with_usage(usage):
+    response = mock.Mock()
+    response.choices = [mock.Mock()]
+    response.choices[0].message.content = "translated"
+    response.choices[0].finish_reason = "stop"
+    response.usage = usage
+    return response
+
+
+def test_deepseek_usage_cache_fields_are_recorded(isolated_cache):
+    from pdfxlate.models.base import provider_cache_snapshot
+
+    usage = SimpleNamespace(
+        prompt_tokens=564,
+        prompt_cache_hit_tokens=384,
+        prompt_cache_miss_tokens=180,
+    )
+    adapter = OpenAICompatAdapter(Profile(), "en", "zh")
+    provider_cache_snapshot(reset=True)
+    with mock.patch.object(
+        adapter.client.chat.completions,
+        "create",
+        return_value=_response_with_usage(usage),
+    ):
+        adapter.do_translate("hello")
+    assert provider_cache_snapshot(reset=False) == {
+        "hit_tokens": 384,
+        "miss_tokens": 180,
+    }
+
+
+def test_openai_cached_tokens_details_are_recorded(isolated_cache):
+    from pdfxlate.models.base import provider_cache_snapshot
+
+    usage = SimpleNamespace(
+        prompt_tokens=500,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=384),
+    )
+    adapter = OpenAICompatAdapter(Profile(), "en", "zh")
+    provider_cache_snapshot(reset=True)
+    with mock.patch.object(
+        adapter.client.chat.completions,
+        "create",
+        return_value=_response_with_usage(usage),
+    ):
+        adapter.do_translate("hello")
+    # The miss count is the remainder of the prompt.
+    assert provider_cache_snapshot(reset=False) == {
+        "hit_tokens": 384,
+        "miss_tokens": 116,
+    }
+
+
+def test_usage_without_cache_fields_is_ignored(isolated_cache):
+    from pdfxlate.models.base import provider_cache_snapshot
+
+    metric = mock.Mock()
+    adapter = OpenAICompatAdapter(Profile(), "en", "zh")
+    provider_cache_snapshot(reset=True)
+    with mock.patch.object(
+        adapter.client.chat.completions,
+        "create",
+        return_value=_response_with_usage(metric),
+    ):
+        adapter.do_translate("hello")
+    assert provider_cache_snapshot(reset=False) == {
+        "hit_tokens": 0,
+        "miss_tokens": 0,
+    }

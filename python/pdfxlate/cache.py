@@ -26,6 +26,36 @@ from pdfxlate import paths
 
 logger = logging.getLogger(__name__)
 
+# Lookup counters for the current job.
+#
+# Process-wide and reset by the sidecar around ``translate.start``: the UI runs
+# one job at a time, and threading a pair of counters through the pipeline's
+# return value would touch every layer for a diagnostic.  Threads share these
+# because the typesetter translates paragraphs from a pool.
+_STATS_LOCK = threading.Lock()
+_STATS: dict[str, int] = {"hits": 0, "misses": 0}
+
+
+def _record_lookup(hit: bool) -> None:
+    with _STATS_LOCK:
+        _STATS["hits" if hit else "misses"] += 1
+
+
+def snapshot_stats(reset: bool = True) -> dict[str, int]:
+    """Return cache lookups since the last snapshot, optionally clearing them.
+
+    Only lookups against an enabled cache are counted.  A disabled cache never
+    reaches sqlite, and a caller passing ``ignore_cache`` skips the lookup
+    entirely, so neither inflates the miss count.
+    """
+    with _STATS_LOCK:
+        counts = dict(_STATS)
+        if reset:
+            _STATS["hits"] = 0
+            _STATS["misses"] = 0
+    return counts
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS translation_cache (
     engine       TEXT NOT NULL,
@@ -110,8 +140,13 @@ class TranslationCache:
             ).fetchone()
         except sqlite3.Error:
             logger.debug("cache read failed", exc_info=True)
+            _record_lookup(False)
             return None
-        return row[0] if row else None
+        if row:
+            _record_lookup(True)
+            return row[0]
+        _record_lookup(False)
+        return None
 
     def set(self, original: str, translation: str) -> None:
         if not self.enabled:

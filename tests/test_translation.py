@@ -98,6 +98,60 @@ def test_cache_key_separates_models(temp_cache):
     assert b.calls == 1
 
 
+def test_cache_stats_count_hits_and_misses(temp_cache):
+    cache_mod.snapshot_stats(reset=True)
+    adapter = CountingAdapter(FakeProfile(), "en", "zh")
+    adapter.translate("hello")  # miss
+    adapter.translate("hello")  # hit
+    assert cache_mod.snapshot_stats(reset=True) == {"hits": 1, "misses": 1}
+
+
+def test_cache_stats_disabled_cache_is_not_counted(temp_cache):
+    """A switched-off cache performs no lookup, so it is neither hit nor miss."""
+    cache_mod.snapshot_stats(reset=True)
+    disabled = build_adapter(
+        "counting_test", FakeProfile(), "en", "zh", cache_enabled=False
+    )
+    disabled.translate("hello")
+    disabled.translate("hello")
+    assert cache_mod.snapshot_stats(reset=True) == {"hits": 0, "misses": 0}
+
+
+def test_cache_stats_ignore_cache_is_not_counted(temp_cache):
+    adapter = CountingAdapter(FakeProfile(), "en", "zh")
+    adapter.translate("hello")
+    cache_mod.snapshot_stats(reset=True)
+    adapter.translate("hello", ignore_cache=True)
+    assert cache_mod.snapshot_stats(reset=True) == {"hits": 0, "misses": 0}
+
+
+def test_default_prompt_stays_short_for_cost():
+    """Do not "optimise" the prompt by lengthening its fixed prefix.
+
+    The gateway measured for this project never caches the first prefix block
+    and only starts reporting hits at ~256 prompt tokens.  A longer template
+    therefore adds uncached tokens faster than the cache saves them; the short
+    template is the cheapest option.  The local sqlite cache is where the real
+    savings come from.
+    """
+    from pdfxlate.models.base import DEFAULT_PROMPT
+
+    prefix, separator, tail = DEFAULT_PROMPT.partition("${text}")
+    assert separator, "the default prompt must contain ${text}"
+    assert len(prefix) < 400, "a longer prefix costs more than the cache saves"
+    assert "${text}" not in tail, "the variable text must appear exactly once"
+
+
+def test_default_prompt_puts_the_paragraph_last():
+    from pdfxlate.models.base import DEFAULT_PROMPT
+
+    adapter = CountingAdapter(FakeProfile(), "en", "zh")
+    content = adapter.build_messages("UNIQUE-PARAGRAPH")[0]["content"]
+    assert content.endswith("Translated Text:")
+    # The variable part is at the very end, after the stable instruction block.
+    assert content.index("UNIQUE-PARAGRAPH") > len(DEFAULT_PROMPT) * 0.7
+
+
 def test_build_adapter_cache_enabled_by_default(temp_cache):
     adapter = build_adapter("counting_test", FakeProfile(), "en", "zh")
     assert adapter.cache.enabled is True

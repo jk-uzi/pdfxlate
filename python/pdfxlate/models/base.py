@@ -20,6 +20,7 @@ import abc
 import contextvars
 import logging
 import re
+import threading
 from string import Template
 from typing import Any, Callable, ClassVar
 
@@ -39,12 +40,49 @@ _CACHE_ENABLED: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "pdfxlate_cache_enabled", default=True
 )
 
+# Provider-reported prompt-cache usage, accumulated between snapshots.
+#
+# ``openai_compat`` records these from the API response's ``usage`` block.  The
+# counters are process-wide because the desktop app runs one job at a time and
+# the sidecar snapshots them per job; keeping them on the adapter would make
+# aggregation across a batch of files need a new return value through the
+# whole pipeline.  Providers that do not report the fields contribute nothing.
+_PROVIDER_CACHE_LOCK = threading.Lock()
+_PROVIDER_CACHE: dict[str, int] = {"hit_tokens": 0, "miss_tokens": 0}
+
+
+def record_provider_cache(hit_tokens: int | None, miss_tokens: int | None) -> None:
+    """Accumulate prompt-cache token counts reported by the provider."""
+    hit = max(0, int(hit_tokens or 0))
+    miss = max(0, int(miss_tokens or 0))
+    if not hit and not miss:
+        return
+    with _PROVIDER_CACHE_LOCK:
+        _PROVIDER_CACHE["hit_tokens"] += hit
+        _PROVIDER_CACHE["miss_tokens"] += miss
+
+
+def provider_cache_snapshot(reset: bool = True) -> dict[str, int]:
+    """Return provider cache usage since the last call, optionally clearing it."""
+    with _PROVIDER_CACHE_LOCK:
+        counts = dict(_PROVIDER_CACHE)
+        if reset:
+            _PROVIDER_CACHE["hit_tokens"] = 0
+            _PROVIDER_CACHE["miss_tokens"] = 0
+    return counts
+
 # Placeholders the typesetter injects for formulas.  A translation that drops
 # or mangles these corrupts the output PDF, so they are validated after every
 # response.  See converter.py, which emits "{vN}" and parses it back with the
 # same shape.
 _PLACEHOLDER_RE = re.compile(r"\{\s*v(\d+)\s*\}")
 
+#: Deliberately short.  Provider-side prompt caching discounts prefixes, but
+#: only above its block size: the gateway measured for this project never
+#: caches the first block and starts hitting at ~256 prompt tokens.  Extending
+#: this template therefore adds uncached tokens faster than the cache saves
+#: them, so the short version is the cheapest.  The local sqlite cache is the
+#: real cost lever; ``test_default_prompt_stays_short_for_cost`` pins this.
 DEFAULT_PROMPT = (
     "You are a professional translation engine for scientific documents. "
     "Translate the source text into ${lang_out}. "

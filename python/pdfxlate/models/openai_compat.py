@@ -26,9 +26,58 @@ from tenacity import (
     wait_exponential,
 )
 
-from pdfxlate.models.base import ModelAdapter, TruncatedResponseError, register
+from pdfxlate.models.base import (
+    ModelAdapter,
+    TruncatedResponseError,
+    record_provider_cache,
+    register,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _usage_cache_tokens(usage: Any) -> tuple[int, int] | None:
+    """Extract ``(hit, miss)`` prompt-cache tokens from an API usage block.
+
+    DeepSeek-compatible endpoints report ``prompt_cache_hit_tokens`` and
+    ``prompt_cache_miss_tokens`` at the top level; OpenAI reports the hit count
+    as ``prompt_tokens_details.cached_tokens``.  Both shapes are accepted, and
+    anything else is ignored: these are diagnostics, never a reason to fail a
+    translation.
+    """
+
+    def number(container: Any, name: str) -> int | None:
+        value = getattr(container, name, None)
+        if value is None and isinstance(container, dict):
+            value = container.get(name)
+        if value is None:
+            extra = getattr(container, "model_extra", None)
+            if isinstance(extra, dict):
+                value = extra.get(name)
+        # The SDK keeps the fields it knows about; provider-specific extras may
+        # arrive as strings.  Reject anything that is not a plain number so a
+        # mock or an unexpected object cannot turn into a bogus count.
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            try:
+                return int(str(value))
+            except (TypeError, ValueError):
+                return None
+        return int(value)
+
+    hit = number(usage, "prompt_cache_hit_tokens")
+    miss = number(usage, "prompt_cache_miss_tokens")
+    if hit is None and miss is None:
+        details = getattr(usage, "prompt_tokens_details", None)
+        if details is None and isinstance(usage, dict):
+            details = usage.get("prompt_tokens_details")
+        if details is not None:
+            hit = number(details, "cached_tokens")
+            prompt = number(usage, "prompt_tokens")
+            if hit is not None and prompt is not None:
+                miss = max(0, prompt - hit)
+    if hit is None and miss is None:
+        return None
+    return hit or 0, miss or 0
 
 
 @register
@@ -106,6 +155,7 @@ class OpenAICompatAdapter(ModelAdapter):
         response = self.client.chat.completions.create(
             stream=self.stream, **self._request_kwargs(text)
         )
+        usage = None
         if self.stream:
             parts = []
             finish_reason = None
@@ -123,6 +173,14 @@ class OpenAICompatAdapter(ModelAdapter):
                 raise ValueError(f"empty response from model: {response!r}")
             finish_reason = response.choices[0].finish_reason
             content = response.choices[0].message.content or ""
+            # Only non-streaming responses carry a usage block.  Recording it
+            # here (before the truncation check) still counts what the call
+            # cost even when the answer is rejected.
+            usage = getattr(response, "usage", None)
+        if usage is not None:
+            tokens = _usage_cache_tokens(usage)
+            if tokens is not None:
+                record_provider_cache(*tokens)
         if finish_reason == "length":
             raise TruncatedResponseError(getattr(self.profile, "max_tokens", None), text)
         return content.strip()

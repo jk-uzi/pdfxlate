@@ -84,14 +84,31 @@ interface JobProgress {
   message: string;
 }
 
+/** Local translation-cache lookups for one job. */
+interface CacheStats {
+  hits: number;
+  misses: number;
+}
 
-type SidecarEvent = JobProgress | DoneEvent | { event: "ready"; version: string };
+/** Prompt-cache tokens reported by the provider, when it reports them. */
+interface ProviderCacheStats {
+  hit_tokens: number;
+  miss_tokens: number;
+}
+
+interface JobResult {
+  outputs: Array<{ mono: string; dual: string }>;
+  cache?: CacheStats;
+  provider_cache?: ProviderCacheStats;
+}
 
 interface DoneEvent {
   event: "done";
   job_id?: string;
-  result: { outputs: Array<{ mono: string; dual: string }> };
+  result: JobResult;
 }
+
+type SidecarEvent = JobProgress | DoneEvent | { event: "ready"; version: string };
 
 /**
  * One row in the documents list.
@@ -3226,16 +3243,14 @@ $("btn-translate").addEventListener("click", async () => {
   setProgress("starting", 0, 1, { key: "progress.starting" });
 
   try {
-    const result = await api.request<{
-      job_id: string;
-      cancelled?: boolean;
-      outputs: Array<{ mono: string; dual: string }>;
-    }>("translate.start", {
-      files,
-      // The Options panel is the only thing that decides which model a run
-      // uses. Settings shows the same providers but its selection is an
-      // editing cursor, so reading it here would let browsing the settings
-      // change the next job.
+    const result = await api.request<{ job_id: string; cancelled?: boolean } & JobResult>(
+      "translate.start",
+      {
+        files,
+        // The Options panel is the only thing that decides which model a run
+        // uses. Settings shows the same providers but its selection is an
+        // editing cursor, so reading it here would let browsing the settings
+        // change the next job.
         provider: picked?.provider,
         model: picked?.model,
         lang_in: optionValues.langIn || undefined,
@@ -3245,11 +3260,13 @@ $("btn-translate").addEventListener("click", async () => {
         mode,
         output_mode: $<HTMLSelectElement>("field-output-mode").value,
         thread: Number($<HTMLInputElement>("field-thread").value) || undefined,
-    });
+      },
+    );
     if (result.cancelled) {
       setProgress("cancelled", 0, 1, { key: "progress.cancelled" });
     } else {
       showOutputs(result.outputs);
+      paintDoneProgress(result);
     }
   } catch (err) {
     // A failure caused by cancelling is already reported as "cancelled"; the
@@ -3339,8 +3356,25 @@ function handleProgress(event: JobProgress): void {
  * cost an API call.  The provider counter is best effort — endpoints that do
  * not report prompt-cache usage simply omit it.
  */
+function paintDoneProgress(result: JobResult): void {
+  const parts = [t("progress.done")];
+  if (result.cache) {
+    const total = result.cache.hits + result.cache.misses;
+    if (total > 0) {
+      parts.push(t("progress.cacheHits", { hits: result.cache.hits, total }));
+    }
+  }
+  if (result.provider_cache) {
+    const { hit_tokens: hit, miss_tokens: miss } = result.provider_cache;
+    if (hit + miss > 0) {
+      parts.push(t("progress.providerCacheHits", { hit, total: hit + miss }));
+    }
+  }
+  setProgress("done", 1, 1, { raw: parts.join(" ") });
+}
+
 function handleDone(event: DoneEvent): void {
-  setProgress("done", 1, 1, { key: "progress.done" });
+  paintDoneProgress(event.result);
   showOutputs(event.result.outputs);
 }
 

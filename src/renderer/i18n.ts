@@ -222,6 +222,8 @@ const EN: Table = {
   "progress.done": "Finished.",
   "progress.failed": "Translation failed: {error}",
   "progress.cancelled": "incomplete files were not written.",
+  "progress.cacheHits": "Translation cache: {hits}/{total} paragraphs reused.",
+  "progress.providerCacheHits": "Provider prompt cache: {hit}/{total} tokens.",
 
 
   // `log.title` went with the log group; the panel heading is now
@@ -450,6 +452,8 @@ const ZH: Table = {
   "progress.done": "已完成。",
   "progress.failed": "翻译失败：{error}",
   "progress.cancelled": "未完成的文件没有写出。",
+  "progress.cacheHits": "本地缓存命中 {hits}/{total} 段。",
+  "progress.providerCacheHits": "服务端提示词缓存 {hit}/{total} tokens。",
 
 
   "log.engineFailed": "引擎启动失败：{error}",

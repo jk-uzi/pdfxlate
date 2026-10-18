@@ -413,12 +413,27 @@ def method_pdf_spread(params: dict) -> dict:
 
 def method_translate_start(params: dict) -> dict:
     """Run a translation job, streaming progress events."""
+    from pdfxlate import cache as cache_mod
     from pdfxlate.api import translate
+    from pdfxlate.models.base import provider_cache_snapshot
 
     job_id = params.get("job_id") or uuid.uuid4().hex
     cancel_event = threading.Event()
     with _JOBS_LOCK:
         _JOBS[job_id] = {"cancel": cancel_event}
+
+    # The counters are process-wide.  The desktop app allows one job at a time,
+    # so clearing them here attributes every lookup to this job; a concurrent
+    # caller would mix the numbers rather than crash, which is acceptable for
+    # a diagnostic that is only shown to a human.
+    cache_mod.snapshot_stats(reset=True)
+    provider_cache_snapshot(reset=True)
+
+    def stats() -> dict[str, dict[str, int]]:
+        return {
+            "cache": cache_mod.snapshot_stats(),
+            "provider_cache": provider_cache_snapshot(),
+        }
 
     def progress(stage: str, current: int, total: int, message: str) -> None:
         _emit(
@@ -465,14 +480,21 @@ def method_translate_start(params: dict) -> dict:
         # caller that is awaiting this reply is the one that cancelled, and it
         # learns the outcome from the result.
         logger.info("translation job %s cancelled", job_id)
-        return {"job_id": job_id, "cancelled": True, "outputs": []}
+        return {"job_id": job_id, "cancelled": True, "outputs": [], **stats()}
     finally:
         with _JOBS_LOCK:
             _JOBS.pop(job_id, None)
 
     outputs = [{"mono": mono, "dual": dual} for mono, dual in results]
-    _emit({"event": "done", "job_id": job_id, "result": {"outputs": outputs}})
-    return {"job_id": job_id, "outputs": outputs}
+    measured = stats()
+    _emit(
+        {
+            "event": "done",
+            "job_id": job_id,
+            "result": {"outputs": outputs, **measured},
+        }
+    )
+    return {"job_id": job_id, "outputs": outputs, **measured}
 
 
 def _as_asyncio_event(threading_event: threading.Event) -> asyncio.Event:
