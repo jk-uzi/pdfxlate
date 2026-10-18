@@ -3,8 +3,16 @@
   "version": "0.1.0",
   "description": "Layout-preserving PDF translation with any OpenAI-compatible model",
   "main": "out/main/main.js",
-  "author": "pdfxlate",
+  "author": "jk-uzi",
   "license": "AGPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jk-uzi/pdfxlate.git"
+  },
+  "homepage": "https://github.com/jk-uzi/pdfxlate#readme",
+  "bugs": {
+    "url": "https://github.com/jk-uzi/pdfxlate/issues"
+  },
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('out', { recursive: true, force: true })\"",
     "build:main": "tsc -p tsconfig.node.json",

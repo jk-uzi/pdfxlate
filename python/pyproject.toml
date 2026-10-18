@@ -3,6 +3,7 @@ name = "pdfxlate"
 version = "0.1.0"
 description = "Layout-preserving PDF translation with any OpenAI-compatible model"
 license = { text = "AGPL-3.0-or-later" }
+authors = [{ name = "jk-uzi", email = "2081217232@qq.com" }]
 requires-python = ">=3.11,<3.13"
 dependencies = [
     # --- PDF parsing and typesetting --------------------------------
@@ -51,6 +52,11 @@ dev = ["pytest", "pyinstaller", "mcp>=2.3.0"]
 pdfxlate = "pdfxlate.cli:main"
 pdfxlate-sidecar = "pdfxlate.sidecar:main"
 pdfxlate-mcp = "pdfxlate.mcp_server:main"
+
+[project.urls]
+Homepage = "https://github.com/jk-uzi/pdfxlate"
+Repository = "https://github.com/jk-uzi/pdfxlate"
+Issues = "https://github.com/jk-uzi/pdfxlate/issues"
 
 [build-system]
 requires = ["hatchling"]

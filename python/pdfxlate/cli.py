@@ -93,7 +93,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser.add_argument(
         "--config-dir",
-        help="Override the config/cache/assets directory (used by the desktop app)",
+        help=(
+            "Override the config directory (used by the desktop app). Cache and "
+            "downloaded assets stay in the platform directory so every entry "
+            "point shares one copy"
+        ),
     )
     parser.add_argument("--config", help="Path to a config.yaml file")
     parser.add_argument(
