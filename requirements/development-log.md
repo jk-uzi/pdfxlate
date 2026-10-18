@@ -2522,10 +2522,13 @@ CDP 在真实 Electron 里跑了 **22 项断言，全过**：
 
 ### 1. 匿名身份
 
-68 个提交原本都是 `JK <2081217232@qq.com>`。推送前用 `git filter-branch --env-filter`
-把作者与提交者统一改成 `jk <jk@users.noreply.github.com>`，随后删掉 `refs/original`、
+68 个提交原本都是同一个**真实邮箱**。推送前用 `git filter-branch --env-filter`
+把作者与提交者统一改成 GitHub 的 noreply 地址，随后删掉 `refs/original`、
 `git reflog expire --expire=now --all`、`git gc --prune=now --aggressive`。
-现在本地任何分支都查不到旧邮箱。
+现在本地任何分支都查不到它。
+
+> 这里**故意不写出那个邮箱**：这份日志本身要公开，原样引用等于把匿名化白做一遍。
+> 需要的人可以在备份 bundle（桌面 `pdfxlate-backup-pre-release/`）里查到原始身份。
 
 用 GitHub 的 noreply 地址而不是空字符串：界面上不显示邮箱，也不会关联到账号。
 选择保留 `jk` 这个笔名，是为了署名仍在。
@@ -2546,8 +2549,8 @@ CDP 在真实 Electron 里跑了 **22 项断言，全过**：
 
 - `tests/test_mcp_server.py` 硬编码了作者主目录下的绝对路径。删掉后改为相对于测试文件
   查找，顺带修掉一个真实缺陷：协作者的机器上那条路径永远解析不到。
-- `docs/development-plan.md` 的 `/home/jk/桌面/pdfxlate/` 与 `requirements/development-log.md`
-  里的绝对路径，改为相对描述。
+- `docs/development-plan.md` 与 `requirements/development-log.md` 里的
+  `/home/jk/桌面/…` 一类绝对路径，改为相对描述。
 
 三处改动**同时也写进了历史**（`--tree-filter`）——只改当前提交不够，旧 blob 仍会带着路径。
 这里踩过一次坑：tree-filter 用文本模式读写文件会把整个文件的行尾统一化，显示成 2469 行的
@@ -2560,8 +2563,8 @@ CDP 在真实 Electron 里跑了 **22 项断言，全过**：
 `gh api -X PATCH repos/jk-uzi/pdfxlate -f private=false`，最后把默认分支改成 `main`。
 GitHub 从 LICENSE 识别出 AGPL-3.0。
 
-校验：远程 main 上 58 个提交、0 个合并，`jk <jk@users.noreply.github.com>` 是唯一身份，
-grep 旧邮箱为 0；公开内容抽查三个文件无绝对路径；pytest 373 通过、i18n 203 键同步、
+校验：远程 main 上 58 个提交、0 个合并，noreply 地址是唯一身份，grep 原邮箱为 0；
+公开内容抽查三个文件无绝对路径；pytest 373 通过、i18n 203 键同步、
 typecheck 干净。原始历史的完整备份留在仓库外的 bundle 里（桌面 `pdfxlate-backup-pre-release/`）。
 
 > **强推的残留**：GitHub 侧带旧邮箱的对象在服务端 GC 之前可能仍可通过 SHA 抓取。要彻底
