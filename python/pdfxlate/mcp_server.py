@@ -261,6 +261,8 @@ def build_server() -> MCPServer:
         providers = {
             name: {
                 "kind": provider.kind,
+                # The external agent CLI behind an ``agent_cli`` provider.
+                "agent": provider.agent,
                 "base_url": provider.base_url,
                 "has_api_key": bool(provider.api_key),
                 "enabled": provider.enabled,

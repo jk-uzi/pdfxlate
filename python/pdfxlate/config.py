@@ -218,6 +218,12 @@ class Provider(BaseModel):
 
     # Adapter registry name (see pdfxlate.models.base.register).
     kind: str = "openai_compat"
+    # Which external agent CLI backs this provider when ``kind == "agent_cli"``.
+    #
+    # An agent provider has no endpoint and no key: the CLI's own login state is
+    # the credential, and ``agent`` names which CLI to spawn (claude, codex, …).
+    # It is meaningless for the HTTP kinds, so it stays ``None`` there.
+    agent: str | None = None
     base_url: str | None = None
     api_key: str | None = None
     # Whether this provider takes part in a run at all.
@@ -246,6 +252,19 @@ class Provider(BaseModel):
                 entry.model = alias
         return self
 
+    @model_validator(mode="after")
+    def _require_agent_for_agent_cli(self) -> "Provider":
+        # ``agent_cli`` is the one kind that cannot infer what to spawn: without
+        # this field the adapter would have no idea which CLI the user meant, so
+        # fail at load time with a message naming the field rather than halfway
+        # through a job.
+        if self.kind == "agent_cli" and not (self.agent or "").strip():
+            raise ValueError(
+                "providers with kind 'agent_cli' must set 'agent' "
+                "(one of: claude, codex, workbuddy, zcode, dsh)"
+            )
+        return self
+
 
 class ResolvedModel(BaseModel):
     """A provider and one of its models, flattened into a single object.
@@ -259,6 +278,8 @@ class ResolvedModel(BaseModel):
 
     # Adapter registry name, taken from the owning provider.
     kind: str = "openai_compat"
+    # External agent id for ``kind == "agent_cli"``; ``None`` for HTTP kinds.
+    agent: str | None = None
     # Names, kept for display and diagnostics rather than for behaviour.
     provider: str = ""
     alias: str = ""
@@ -332,6 +353,23 @@ class OcrSettings(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class AgentSettings(BaseModel):
+    """Machine-local overrides for external agent CLIs.
+
+    Only paths live here.  Everything else about an agent is discovered from the
+    machine (PATH, the Windows uninstall registry, the standard install
+    directories) or from the CLI itself; the point of the section is to let a
+    user say "it is installed *there*" when discovery cannot see it.  Storing
+    nothing else also means this section is safe to copy between machines only
+    as a starting point.
+    """
+
+    # agent id -> executable (or, for ZCode, the zcode.cjs script) path.
+    paths: dict[str, str] = Field(default_factory=dict)
+
+    model_config = {"extra": "forbid"}
+
+
 class AppConfig(BaseModel):
     """The whole configuration document.
 
@@ -344,6 +382,10 @@ class AppConfig(BaseModel):
     """
 
     providers: dict[str, Provider] = Field(default_factory=dict)
+    # Optional: only machine-local agent CLI path overrides.  ``None`` (absent)
+    # and an empty object mean the same thing, but keeping ``None`` is what lets
+    # ``save()`` omit the section entirely from a config that never used it.
+    agents: AgentSettings | None = None
     translation: TranslationSettings = Field(default_factory=TranslationSettings)
     layout: LayoutSettings = Field(default_factory=LayoutSettings)
     cache: CacheSettings = Field(default_factory=CacheSettings)
@@ -444,6 +486,7 @@ class AppConfig(BaseModel):
         entry = prov.models[alias]
         return ResolvedModel(
             kind=prov.kind,
+            agent=prov.agent,
             provider=pname,
             alias=alias,
             base_url=prov.base_url,
@@ -558,6 +601,22 @@ providers:
         model: deepseek-reasoner
         reasoning_effort: high
         context_length: 65536
+
+# External agent CLIs can translate too, using their own login instead of an API
+# key. A provider with kind: agent_cli names the agent and lists the models the
+# CLI offers; `agents.paths` is only needed when the CLI is not on PATH.
+#
+# providers:
+#   claude:
+#     kind: agent_cli
+#     agent: claude
+#     models:
+#       sonnet:
+#         model: sonnet
+#
+# agents:
+#   paths:
+#     zcode: C:\\Program Files\\ZCode\\resources\\glm\\zcode.cjs
 
 translation:
   lang_in: en

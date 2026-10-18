@@ -347,3 +347,122 @@ def test_default_template_is_valid(tmp_path):
     cfg = config_mod.load(path)
     assert cfg.resolve().model == "deepseek-chat"
     assert cfg.resolve("deepseek", "reason").reasoning_effort == "high"
+
+
+# --- external agent CLI providers -----------------------------------------
+
+
+AGENT_CONFIG = """\
+providers:
+  claude:
+    kind: agent_cli
+    agent: claude
+    enabled: true
+    models:
+      sonnet:
+        model: sonnet
+      opus:
+        model: opus
+agents:
+  paths:
+    zcode: D:/ZCode/resources/glm/zcode.cjs
+"""
+
+
+def test_agent_cli_provider_parses_and_flattens(tmp_path):
+    cfg = config_mod.load(_write(tmp_path, AGENT_CONFIG))
+    resolved = cfg.resolve("claude", "sonnet")
+    assert resolved.kind == "agent_cli"
+    assert resolved.agent == "claude"
+    assert resolved.model == "sonnet"
+    assert resolved.base_url is None
+    assert resolved.api_key is None
+
+
+def test_agent_cli_provider_requires_agent(tmp_path):
+    """``agent_cli`` without ``agent`` cannot know what to spawn."""
+    with pytest.raises(Exception, match="must set 'agent'"):
+        config_mod.load(
+            _write(
+                tmp_path,
+                "providers:\n  claude:\n    kind: agent_cli\n"
+                "    models:\n      sonnet: {}\n",
+            )
+        )
+
+
+def test_http_provider_does_not_need_agent(tmp_path):
+    cfg = config_mod.load(
+        _write(
+            tmp_path,
+            "providers:\n  p:\n    kind: openai_compat\n    models:\n      m: {}\n",
+        )
+    )
+    assert cfg.resolve("p").agent is None
+
+
+def test_agent_settings_paths_round_trip(tmp_path):
+    path = _write(tmp_path, AGENT_CONFIG)
+    cfg = config_mod.load(path)
+    assert cfg.agents is not None
+    assert cfg.agents.paths["zcode"] == "D:/ZCode/resources/glm/zcode.cjs"
+
+    config_mod.save(cfg, path)
+    reloaded = config_mod.load(path)
+    assert reloaded.agents is not None
+    assert reloaded.agents.paths["zcode"] == "D:/ZCode/resources/glm/zcode.cjs"
+
+
+def test_agent_paths_expand_env_refs(tmp_path, monkeypatch):
+    monkeypatch.setenv("ZCODE_HOME", r"D:\Tools\ZCode")
+    path = _write(
+        tmp_path,
+        "agents:\n  paths:\n    zcode: ${ZCODE_HOME}/resources/glm/zcode.cjs\n",
+    )
+    cfg = config_mod.load(path)
+    assert cfg.agents.paths["zcode"] == r"D:\Tools\ZCode/resources/glm/zcode.cjs"
+
+    # Saving must put the reference back rather than freezing the expanded path.
+    config_mod.save(cfg, path)
+    text = path.read_text(encoding="utf-8")
+    assert "${ZCODE_HOME}" in text
+    assert r"D:\Tools\ZCode" not in text
+
+
+def test_agents_absent_is_not_written(tmp_path):
+    """A config that never used agents must not gain an empty section."""
+    path = _write(
+        tmp_path,
+        "providers:\n  p:\n    models:\n      m: {}\n",
+    )
+    config_mod.save(config_mod.load(path), path)
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert "agents" not in data
+
+
+def test_agents_unknown_field_rejected(tmp_path):
+    with pytest.raises(Exception, match="extra"):
+        config_mod.load(
+            _write(tmp_path, "agents:\n  pathz:\n    claude: /x/claude\n")
+        )
+
+
+def test_agent_paths_unknown_field_rejected(tmp_path):
+    with pytest.raises(Exception, match="extra"):
+        config_mod.load(
+            _write(
+                tmp_path,
+                "agents:\n  paths:\n    claude: /x/claude\n"
+                "  extra: nope\n",
+            )
+        )
+
+
+def test_default_template_mentions_agents_without_configuring_them(tmp_path):
+    """The commented example must not add a provider or an agents section."""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_mod.DEFAULT_CONFIG_TEMPLATE, encoding="utf-8")
+    cfg = config_mod.load(path)
+    assert cfg.agents is None
+    assert all(p.kind != "agent_cli" for p in cfg.providers.values())
+    assert "kind: agent_cli" in config_mod.DEFAULT_CONFIG_TEMPLATE

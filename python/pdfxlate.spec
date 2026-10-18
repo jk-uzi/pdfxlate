@@ -52,6 +52,8 @@ hiddenimports = [
     # unknown provider for both.
     "pdfxlate.models.openai_responses",
     "pdfxlate.models.anthropic_messages",
+    # The agent CLI adapter is also imported only for its @register side effect.
+    "pdfxlate.models.agent_cli",
     # The OpenAI SDK lazily resolves resource/type modules through
     # ``__getattr__``; static analysis cannot see that dispatch. Collect the
     # package so a packaged adapter never dies on a missing openai.* module.

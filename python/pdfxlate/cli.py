@@ -165,8 +165,14 @@ def main(argv: list[str] | None = None) -> int:
         for provider, alias in pairs:
             if provider != current:
                 current = provider
-                base_url = cfg.providers[provider].base_url or "(no base_url)"
-                print(f"  {provider} @ {base_url}:")
+                prov = cfg.providers[provider]
+                if prov.kind == "agent_cli":
+                    # An agent provider has no URL; naming the CLI is the
+                    # useful fact here.
+                    print(f"  {provider} @ agent:{prov.agent}:")
+                else:
+                    base_url = prov.base_url or "(no base_url)"
+                    print(f"  {provider} @ {base_url}:")
             entry = cfg.providers[provider].models[alias]
             if not entry.enabled:
                 print(f"    {alias}: {entry.model} (disabled)")

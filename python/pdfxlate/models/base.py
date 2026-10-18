@@ -161,11 +161,20 @@ class EmptyTranslationError(RuntimeError):
         super().__init__(f"the model returned an empty translation for {text[:120]!r}")
 
 
+class AgentAuthError(RuntimeError):
+    """The external agent CLI is not logged in or rejected the request.
+
+    Permanent by definition: retrying cannot log a CLI back in.  The message is
+    written by :mod:`pdfxlate.agents.runtime` and names the command to run.
+    """
+
+
 #: Failures that the same input will reproduce forever, so retrying is pointless.
 PERMANENT_TRANSLATION_ERRORS: tuple[type[BaseException], ...] = (
     PlaceholderLossError,
     TruncatedResponseError,
     EmptyTranslationError,
+    AgentAuthError,
 )
 
 
@@ -188,6 +197,11 @@ class ModelAdapter(abc.ABC):
         self.lang_out = lang_out
         self.prompt_template = Template(prompt or DEFAULT_PROMPT)
         self.ignore_cache = ignore_cache
+        # Set by ``build_adapter`` after construction.  Adapters that own a
+        # background worker (the agent CLI one) read it to stop on cancellation;
+        # HTTP adapters ignore it because an in-flight request cannot be
+        # interrupted anyway.
+        self.cancellation_event = None
         # The ultrafast path sets this to bypass cache reads and writes.
         self.no_cache = False
         # Whether the over-context warning has already been emitted, so a long
@@ -231,6 +245,15 @@ class ModelAdapter(abc.ABC):
     @abc.abstractmethod
     def do_translate(self, text: str) -> str:
         """Perform one API call.  Implementations must not touch the cache."""
+
+    def close(self) -> None:
+        """Release background resources.  HTTP adapters have nothing to do.
+
+        The agent CLI adapter owns a worker thread and a child process; the API
+        layer calls this in a ``finally`` so a cancelled job does not leave
+        either behind.  Kept as a no-op on the base class so callers never have
+        to check whether an adapter supports it.
+        """
 
     def translate(self, text: str, ignore_cache: bool = False) -> str:
         """Translate one paragraph, consulting the cache first.
@@ -334,6 +357,7 @@ def build_adapter(
     prompt: str | None = None,
     ignore_cache: bool = False,
     cache_enabled: bool = True,
+    cancellation_event: Any = None,
 ) -> ModelAdapter:
     """Instantiate the adapter registered for ``provider``.
 
@@ -341,6 +365,10 @@ def build_adapter(
     adapter's cache is switched off entirely, so nothing is read or written
     and no database file is created.  ``ignore_cache`` is unrelated — it only
     skips the cache for a single :meth:`ModelAdapter.translate` call.
+
+    ``cancellation_event`` is assigned after construction (rather than passed to
+    the constructor) so the three HTTP adapters keep their signatures.  Only the
+    agent CLI adapter uses it, to stop a running child process.
     """
     # Publish the flag only for the constructor call, so TranslationCache can
     # skip opening the database instead of being disabled after the fact.
@@ -355,10 +383,12 @@ def build_adapter(
         )
     finally:
         _CACHE_ENABLED.reset(token)
+    adapter.cancellation_event = cancellation_event
     return adapter
 
 
 # Import adapters so their @register decorators run.
 from pdfxlate.models import anthropic_messages as _anthropic_messages  # noqa: E402,F401
+from pdfxlate.models import agent_cli as _agent_cli  # noqa: E402,F401
 from pdfxlate.models import openai_compat as _openai_compat  # noqa: E402,F401
 from pdfxlate.models import openai_responses as _openai_responses  # noqa: E402,F401

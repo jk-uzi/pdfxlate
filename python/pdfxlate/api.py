@@ -34,6 +34,7 @@ def build_translator(
     ignore_cache: bool = False,
     profile: str | None = None,
     reasoning_effort: str | None = None,
+    cancellation_event: Any = None,
 ) -> ModelAdapter:
     """Construct the adapter for a provider and one of its models.
 
@@ -49,6 +50,9 @@ def build_translator(
     adapter only.  It is applied to a copy of the resolved entry, so the caller's
     configuration object is left untouched — a one-off job must not rewrite what
     the settings panel shows.
+
+    ``cancellation_event`` is handed to the adapter after construction.  HTTP
+    adapters ignore it; the agent CLI adapter uses it to stop a child process.
     """
     cfg = app_config or config_mod.load()
     if profile and provider is None:
@@ -58,15 +62,23 @@ def build_translator(
         # A copy, not a mutation: `resolved` is derived from `cfg`, and editing it
         # in place would be editing (a piece of) the caller's configuration.
         resolved = resolved.model_copy(update={"reasoning_effort": reasoning_effort})
-    return build_adapter(
-        resolved.kind,
-        resolved,
-        cfg.translation.lang_in,
-        cfg.translation.lang_out,
-        prompt=prompt or cfg.translation.prompt,
-        cache_enabled=cfg.cache.enabled,
-        ignore_cache=ignore_cache,
-    )
+    # The adapter may resolve an agent CLI path while it is constructed.  Pass
+    # this config's overrides (not whatever config happens to be on disk) so
+    # ``--config`` and in-process callers see the right paths.
+    from pdfxlate.agents.detect import use_configured_paths
+
+    agent_paths = cfg.agents.paths if cfg.agents is not None else {}
+    with use_configured_paths(agent_paths):
+        return build_adapter(
+            resolved.kind,
+            resolved,
+            cfg.translation.lang_in,
+            cfg.translation.lang_out,
+            prompt=prompt or cfg.translation.prompt,
+            cache_enabled=cfg.cache.enabled,
+            ignore_cache=ignore_cache,
+            cancellation_event=cancellation_event,
+        )
 
 
 def translate(
@@ -127,39 +139,53 @@ def translate(
         ignore_cache=ignore_cache,
         profile=profile,
         reasoning_effort=reasoning_effort,
+        cancellation_event=cancellation_event,
     )
 
     resolved_mode = mode or cfg.translation.mode
     ultrafast = resolved_mode == "ultrafast"
     resolved_thread = thread or cfg.translation.thread
+    # An agent CLI invocation is a whole LLM round-trip per batch, so the
+    # pipeline needs enough workers to keep several batches in flight.  This is
+    # a floor: a user-configured larger value still wins.
+    if getattr(getattr(translator, "profile", None), "kind", None) == "agent_cli":
+        resolved_thread = max(resolved_thread, 8)
     # Empty means "beside the source".  Resolved per file in the pipeline, so a
     # batch over several folders does not lump every output into one place.
     resolved_output = output or ""
 
-    model_obj = None
-    if not ultrafast:
-        model_obj = _load_layout_model(cfg, progress)
+    try:
+        model_obj = None
+        if not ultrafast:
+            model_obj = _load_layout_model(cfg, progress)
 
-    return pipeline.translate(
-        files,
-        translator=translator,
-        output=resolved_output,
-        pages=pages,
-        thread=resolved_thread,
-        vfont=vfont or "",
-        vchar=vchar or "",
-        cancellation_event=cancellation_event,
-        model=model_obj,
-        skip_subset_fonts=(
-            cfg.translation.skip_subset_fonts
-            if skip_subset_fonts is None
-            else skip_subset_fonts
-        ),
-        ultrafast=ultrafast,
-        progress=progress,
-        ocr_settings=cfg.ocr,
-        output_mode=output_mode,
-    )
+        return pipeline.translate(
+            files,
+            translator=translator,
+            output=resolved_output,
+            pages=pages,
+            thread=resolved_thread,
+            vfont=vfont or "",
+            vchar=vchar or "",
+            cancellation_event=cancellation_event,
+            model=model_obj,
+            skip_subset_fonts=(
+                cfg.translation.skip_subset_fonts
+                if skip_subset_fonts is None
+                else skip_subset_fonts
+            ),
+            ultrafast=ultrafast,
+            progress=progress,
+            ocr_settings=cfg.ocr,
+            output_mode=output_mode,
+        )
+    finally:
+        # A cancelled or failed job must not leave the agent CLI worker (and its
+        # child process) running.  A no-op for HTTP adapters, and tolerant of a
+        # caller-supplied duck-typed translator that has no close() at all.
+        close = getattr(translator, "close", None)
+        if callable(close):
+            close()
 
 
 def translate_stream(
@@ -181,26 +207,40 @@ def translate_stream(
     paths.ensure_dirs()
     cfg = config or config_mod.load()
     translator = build_translator(
-        provider, model, app_config=cfg, ignore_cache=ignore_cache, profile=profile
+        provider,
+        model,
+        app_config=cfg,
+        ignore_cache=ignore_cache,
+        profile=profile,
+        cancellation_event=cancellation_event,
     )
 
     resolved_mode = mode or cfg.translation.mode
     ultrafast = resolved_mode == "ultrafast"
-    model_obj = None if ultrafast else _load_layout_model(cfg, progress)
+    resolved_thread = thread or cfg.translation.thread
+    if getattr(getattr(translator, "profile", None), "kind", None) == "agent_cli":
+        resolved_thread = max(resolved_thread, 8)
 
-    return pipeline.translate_stream(
-        stream,
-        translator=translator,
-        pages=pages,
-        thread=thread or cfg.translation.thread,
-        vfont=vfont,
-        vchar=vchar,
-        cancellation_event=cancellation_event,
-        model=model_obj,
-        ultrafast=ultrafast,
-        progress=progress,
-        ocr_settings=cfg.ocr,
-    )
+    try:
+        model_obj = None if ultrafast else _load_layout_model(cfg, progress)
+
+        return pipeline.translate_stream(
+            stream,
+            translator=translator,
+            pages=pages,
+            thread=resolved_thread,
+            vfont=vfont,
+            vchar=vchar,
+            cancellation_event=cancellation_event,
+            model=model_obj,
+            ultrafast=ultrafast,
+            progress=progress,
+            ocr_settings=cfg.ocr,
+        )
+    finally:
+        close = getattr(translator, "close", None)
+        if callable(close):
+            close()
 
 
 def load_layout_model(
