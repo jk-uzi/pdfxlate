@@ -17,10 +17,15 @@ Python 3.12，venv 在 `python/.venv`，包以 editable 方式安装，改源码
 
 | 我想…… | 去改 |
 |---|---|
-| 接入新的模型后端 | `python/pdfxlate/models/` 新建文件 + `@register` 装饰器（内置三个 `kind`：`openai_compat` / `openai_responses` / `anthropic_messages`） |
+| 接入新的模型后端 | `python/pdfxlate/models/` 新建文件 + `@register` 装饰器（内置四个 `kind`：`openai_compat` / `openai_responses` / `anthropic_messages` / `agent_cli`） |
+| 接入外部 agent CLI 的模型 | `models/agent_cli.py` + `python/pdfxlate/agents/`（defs / detect / catalog / runtime / batch）+ 设置 › Agents |
+| 改 agent 的检测、登录探测或模型列表 | `agents/detect.py` / `agents/catalog.py`；五个 agent 的静态定义在 `agents/defs.py` |
+| 改 agent 的调用命令或批处理 | `agents/runtime.py`（拼 argv、解析输出、超时/取消、杀进程树）/ `agents/batch.py`（8 段 / 12000 字符 / 0.2s） |
+| 改「设置 › Agents」面板 | `src/renderer/app.ts` 的 `refreshAgents()` / `renderAgents()` / `setAgentModel()` / `saveAgentPath()` + `index.html` + `style.css` |
+| 改 agent 的 CLI 路径覆盖 | `config.py` 的 `AgentSettings` + `app.ts` 的 `draftAgents()` / `agentPathOverrides()` |
 | 调整发给模型的请求参数 | 对应适配器：`openai_compat.py` / `openai_responses.py` / `anthropic_messages.py`（`reasoning_effort` / `extra_body` / `stream` / `temperature`） |
 | 改重试策略 / 取消行为 | `pdf/converter.py` 的 `translate_segment()`（有界重试）+ `models/base.py` 的 `PERMANENT_TRANSLATION_ERRORS` |
-| 改「测试连接」 | `sidecar.py` 的 `method_providers_test` + `app.ts` 的 `testProvider()` |
+| 改「测试连接」 | HTTP 供应商：`sidecar.py` 的 `method_providers_test` + `app.ts` 的 `testProvider()`；agent：`method_agents_test` + `testAgentModel()` |
 | 改「从上游拉取模型」 | `models/catalog.py` + `sidecar.py` 的 `method_providers_models` + `app.ts` 的 `openModelsDialog()` / `paintModelsOptions()` / `paintModelsCount()` / `configuredModelIds()` |
 | 改供应商改名 | `app.ts` 的 `renameProvider()` / `startRenamingProvider()` / `stopRenamingProvider()` |
 | 改翻译提示词 | `models/base.py` 的 `DEFAULT_PROMPT`，或配置里的 `translation.prompt` 指向模板文件 |
@@ -51,7 +56,7 @@ Python 3.12，venv 在 `python/.venv`，包以 editable 方式安装，改源码
 | 改 Electron 界面 | `src/renderer/app.ts` + `index.html` + `style.css` |
 | 改标题栏 / 窗口按钮 | `src/main/main.ts`（`titleBarOverlay` / `TITLEBAR_HEIGHT`）+ `style.css` 的 `--titlebar-height`，两处必须一致 |
 | 改应用图标 / 标记 | `src/renderer/icon.svg` 是唯一来源；改完跑 `npm run make:icon` 重新生成 `assets/`，标题栏靠构建期内联自动跟上 |
-| 改任务/设置模式与设置项 | `src/renderer/app.ts` 的 `appMode` / `setAppMode()` / `paintSettingsMode()`，菜单与面板在 `index.html`；设置页版式在 `style.css` 的 `.settings-panel` / `.grid--form`；模型页的两栏布局由 `.settings-host--split` + `.model-split` 提供 |
+| 改任务/设置模式与设置项 | `src/renderer/app.ts` 的 `appMode` / `setAppMode()` / `paintSettingsMode()`，菜单与面板在 `index.html`；五个设置项是模型 / Agents / 外观 / 常规 / MCP；设置页版式在 `style.css` 的 `.settings-panel` / `.grid--form`；模型页的两栏布局由 `.settings-host--split` + `.model-split` 提供 |
 | 改侧栏折叠 | `src/renderer/app.ts` 的 `setSidebarCollapsed()` + `style.css` 的 `body.sidebar-collapsed` |
 | 改进度显示 | `src/renderer/app.ts` 的 `paintProgress()`，落点在 `index.html` 侧栏底部的 `.sidebar__status`（与设置图标同一行） |
 | 改输出位置 | Python → `pdf/pipeline.py` 的 `OUTPUT_SUBDIR`（空 `output` 时按源文件目录解析）；列译文 → `src/main/main.ts` 的 `TRANSLATED_SUBDIR`，两处必须一致 |
@@ -65,7 +70,7 @@ Python 3.12，venv 在 `python/.venv`，包以 editable 方式安装，改源码
 | 改左侧文件列表（文件夹浏览/勾选/搜索） | `src/renderer/app.ts` 的 `openFolder()` / `renderFiles()` / `translatedFiles`；目录列举在 `src/main/main.ts` 的 `app:listPdfs` |
 | 改拖放行为（复制/改名） | `src/renderer/app.ts` 的 `handleDropped()`；复制与改名在 `src/main/main.ts` 的 `app:importPdf` / `uniquePath()` |
 | 改左侧栏分组 | `src/renderer/index.html` 的 `details.group` + `app.ts` 的 `expandGroup()` |
-| 改供应商/模型的界面编辑 | `src/renderer/app.ts` 的 `renderProviderList()` / `renderModelList()` / `toggleModelEditor()` / `setModelEnabled()`；后端字段在 `config.py` 的 `ModelEntry`（含 `enabled`） |
+| 改供应商/模型的界面编辑 | `src/renderer/app.ts` 的 `renderProviderList()` / `renderModelList()` / `toggleModelEditor()` / `setModelEnabled()`；后端字段在 `config.py` 的 `ModelEntry`（含 `enabled`）。**agent 供应商不在这里编辑**：`modelPanelProviderNames()` 把它们过滤掉，改由设置 › Agents 面板（`renderAgents()` / `setAgentModel()`）管理 |
 | 改界面文案 / 加一门语言 | `src/renderer/i18n.ts`（`en`/`zh` 两张表），静态文案用 `data-i18n*` 属性标注 |
 | 改原生对话框文案 | `src/main/main.ts` 的 `DIALOG_STRINGS`（主进程另有一份小表，原因见该处注释） |
 | 改前端构建配置 | `package.json`、`tsconfig.node.json`、`tsconfig.renderer.json` |
@@ -99,17 +104,25 @@ pdfxlate/
 │   └── pdfxlate/
 │       ├── __init__.py              惰性暴露 translate / translate_stream
 │       ├── paths.py          93 行  跨平台 config / cache / assets 路径
-│       ├── config.py        491 行  pydantic 配置模型（供应商→模型）+ YAML 读写
+│       ├── config.py        695 行  pydantic 配置模型（供应商→模型 + agent 路径覆盖）+ YAML 读写
 │       ├── assets.py        405 行  模型 / 字体 / OCR 数据下载与校验；内置字体优先
 │       ├── cache.py         179 行  sqlite3 翻译缓存 + 命中统计
-│       ├── api.py           192 行  公开 Python API
+│       ├── api.py           267 行  公开 Python API（含取消透传与 adapter 关闭）
 │       ├── cli.py           216 行  命令行入口
-│       ├── sidecar.py       681 行  stdio JSON 行协议（Electron 调用，含缓存统计）；--mcp 转交 MCP 服务
+│       ├── sidecar.py       825 行  stdio JSON 行协议（Electron 调用，含缓存统计）；--mcp 转交 MCP 服务
 │       ├── mcp_server.py    505 行  MCP 服务（外部 agent 调用，stdio）
 │       ├── mcp_config.py    246 行  把 MCP 条目写进各 agent 配置（备份/合并/校验）
+│       ├── agents/
+│       │   ├── __init__.py    120 行  公开入口：list_agents()，并导出检测 / 模型列表 / 运行时的符号
+│       │   ├── defs.py        160 行  五个 agent 的静态定义（命令、安装链接、批上限）
+│       │   ├── detect.py      742 行  可执行文件解析（PATH / 注册表 / 路径覆盖）、版本与登录探测
+│       │   ├── catalog.py     386 行  模型列表（codex debug models / codebuddy help / dsh dump-config）
+│       │   ├── runtime.py     813 行  拼命令、spawn、输出解析、超时/取消、杀进程树
+│       │   └── batch.py       208 行  批队列（8 段 / 12000 字符 / 0.2s；argv agent 8000）
 │       ├── models/
 │       │   ├── __init__.py     23 行  导出翻译层公开符号
-│       │   ├── base.py       364 行  ModelAdapter 基类 + 注册表 + 永久错误分类 + 服务端缓存统计
+│       │   ├── base.py       394 行  ModelAdapter 基类 + 注册表 + 永久错误分类 + 服务端缓存统计
+│       │   ├── agent_cli.py  110 行  AgentCliAdapter：把批队列接进 ModelAdapter
 │       │   ├── openai_compat.py 186 行  OpenAI Chat Completions 适配器（含 usage 缓存字段）
 │       │   ├── openai_responses.py 136 行  OpenAI Responses 适配器
 │       │   ├── anthropic_messages.py 247 行  Anthropic Messages 适配器
@@ -127,16 +140,16 @@ pdfxlate/
 │           └── text_spacing.py 44 行  中英混排间距（上游照搬）
 ├── src/
 │   ├── main/
-│   │   ├── main.ts          460 行  窗口 + 应用生命周期 + IPC（自建标题栏、另存为、目录列举（含 translated/）、拖入归档）
+│   │   ├── main.ts          504 行  窗口 + 应用生命周期 + IPC（自建标题栏、另存为、目录列举（含 translated/）、拖入归档、openExternal）
 │   │   └── sidecar.ts       234 行  Python 子进程管理 + JSON 行协议
 │   ├── preload/
-│   │   └── preload.ts       190 行  contextBridge，向渲染进程暴露 API
+│   │   └── preload.ts       183 行  contextBridge，向渲染进程暴露 API（含 openExternal）
 │   └── renderer/
-│       ├── index.html       741 行  界面结构（文案走 data-i18n* 属性；图标在构建时内联）
-│       ├── app.ts          3450 行  界面逻辑（任务/设置双模式、折叠、标签页、文件夹浏览与搜索、拖放、缩放、进度、开始/取消合一、另存为、选项覆盖、侧栏拖拽、供应商/模型两栏编辑器、MCP 配置）
-│       ├── i18n.ts          661 行  中英文字符串表 + t()/applyStaticTranslations()
+│       ├── index.html       760 行  界面结构（文案走 data-i18n* 属性；图标在构建时内联）
+│       ├── app.ts          4378 行  界面逻辑（任务/设置双模式、折叠、标签页、文件夹浏览与搜索、拖放、缩放、进度、开始/取消合一、另存为、选项覆盖、侧栏拖拽、供应商/模型两栏编辑器、Agents 面板、MCP 配置）
+│       ├── i18n.ts          797 行  中英文字符串表 + t()/applyStaticTranslations()
 │       ├── icon.svg          49 行  应用标记的**唯一来源**（标题栏内联 + 打包图标）
-│       └── style.css       2070 行  样式（含标题栏标签、查看器浮层与常驻图钉、折叠与侧栏状态行、侧栏拖拽手柄、模型页两栏布局与开关）
+│       └── style.css       2269 行  样式（含标题栏标签、查看器浮层与常驻图钉、折叠与侧栏状态行、侧栏拖拽手柄、模型页两栏布局与开关、Agents 卡片）
 ├── assets/
 │   ├── icon.png               512×512，由 make_icon.py 从 icon.svg 生成后提交
 │   └── icon.ico               16–256 多尺寸，同上（Windows 用）
@@ -151,7 +164,10 @@ pdfxlate/
 │   ├── test_sidecar_catalog.py 113 行  providers.models 探针
 │   ├── test_config_env_refs.py 142 行  **改名前后的密钥不落明文**
 │   ├── test_anthropic_messages.py 227 行  Messages 端点拼接、请求体、SSE、错误分级
-│   ├── test_config_providers.py 349 行  供应商→模型 schema、resolve、迁移（含已移除字段）、env 引用
+│   ├── test_config_providers.py 468 行  供应商→模型 schema、resolve、迁移（含已移除字段）、env 引用、agent 字段
+│   ├── test_agent_cli.py    651 行  agent 适配器：批队列、提示词、解析、重试/拆单段、缓存键、关闭
+│   ├── test_agents_detect.py 387 行  路径解析、版本/登录探测、五个 agent 的模型列表解析
+│   ├── test_sidecar_agents.py 299 行  agents.list / agents.models / agents.test、providers.list 的 agent 字段、providers.test 拒绝 agent_cli
 │   ├── test_typesetting.py   172 行  字号适配纯函数（放不下时的缩字逻辑）
 │   ├── test_cli_options.py   286 行  CLI 排版选项解析与三态覆盖语义
 │   ├── test_sidecar_providers.py 181 行  providers.list 形状、密钥不外传
@@ -185,11 +201,19 @@ pdfxlate/
 平台默认：Windows `%APPDATA%`、macOS `~/Library/Application Support`、
 Linux `~/.config` + `~/.cache`。
 
-**`config.py`** — `AppConfig`（`providers` / `translation` / `layout` / `cache` /
-`ocr`）、`Provider`、`ModelEntry`、
+**`config.py`** — `AppConfig`（`providers` / `agents` / `translation` / `layout` / `cache` /
+`ocr`）、`Provider`、`ModelEntry`、`AgentSettings`、
 `ResolvedModel`、`TranslationSettings`、`LayoutSettings`、`CacheSettings`、
 `OcrSettings`、`load()`、`save()`。全部 `extra: "forbid"`，配置写错启动即报错。
 `${VAR}` 引用在加载时从环境展开，保存时写回字面形式，所以密钥不会被固化进文件。
+
+**`Provider.kind = "agent_cli"`** 是第五种供应商：它没有 `base_url` / `api_key`，而是用
+`Provider.agent` 指明要 spawn 哪个 CLI（`claude` / `codex` / `workbuddy` / `zcode` /
+`dsh`）。`model_validator` 要求这个字段必填，否则报错点名字段；`_flatten()` 把它带进
+`ResolvedModel.agent`，适配器据此选择命令。`AppConfig.agents`（`AgentSettings`，可选）
+只存 `paths`：当 CLI 不在 PATH 上时，用户可以在设置 › Agents 里指定可执行文件或
+ZCode 的 `.cjs` 路径。它和 `providers` 一样经过 `${VAR}` 展开/写回，`None` 时
+`save()` 不写这一段。
 
 **供应商 → 模型是两层，不是扁平的。** `Provider` 持有 `kind`（适配器注册名）、
 `base_url`、`api_key` 和 `models: dict[str, ModelEntry]`——一个供应商配一次凭据
@@ -272,7 +296,10 @@ GoNoto 语言」与「未知语言码」，不是「支持/不支持」的分界
 
 **`models/base.py`** — `ModelAdapter` 抽象基类（`translate()` 管缓存与占位符校验，
 子类只实现 `do_translate()`）、`@register` 注册表、`PlaceholderLossError`、
-`strip_reasoning()`、`DEFAULT_PROMPT`、`build_adapter()`。
+`strip_reasoning()`、`DEFAULT_PROMPT`、`build_adapter()`。基类还提供两样给 agent
+适配器用的东西：`close()`（默认空实现，agent 适配器用它停批队列）和
+`cancellation_event`（`build_adapter(..., cancellation_event=)` 在构造后赋值；HTTP
+适配器忽略它，agent 适配器用它杀子进程）。
 
 **`DEFAULT_PROMPT` 故意保持短**（`${text}` 之前约 50 token）。实测这个网关的前缀
 缓存**不缓存第一个块**，且要到约 256 个 prompt token 才开始报命中：把模板加长到
@@ -320,6 +347,46 @@ vLLM / Ollama / OpenRouter 等。一等支持 `reasoning_effort`、`extra_body`
 - **不发 `reasoning_effort`**：Anthropic 用 `thinking.budget_tokens` 表达，
   无法从 low/medium/high 推出一个预算。要开 thinking 请在 `extra_body` 里写
   `{"thinking": {...}}`。
+
+**`models/agent_cli.py`** — `AgentCliAdapter`，`name = "agent_cli"`。它把「外部
+agent CLI」接成翻译后端：`do_translate()` 把段落交给 `BatchQueue`，队列攒够一批后
+spawn 一次 CLI（见下），解析回 `{"translations": [...]}`。`_cache_params()` 只在
+这个适配器里追加 `agent` 与 `agent_batch`（批提示词版本），**HTTP 适配器的缓存键
+不受影响**；`close()` 停队列。构造时先解析可执行文件，找不到就抛
+`AgentNotInstalledError`，`translate.start` 会把它变成任务错误而不是静默回退。
+
+**`python/pdfxlate/agents/`** — 五个 agent 的共享实现，按职责拆开：
+
+| 文件 | 内容 |
+|---|---|
+| `defs.py` | `AgentDef` 数据类 + 五个定义：`claude` / `codex` / `workbuddy` / `zcode` / `dsh`。字段包括 PATH 名、fallback 名、环境变量、安装/文档链接、prompt 传递方式（stdin / argv）、内置模型、登录探测方式、标准安装相对路径与 Windows 应用名 |
+| `detect.py` | `resolve_agent()`：`agents.paths` 覆盖 → 环境变量 → `shutil.which` → 平台标准目录 / Windows 卸载注册表；`detect_agent()`：版本 + 登录探测。**登录探测只回 `ok/missing/unknown`**，绝不把 CLI 原始输出（`codex login status` 会打印掩码 key）传出去；结果缓存 30 秒 |
+| `catalog.py` | 模型列表：Claude 用内置 `sonnet/opus/haiku`；Codex 解析 `codex debug models`（过滤 `visibility == "hide"`）；WorkBuddy 解析 `codebuddy -p --help` 的 `Currently supported:`；ZCode 只有 `default`；DSH 解析 `--dump-config` 的 `agent-default-model` 与 `llm-pi-ai.providers[].models[]`。失败返回内置 fallback + `error`，不抛致命错误 |
+| `runtime.py` | `_build_command()` 按 agent 拼命令；`_run_process()` 在空临时 cwd 里 spawn，Windows 用 `CREATE_NO_WINDOW`，超时/取消用 `taskkill /F /T`（POSIX terminate→kill）杀进程树；输出解析（Claude JSON envelope / Codex last-message 文件 / 其余 stdout）；`parse_translations()` 依次接受 `translations` 数组、索引 key 对象、长度匹配且非回显的裸数组、单段纯文本；失败先严格重试再拆单段 |
+| `batch.py` | `BatchQueue`：一个 daemon 线程 + `Condition`，8 段 / 12000 字符（argv 的 ZCode 8000）/ 首段后 0.2 秒触发；自定义 prompt 时 `max_items=1`；空闲 60 秒退出；`close()` 唤醒所有等待者 |
+| `__init__.py` | 公开 `list_agents()`（并行探测 + 模型列表，总预算 8 秒，超时项回退）与错误类型 |
+
+命令构建的五个分支（细节在 `runtime._build_command()`）：
+
+| agent | 命令 | prompt |
+|---|---|---|
+| Claude Code | `claude -p --input-format text --output-format json --json-schema <schema> --tools "" --no-session-persistence --model <id>` | stdin |
+| Codex | `codex exec --skip-git-repo-check --sandbox read-only --ephemeral --output-last-message <tmp> -m <id>` | stdin（**不加 `-`**） |
+| WorkBuddy | `codebuddy -p --output-format text --model <id>` | stdin |
+| ZCode | `node <zcode.cjs> -p <prompt> --no-color --mode plan --surface terminal --cwd <tmp>` | argv（≤ 8k 字符） |
+| DSH | `dsh --profile headless [--patch <tmp>] -` | stdin（`-`） |
+
+**为什么 spawn CLI 而不是读密钥**：OAuth / 订阅额度只存在于 CLI 自己的登录态里，
+读 `~/.claude`、`~/.codex` 的凭据既脆弱又越界；调用 headless 模式是唯一既尊重登录态、
+又不复制密钥的方式。代价是每次翻译多一次进程启动，所以才有批队列。v1 不映射
+temperature / top_p / max_tokens / reasoning——由 CLI 自己的配置决定；ZCode 没有
+`--model`，只能用它的当前模型；WorkBuddy 只认独立 CLI，只有桌面版时面板会提示安装。
+安全上：空临时 cwd、Claude `--tools ""`、Codex read-only、ZCode plan 模式；DSH 没有
+通用 sandbox 开关，靠提示 + 空目录，残余风险在开发记录里注明。
+
+`api.translate()` / `translate_stream()` 在 `finally` 里调 `translator.close()`，取消或
+失败不会留下 CLI 子进程；agent 供应商的 `resolved_thread` 取 `max(thread, 8)`，让
+8 个并发段落喂满一批（用户设更大仍生效）。
 
 ### 供应商（不只是模型）也有 enable/disable
 
@@ -482,7 +549,11 @@ mono/dual **共用同一个序号**（否则一对文件看起来像两次不相
 |---|---|
 | `ping` | 存活探测 |
 | `config.get` / `config.save` | 读写配置 |
-| `providers.list` | 列出供应商及其模型（只回 `has_api_key`，绝不回密钥） |
+| `providers.list` | 列出供应商及其模型（只回 `has_api_key`，绝不回密钥；agent 供应商多回一个 `agent`） |
+| `providers.test` / `providers.models` | HTTP 供应商的连接探针 / 上游模型清单；`providers.test` 对 `agent_cli` 直接报错并指向 Agents 面板 |
+| `agents.list` | 检测五个 agent：安装状态、路径、版本、登录状态、模型列表；结果缓存 30 秒，`refresh` 绕过 |
+| `agents.models` | 刷新单个 agent 的模型列表；失败回退内置列表 + `error`，15 秒上限 |
+| `agents.test` | 用一个短句真实调用一次 CLI，返回 `{ok, latency_ms, sample}`；90 秒上限，在后台线程跑 |
 | `assets.status` / `assets.download` | 资源状态 / 触发下载 |
 | `pdf.info` | 只读元数据（页数），供预览工具栏显示「N / M」 |
 | `translate.start` / `translate.cancel` | 启停翻译任务 |
@@ -491,11 +562,12 @@ mono/dual **共用同一个序号**（否则一对文件看起来像两次不相
 事件 `{event: "progress"|"done", ...}`。
 进程启动后先发一次 `{event: "ready", version}`，Electron 侧以此确认链路可用。
 
-**`translate.start` 在工作线程里跑，其余方法仍在主循环里同步执行。**
+**`translate.start` 与 `agents.test` 在工作线程里跑，其余方法仍在主循环里同步执行。**
 这一点是取消能生效的前提：主循环是读 stdin 的地方，而 `translate.cancel` 就是
 stdin 上的一行。以前整份翻译在循环里跑完，取消请求只能排在管道里等作业结束——
-按钮点了没反应，就是这个原因。代价是 stdout 会被两个线程同时写，所以 `_emit()`
-持 `_EMIT_LOCK`，否则两条 JSON 可能在同一行上互相穿插，渲染进程会同时丢掉两份。
+按钮点了没反应，就是这个原因。`agents.test` 是一次真实模型调用，最长 90 秒，
+不放进后台会把设置面板的其他请求一起冻住。代价是 stdout 会被多个线程同时写，所以
+`_emit()` 持 `_EMIT_LOCK`，否则两条 JSON 可能在同一行上互相穿插，渲染进程会同时丢掉两份。
 工作线程是 daemon：进程退出不等它。
 
 取消**不是失败**：`method_translate_start` 捕获 `asyncio.CancelledError`，回复
@@ -513,7 +585,7 @@ HTTP 请求没法中断（超时上限 120s，通常只等几秒），所以按�
 
 `providers.list` 的结果形状是**与渲染进程的冻结合同**，改它必须同时改
 `src/renderer/app.ts` 里的 `ProvidersResponse`：
-`{providers: {名: {kind, base_url, has_api_key,
+`{providers: {名: {kind, agent, base_url, has_api_key,
 models: {别名: {model, reasoning_effort, temperature}}}}}`。
 它由 `profiles.list` 改名而来（`translate.start` 的 `profile` 参数同时换成
 `provider` + `model`）；**旧名不再作为别名保留**——结果形状也变了，留个别名只会把
@@ -669,20 +741,38 @@ Chromium 内置扩展的**独立 `remote` WebContents**，OS 把滚轮路由给�
 - **任务模式**（默认）：左侧栏是**可折叠分组**（文档 / 选项），
   右侧是**预览区**。侧栏底部动作区是：`[开始翻译]`、其下一行 `[进度条][⚙]`、
   再下一行进度文本。
-- **设置模式**（点 ⚙）：**左栏换成设置菜单**（顶部「← 返回」，下接模型 / 外观 /
-  常规），**右侧换成该设置项的表单**（此时不显示预览）。底部动作区**整体隐藏**；
-  标题栏的**标签栏**也一并隐藏，因为它属于被设置表单顶替掉的那块区域。
+- **设置模式**（点 ⚙）：**左栏换成设置菜单**（顶部「← 返回」，下接模型 / Agents /
+  外观 / 常规 / MCP），**右侧换成该设置项的表单**（此时不显示预览）。底部动作区
+  **整体隐藏**；标题栏的**标签栏**也一并隐藏，因为它属于被设置表单顶替掉的那块区域。
 
-设置项四项：**模型**（右侧是「供应商列表 + 详情」两栏，见下）、**外观**（界面语言）、
-**常规**（引擎状态、版本、配置目录，加**引擎日志**——都是只读诊断）、**MCP**（给别的
-agent 用的接入配置）。标题栏清空后**引擎状态必须有地方显示**，就落在「常规」里。
+设置项五项：**模型**（右侧是「供应商列表 + 详情」两栏，见下）、**Agents**（外部
+agent CLI 的检测与模型勾选，见下）、**外观**（界面语言）、**常规**（引擎状态、版本、
+配置目录，加**引擎日志**——都是只读诊断）、**MCP**（给别的 agent 用的接入配置）。
+标题栏清空后**引擎状态必须有地方显示**，就落在「常规」里。
 
 **只有「模型」这一项是两栏。** 它自己的内容分成左列供应商列表（图标 + 名称 + 状态点，
 固定 232px，独立滚动）和右列详情（供应商的接口地址 / 类型 / 密钥，加模型行列表，
 占满剩余宽度、内容限宽 720px）。切换设置项时 `paintSettingsMode()` 给
-`#settings-host` 加/去 `settings-host--split`，其它三项回到居中 760px 单栏。
+`#settings-host` 加/去 `settings-host--split`，其它四项回到居中 760px 单栏。
 这样做而不是新开第三栏：窗口最小 1000px，减去 340px 侧栏后再分三栏，详情只剩 400px
 左右，字段放不下。
+
+**设置 › Agents**（`#agent-cards`）是单栏卡片列表，每个 agent 一张卡：
+
+- 头部：i18n 名称、状态 pill（已安装 / 未安装 / 未登录 / 未验证 / 不可用）、版本、
+  可执行文件路径；未安装时给安装/文档链接（走 `shell:openExternal`，主进程只放行
+  `https:`）与「指定 CLI 路径」输入（写 `agents.paths`）。
+- 已安装：模型复选框（CLI 列出的 + 已配置但不在列表里的自定义模型）、每行「测试」
+  （`agents.test`，显示延迟与截断样例）、「刷新模型」（`agents.models`）、自定义模型
+  ID 输入。勾选模型会确保 `providers[agent.id] = {kind: "agent_cli", agent: id,
+  enabled: true, models: {...}}` 并 `config.save`；取消勾选删 key。同名供应商但
+  `kind/agent` 不匹配时显示冲突并禁用编辑，提示先去「模型」改名/删除。
+- 模型列表来自 `agents.list`（检测与模型枚举并行、30 秒缓存）；「重新检测」用
+  `refresh: true` 绕过缓存。检测在引擎里跑，引擎未就绪时面板显示提示，就绪后
+  `applyEngineState()` 会自动重试。
+- 这些供应商**不出现在「模型」面板**（`modelPanelProviderNames()` 过滤
+  `kind === "agent_cli"`）；「选项 › 模型」仍列出它们，标签加 ` · CLI`，并在选中时
+  禁用「推理强度」下拉（agent 的推理由 CLI 自己决定）。
 
 ### 文档浏览与标签页（本轮重构）
 
@@ -747,6 +837,11 @@ PDF，它是空的，两个按钮就被禁用并提示"请先翻译"：程序**�
 
 供应商列表底部的 `.hint` 说明两者的分工，否则两个都能选模型的地方必然让人困惑。
 
+**agent 供应商不在这张表里。** 它们没有 endpoint、密钥或采样参数，设置 › 模型会把
+`kind === "agent_cli"` 的供应商过滤掉（`modelPanelProviderNames()`）；勾选模型在
+设置 › Agents 完成。选项 › 模型仍列出它们，标签带 ` · CLI` 后缀；选中 agent 供应商
+时「推理强度」下拉禁用并带说明——agent 的推理由 CLI 自己的配置决定，v1 不映射。
+
 **模型行的开关是真的启用/禁用**，不是装饰：`ModelEntry.enabled`（默认 `true`，老配置无需
 迁移）。关掉之后，无参 `resolve()` 跳过它、选项面板不列出它，**显式点名它则报错**
 （`... is disabled; enable it in Settings first`）——用户关掉就是为了不被用，静默继续翻译
@@ -775,7 +870,7 @@ config.yaml**——与同面板的页码、线程数、模式一致。存进 loc
 具体模型，会让人以为模型是在这里选定的。
 
 - **模型下拉**列出 `供应商 · 模型` 全部组合，值形如 `provider|model`（两半都不含 `|`，所以
-  能无歧义地还原）。
+  能无歧义地还原）。agent 供应商的标签带 ` · CLI` 后缀；选中它时推理强度下拉禁用。
 - **语言列表是常见的那些，不是全集**。引擎对未知码**有意宽容回退**到 GoNoto
   （`font_filename` 的注释写明了理由），所以列表里没有 ≠ 不支持。语言名用
   `Intl.DisplayNames` 现取，不手写二十种译名。
@@ -1029,6 +1124,7 @@ key 名与渲染进程的 `dialog.*` 保持一致，便于人工对照。
 | 版面模型 `.onnx` | `assets_dir()/models/` |
 | 字体 `.ttf` | `assets_dir()/fonts/` |
 | OCR 数据 `.traineddata` | `assets_dir()/tessdata/` |
+| agent CLI 的临时工作目录 | `cache_dir()/agents/run-*`：每次调用创建一个空目录，CLI 的 cwd 指这里，结束即删 |
 
 三者（桌面端 / CLI / MCP 服务）共享同一份 config、cache 与 assets——MCP 服务
 通过 `--config-dir` 指到桌面端同一个 userData 目录，所以它看到的就是界面上配好的
@@ -1085,6 +1181,13 @@ bash scripts/build.sh  # Git Bash；stage → PyInstaller → tsc → electron-b
 「缺失译文必须被拒」；其中的端到端用例不需要任何模型 API（收集/字典翻译器都不打
 网络），因此排版正确性可以离线验证。缺 `mcp` extra 或样例 PDF 时会带原因 skip。
 `test_assets_fonts.py` 测语言→字体映射与 `status()` 的向后兼容（旧键不能丢）。
+`test_agent_cli.py` 用假 CLI（临时脚本）测批队列、提示词、解析、重试/拆单段、缓存键、
+`close()`；`test_agents_detect.py` 用 monkeypatch 的 PATH / 路径覆盖 / 注册表测五个
+agent 的检测与模型列表解析（Codex JSON、CodeBuddy help、DSH YAML 含 `!!js`）；
+`test_sidecar_agents.py` 测 `agents.list` / `agents.models` / `agents.test` 的形状、
+`providers.list` 的 `agent` 字段、`providers.test` 拒绝 `agent_cli`。这些都不打真实
+模型。另有一次 fake CLI 端到端验证（真实 PDF + `agents.paths` 指向假 CLI，确认批调用
+与排版输出），不消耗额度；脚本是临时的，不进仓库。
 前端目前只有 `typecheck` 与 `check:i18n` 两个静态检查，尚无自动化测试。
 `check:i18n.mjs` 会真的加载 `i18n.ts` 并逐 key 比对，因此它能挡住"某门语言漏了一
 条文案""译文把 `{error}` 吃掉了""某条译成空串"这类漂移；它不检查译文质量。
