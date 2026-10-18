@@ -36,6 +36,8 @@ from pathlib import Path
 from string import Template
 from typing import Any, Iterable, Sequence
 
+import yaml
+
 from pdfxlate import paths
 from pdfxlate.agents import catalog
 from pdfxlate.agents.defs import AgentDef
@@ -456,14 +458,156 @@ def _zcode_env(command: Sequence[str], base: dict[str, str]) -> dict[str, str]:
     return env
 
 
-def _dsh_patch(provider: str, model: str) -> str:
-    """The ``--patch`` overlay that overrides DSH's default model."""
-    return (
-        "- id: agent-default-model\n"
-        "  config:\n"
-        f"    provider: {json.dumps(provider)}\n"
-        f"    model: {json.dumps(model)}\n"
+def split_agent_model(
+    model: str | None,
+    command: Sequence[str] | None = None,
+) -> tuple[str | None, str]:
+    """Split a configured DSH model id into ``(provider, model)``.
+
+    The Agents panel stores the composite ``provider/model`` spelling so that
+    two providers serving the same bare id stay distinguishable.  A bare id
+    (hand-written config, or the headless dump) falls back to the desktop
+    profile's default provider, and finally to the lazily-read dump mapping.
+    Model ids that themselves contain ``/`` are recognised from the desktop
+    profile before the first slash is treated as a separator.
+    """
+    chosen = (model or "").strip()
+    if not chosen or chosen == "default":
+        return None, chosen
+    owner = catalog.desktop_provider_for_model(chosen)
+    if owner:
+        return owner, chosen
+    if "/" in chosen:
+        provider, _, tail = chosen.partition("/")
+        if provider and tail:
+            return provider, tail
+    provider = catalog.provider_for_model("dsh", chosen, command=command)
+    if not provider:
+        default = catalog.dsh_default_model()
+        if default:
+            provider = default[0]
+    return provider, chosen
+
+
+def build_dsh_patch(provider: str | None, model: str) -> str:
+    """The ``--patch`` overlay that selects one DSH model.
+
+    The overlay carries the provider's whole ``llm-pi-ai`` entry so the
+    headless profile learns the endpoint, plus the usual
+    ``agent-default-model`` override.  Provider configs are sanitised: only the
+    ``apiKeyEnv`` *name* is ever written, never a key value.
+
+    When the provider is unknown (an old config, or a DSH install without a
+    desktop profile) the overlay degrades to the previous behaviour — just
+    ``agent-default-model`` — and DSH itself reports the bad selection.
+    """
+    entries: list[dict[str, Any]] = []
+    config = catalog.dsh_provider_config(provider)
+    if config is not None:
+        config = catalog.sanitize_provider_config(config)
+        entries.append(
+            {
+                "id": "llm-pi-ai",
+                "name": "@deepseek-ai/dsh-llm-pi-ai",
+                "config": {"providers": {str(provider): config}},
+            }
+        )
+    default_config: dict[str, Any] = {}
+    if provider:
+        default_config["provider"] = provider
+    default_config["model"] = model
+    entries.append(
+        {
+            "id": "agent-default-model",
+            "name": "@deepseek-ai/dsh-agent-default-model",
+            "config": default_config,
+        }
     )
+    return yaml.safe_dump(
+        entries, sort_keys=False, allow_unicode=True, default_flow_style=False
+    )
+
+
+def _dsh_credentials_path() -> Path:
+    """The credentials store beside the DSH profile (``$DSH_HOME`` aware)."""
+    return catalog.dsh_home() / ".credentials.yaml"
+
+
+def _find_named_string(payload: Any, name: str) -> str | None:
+    """Find ``name``'s string value anywhere in a decoded YAML document."""
+    if isinstance(payload, dict):
+        direct = payload.get(name)
+        if isinstance(direct, str) and direct.strip():
+            return direct.strip()
+        for value in payload.values():
+            found = _find_named_string(value, name)
+            if found:
+                return found
+    elif isinstance(payload, list):
+        for value in payload:
+            found = _find_named_string(value, name)
+            if found:
+                return found
+    return None
+
+
+def _dsh_credential(name: str) -> str | None:
+    """Read one named credential from DSH's store.
+
+    The desktop profile names an environment variable (``apiKeyEnv``).  DSH's
+    desktop app stores the value in ``.credentials.yaml`` rather than the
+    environment, so a headless child started by this process would otherwise
+    not see it.  The value is returned only for child-env injection and is
+    never logged or written anywhere.
+    """
+    if not name:
+        return None
+    path = _dsh_credentials_path()
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return None
+    return _find_named_string(data, name)
+
+
+def _inject_dsh_credentials(
+    provider_config: dict[str, Any] | None, env: dict[str, str]
+) -> dict[str, str]:
+    """Add the selected provider's key to the child env when it is missing."""
+    if not isinstance(provider_config, dict):
+        return env
+    name = str(provider_config.get("apiKeyEnv") or "").strip()
+    if not name or env.get(name):
+        return env
+    value = _dsh_credential(name)
+    if not value:
+        # DSH will report the missing key itself; failing here would hide its
+        # (more precise) message.
+        return env
+    child_env = dict(env)
+    child_env[name] = value
+    return child_env
+
+
+def _write_dsh_patch(workdir: Path, text: str) -> Path:
+    """Write the overlay to a unique file inside the run's disposable cwd."""
+    handle, name = tempfile.mkstemp(
+        prefix="dsh-patch-", suffix=".yaml", dir=str(workdir)
+    )
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as stream:
+            stream.write(text)
+    except BaseException:
+        try:
+            os.unlink(name)
+        except OSError:
+            pass
+        raise
+    return Path(name)
 
 
 def _build_command(
@@ -547,16 +691,17 @@ def _build_command(
     if defn.id == "dsh":
         argv = [*base, "--profile", "headless"]
         if has_model:
-            provider = catalog.provider_for_model("dsh", chosen, command=base)
-            if not provider:
-                raise AgentError(
-                    f"model {chosen!r} is not one of the models reported by "
-                    "`dsh --profile headless --dump-config`; choose 'default' "
-                    "or refresh the model list"
-                )
-            patch_path = workdir / "dsh-patch.yaml"
-            patch_path.write_text(_dsh_patch(provider, chosen), encoding="utf-8")
+            provider, bare_model = split_agent_model(chosen, command=base)
+            patch_path = _write_dsh_patch(
+                workdir, build_dsh_patch(provider, bare_model)
+            )
             argv += ["--patch", str(patch_path)]
+            # The desktop profile names the key's environment variable; its
+            # value may live only in DSH's credential store.  Inject it into
+            # this child's environment, never into the patch file or a log.
+            env = _inject_dsh_credentials(
+                catalog.dsh_provider_config(provider), env
+            )
         argv += ["-"]
         return argv, prompt, env
 
@@ -810,9 +955,11 @@ __all__ = [
     "AgentProcessError",
     "AgentTimeoutError",
     "build_batch_prompt",
+    "build_dsh_patch",
     "build_single_prompt",
     "parse_translations",
     "render_custom_prompt",
     "run_batch",
+    "split_agent_model",
     "strip_ansi",
 ]

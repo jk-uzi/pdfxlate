@@ -2232,6 +2232,18 @@ body.overlays-pinned .viewer-saveas {
   font-size: 10.5px;
 }
 
+/* DSH's own default model; informational, not a selection state. */
+.agent-model-row__current {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 10.5px;
+  line-height: 1.6;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
 .agent-model-row__spacer {
   flex: 1 1 auto;
 }

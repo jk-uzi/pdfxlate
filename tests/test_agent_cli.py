@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 
 import pytest
+import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -39,13 +40,26 @@ from pdfxlate.models.base import (  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
-def _clear_caches():
+def _clear_caches(tmp_path, monkeypatch):
     from pdfxlate.agents import catalog, detect
 
+    # Never read the developer's real ~/.dsh in a unit test.
+    monkeypatch.setenv("DSH_HOME", str(tmp_path / "dsh-home"))
     detect._RESOLVE_CACHE.clear()
     detect._DETECT_CACHE.clear()
     catalog._MODELS_CACHE.clear()
+    catalog._DSH_DESKTOP_CACHE.clear()
+    catalog._DSH_PROVIDERS = {}
+    catalog._DSH_DEFAULT = None
+    catalog._DSH_PROVIDER_LOADED = False
     yield
+    detect._RESOLVE_CACHE.clear()
+    detect._DETECT_CACHE.clear()
+    catalog._MODELS_CACHE.clear()
+    catalog._DSH_DESKTOP_CACHE.clear()
+    catalog._DSH_PROVIDERS = {}
+    catalog._DSH_DEFAULT = None
+    catalog._DSH_PROVIDER_LOADED = False
 
 
 def _profile(agent: str = "claude", model: str = "sonnet"):
@@ -548,6 +562,193 @@ def test_custom_prompt_renders_template():
     assert rendered == "Translate Hello. from en to zh"
     # A malformed `$` must not raise (safe_substitute, mirroring the base class).
     assert runtime.render_custom_prompt("Cost $5: ${text}", "x", "en", "zh") == "Cost $5: x"
+
+
+# --- DSH desktop-profile patch --------------------------------------------
+
+#: Synthetic desktop profile: the current default is w1/model-a, a second
+#: provider serves the same bare model id, and a secret value is planted in
+#: the provider config to prove it never reaches the patch.
+DSH_PROFILE = """\
+- id: agent-default-model
+  config:
+    provider: w1
+    model: model-a
+- id: llm-pi-ai
+  config:
+    providers:
+      w1:
+        displayName: Relay One
+        api: openai-responses
+        baseURL: https://relay-one.invalid/v1
+        apiKeyEnv: W1_API_KEY
+        apiKey: sk-should-never-leak
+        models:
+          - id: model-a
+            name: Model A
+          - id: vendor/model-b
+            name: Model B
+      w:
+        displayName: Relay Two
+        api: openai-chat
+        baseURL: https://relay-two.invalid/v1
+        apiKeyEnv: W_API_KEY
+        models:
+          - id: model-a
+            name: Model A
+"""
+
+
+@pytest.fixture
+def dsh_home(tmp_path, monkeypatch):
+    """A synthetic ``$DSH_HOME`` with a profile and one dummy credential."""
+    home = tmp_path / "dsh-home"
+    profile = home / "profiles" / "desktop" / "cordis.patch.yml"
+    profile.parent.mkdir(parents=True)
+    profile.write_text(DSH_PROFILE, encoding="utf-8")
+    (home / ".credentials.yaml").write_text(
+        "refs:\n  W1_API_KEY: dummy-w1-key\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("DSH_HOME", str(home))
+    from pdfxlate.agents import catalog
+
+    catalog._DSH_DESKTOP_CACHE.clear()
+    catalog._DSH_PROVIDER_LOADED = True  # never run a dump probe in these tests
+    return home
+
+
+def test_build_dsh_patch_includes_provider_and_default_model(dsh_home):
+    patch = yaml.safe_load(runtime.build_dsh_patch("w1", "model-a"))
+    assert [entry["id"] for entry in patch] == ["llm-pi-ai", "agent-default-model"]
+    assert patch[0]["name"] == "@deepseek-ai/dsh-llm-pi-ai"
+    assert patch[1]["name"] == "@deepseek-ai/dsh-agent-default-model"
+    provider = patch[0]["config"]["providers"]["w1"]
+    assert provider["apiKeyEnv"] == "W1_API_KEY"
+    assert provider["models"][0]["id"] == "model-a"
+    assert patch[1]["config"] == {"provider": "w1", "model": "model-a"}
+    dumped = yaml.safe_dump(patch)
+    assert "sk-should-never-leak" not in dumped
+    assert "dummy-w1-key" not in dumped
+
+
+def test_build_dsh_patch_falls_back_for_an_unknown_provider(dsh_home):
+    patch = yaml.safe_load(runtime.build_dsh_patch("missing", "model-a"))
+    assert patch == [
+        {
+            "id": "agent-default-model",
+            "name": "@deepseek-ai/dsh-agent-default-model",
+            "config": {"provider": "missing", "model": "model-a"},
+        }
+    ]
+    without_provider = yaml.safe_load(runtime.build_dsh_patch(None, "model-a"))
+    assert without_provider[0]["config"] == {"model": "model-a"}
+
+
+def test_split_agent_model(dsh_home):
+    assert runtime.split_agent_model("w1/model-a") == ("w1", "model-a")
+    # Only the first slash is the separator; OpenRouter model ids keep theirs.
+    assert runtime.split_agent_model("w1/vendor/model-b") == ("w1", "vendor/model-b")
+    # A bare id containing a slash is recognised from the desktop profile.
+    assert runtime.split_agent_model("vendor/model-b") == ("w1", "vendor/model-b")
+    # model-a is served by both providers, so the desktop default provider wins.
+    assert runtime.split_agent_model("model-a") == ("w1", "model-a")
+    assert runtime.split_agent_model("default") == (None, "default")
+    assert runtime.split_agent_model(None) == (None, "")
+
+
+def _fake_dsh_script(tmp_path: Path) -> Path:
+    """A CLI that records argv, the patch, and the injected key, then answers."""
+    script = tmp_path / "fake_dsh.py"
+    script.write_text(
+        "import json, os, sys\n"
+        "argv = sys.argv[1:]\n"
+        "patch = None\n"
+        "if '--patch' in argv:\n"
+        "    with open(argv[argv.index('--patch') + 1], encoding='utf-8') as fh:\n"
+        "        patch = fh.read()\n"
+        "raw = sys.stdin.read()\n"
+        "texts = json.loads(raw.rsplit('\\n\\n', 1)[-1])\n"
+        "with open(os.environ['CAPTURE'], 'w', encoding='utf-8') as fh:\n"
+        "    json.dump({'argv': argv, 'patch': patch, "
+        "'key': os.environ.get('W1_API_KEY')}, fh)\n"
+        "print(json.dumps({'translations': [t.upper() for t in texts]}))\n",
+        encoding="utf-8",
+    )
+    return script
+
+
+def test_dsh_run_uses_the_patch_and_injects_the_credential(
+    dsh_home, tmp_path, monkeypatch
+):
+    capture = tmp_path / "capture.json"
+    monkeypatch.setenv("CAPTURE", str(capture))
+    monkeypatch.setenv("PYTHONIOENCODING", "utf-8")
+    monkeypatch.delenv("W1_API_KEY", raising=False)
+    result = runtime.run_batch(
+        get_agent_def("dsh"),
+        (sys.executable, str(_fake_dsh_script(tmp_path))),
+        "w1/model-a",
+        ["hello"],
+        "zh",
+        timeout=20,
+    )
+    assert result == ["HELLO"]
+
+    data = json.loads(capture.read_text(encoding="utf-8"))
+    assert "--patch" in data["argv"]
+    patch_path = data["argv"][data["argv"].index("--patch") + 1]
+    # The overlay lives inside the run's disposable cwd and is gone afterwards.
+    assert not Path(patch_path).exists()
+
+    patch = yaml.safe_load(data["patch"])
+    assert [entry["id"] for entry in patch] == ["llm-pi-ai", "agent-default-model"]
+    assert patch[1]["config"] == {"provider": "w1", "model": "model-a"}
+    # The key reaches the child's environment, never the patch or a log.
+    assert data["key"] == "dummy-w1-key"
+    assert "dummy-w1-key" not in data["patch"]
+    assert "sk-should-never-leak" not in data["patch"]
+
+
+def test_dsh_default_model_has_no_patch(dsh_home, tmp_path, monkeypatch):
+    capture = tmp_path / "capture.json"
+    monkeypatch.setenv("CAPTURE", str(capture))
+    monkeypatch.setenv("PYTHONIOENCODING", "utf-8")
+    monkeypatch.delenv("W1_API_KEY", raising=False)
+    result = runtime.run_batch(
+        get_agent_def("dsh"),
+        (sys.executable, str(_fake_dsh_script(tmp_path))),
+        "default",
+        ["hello"],
+        "zh",
+        timeout=20,
+    )
+    assert result == ["HELLO"]
+    data = json.loads(capture.read_text(encoding="utf-8"))
+    assert "--patch" not in data["argv"]
+    assert data["patch"] is None
+    # No patch means no provider config, so no credential is injected either.
+    assert data["key"] is None
+
+
+def test_composite_dsh_model_id_survives_config_round_trip(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "providers:\n"
+        "  dsh:\n"
+        "    kind: agent_cli\n"
+        "    agent: dsh\n"
+        "    models:\n"
+        "      w1/model-a:\n"
+        "        model: w1/model-a\n",
+        encoding="utf-8",
+    )
+    cfg = config_mod.load(path)
+    assert cfg.providers["dsh"].models["w1/model-a"].model == "w1/model-a"
+    config_mod.save(cfg, path)
+    reloaded = config_mod.load(path)
+    assert reloaded.providers["dsh"].models["w1/model-a"].model == "w1/model-a"
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert raw["providers"]["dsh"]["models"]["w1/model-a"]["model"] == "w1/model-a"
 
 
 # --- API wiring ------------------------------------------------------------

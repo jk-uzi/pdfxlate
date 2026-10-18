@@ -81,6 +81,10 @@ type ConfigDoc = Record<string, unknown>;
 interface AgentModelOption {
   id: string;
   label: string;
+  /** The provider route behind a DSH model; absent for the other agents. */
+  provider?: string;
+  /** Whether this is DSH's current `agent-default-model`. */
+  current?: boolean;
 }
 
 /**
@@ -99,7 +103,7 @@ interface AgentStatus {
   auth: "ok" | "missing" | "unknown" | null;
   reason: string | null;
   models: AgentModelOption[];
-  models_source: "cli" | "fallback" | null;
+  models_source: "cli" | "profile" | "fallback" | null;
   models_error: string | null;
   install_url: string | null;
   docs_url: string | null;
@@ -3193,7 +3197,14 @@ function normalizeAgentModels(models: unknown): AgentModelOption[] {
     const id = (entry as { id?: unknown }).id;
     if (typeof id !== "string" || !id) continue;
     const label = (entry as { label?: unknown }).label;
-    options.push({ id, label: typeof label === "string" && label ? label : id });
+    const provider = (entry as { provider?: unknown }).provider;
+    const current = (entry as { current?: unknown }).current;
+    options.push({
+      id,
+      label: typeof label === "string" && label ? label : id,
+      ...(typeof provider === "string" && provider ? { provider } : {}),
+      ...(current === true ? { current: true } : {}),
+    });
   }
   return options;
 }
@@ -3474,7 +3485,7 @@ async function refreshAgentModels(
   try {
     const result = await api.request<{
       models: AgentModelOption[];
-      source: "cli" | "fallback";
+      source: "cli" | "profile" | "fallback";
       error?: string;
     }>("agents.models", { agent: agent.id, refresh: true });
     agent.models = normalizeAgentModels(result.models);
@@ -3579,6 +3590,10 @@ interface AgentModelRow {
   custom: boolean;
   /** The API model id to test: a hand-edited entry may differ from its alias. */
   testModel: string;
+  /** DSH's provider route, for display and diagnostics. */
+  provider?: string;
+  /** Whether DSH currently uses this model as its default. */
+  current: boolean;
 }
 
 /**
@@ -3604,6 +3619,8 @@ function agentModelRows(agent: AgentStatus): AgentModelRow[] {
       configured: !!entry && entry.enabled !== false,
       custom: false,
       testModel: entry?.model || model.id,
+      ...(model.provider ? { provider: model.provider } : {}),
+      current: model.current === true,
     });
   }
   for (const alias of Object.keys(configured)) {
@@ -3615,6 +3632,7 @@ function agentModelRows(agent: AgentStatus): AgentModelRow[] {
       configured: entry?.enabled !== false,
       custom: true,
       testModel: entry?.model || alias,
+      current: false,
     });
   }
   return rows;
@@ -3664,6 +3682,15 @@ function agentModelRow(
     const badge = document.createElement("span");
     badge.className = "agent-model-row__custom";
     badge.textContent = t("agents.customModel");
+    element.append(badge);
+  }
+
+  // DSH reports which model its own default points at. The badge is purely
+  // informational: ticking the row is what makes pdfxlate select it.
+  if (row.current) {
+    const badge = document.createElement("span");
+    badge.className = "agent-model-row__current";
+    badge.textContent = t("agents.current");
     element.append(badge);
   }
 

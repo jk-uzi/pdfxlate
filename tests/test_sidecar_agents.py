@@ -135,6 +135,32 @@ def test_agents_models_returns_cli_list(monkeypatch):
     assert calls == [("claude", True)]
 
 
+def test_agents_models_passes_the_desktop_profile_shape(monkeypatch):
+    def fake_list(agent, refresh=False, paths=None):
+        return {
+            "models": [
+                {"id": "default", "label": "Current model"},
+                {
+                    "id": "w1/model-a",
+                    "label": "Model A (Relay One)",
+                    "provider": "w1",
+                    "current": True,
+                },
+            ],
+            "source": "profile",
+        }
+
+    monkeypatch.setattr(catalog, "list_models", fake_list)
+    result = sidecar.method_agents_models({"agent": "dsh"})
+    assert result["source"] == "profile"
+    assert result["models"][1] == {
+        "id": "w1/model-a",
+        "label": "Model A (Relay One)",
+        "provider": "w1",
+        "current": True,
+    }
+
+
 def test_agents_models_unknown_agent_is_rejected():
     with pytest.raises(ValueError, match="unknown agent"):
         sidecar.method_agents_models({"agent": "nope"})
