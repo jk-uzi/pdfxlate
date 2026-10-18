@@ -107,17 +107,17 @@ pdfxlate/
 │       ├── config.py        695 行  pydantic 配置模型（供应商→模型 + agent 路径覆盖）+ YAML 读写
 │       ├── assets.py        405 行  模型 / 字体 / OCR 数据下载与校验；内置字体优先
 │       ├── cache.py         179 行  sqlite3 翻译缓存 + 命中统计
-│       ├── api.py           267 行  公开 Python API（含取消透传与 adapter 关闭）
-│       ├── cli.py           216 行  命令行入口
-│       ├── sidecar.py       825 行  stdio JSON 行协议（Electron 调用，含缓存统计）；--mcp 转交 MCP 服务
-│       ├── mcp_server.py    505 行  MCP 服务（外部 agent 调用，stdio）
+│       ├── api.py           274 行  公开 Python API（含取消透传与 adapter 关闭）
+│       ├── cli.py           244 行  命令行入口
+│       ├── sidecar.py       832 行  stdio JSON 行协议（Electron 调用，含缓存统计）；--mcp 转交 MCP 服务
+│       ├── mcp_server.py    509 行  MCP 服务（外部 agent 调用，stdio）
 │       ├── mcp_config.py    246 行  把 MCP 条目写进各 agent 配置（备份/合并/校验）
 │       ├── agents/
-│       │   ├── __init__.py    120 行  公开入口：list_agents()，并导出检测 / 模型列表 / 运行时的符号
-│       │   ├── defs.py        160 行  五个 agent 的静态定义（命令、安装链接、批上限）
-│       │   ├── detect.py      742 行  可执行文件解析（PATH / 注册表 / 路径覆盖）、版本与登录探测
-│       │   ├── catalog.py     386 行  模型列表（codex debug models / codebuddy help / dsh dump-config）
-│       │   ├── runtime.py     813 行  拼命令、spawn、输出解析、超时/取消、杀进程树
+│       │   ├── __init__.py    122 行  公开入口：list_agents()，并导出检测 / 模型列表 / 运行时的符号
+│       │   ├── defs.py        157 行  五个 agent 的静态定义（命令、安装链接、批上限）
+│       │   ├── detect.py      816 行  可执行文件解析（PATH / 注册表 / 路径覆盖）、版本与登录探测
+│       │   ├── catalog.py     416 行  模型列表（codex debug models / codebuddy help / dsh dump-config）
+│       │   ├── runtime.py     818 行  拼命令、spawn、输出解析、超时/取消、杀进程树
 │       │   └── batch.py       208 行  批队列（8 段 / 12000 字符 / 0.2s；argv agent 8000）
 │       ├── models/
 │       │   ├── __init__.py     23 行  导出翻译层公开符号
@@ -166,8 +166,8 @@ pdfxlate/
 │   ├── test_anthropic_messages.py 227 行  Messages 端点拼接、请求体、SSE、错误分级
 │   ├── test_config_providers.py 468 行  供应商→模型 schema、resolve、迁移（含已移除字段）、env 引用、agent 字段
 │   ├── test_agent_cli.py    651 行  agent 适配器：批队列、提示词、解析、重试/拆单段、缓存键、关闭
-│   ├── test_agents_detect.py 387 行  路径解析、版本/登录探测、五个 agent 的模型列表解析
-│   ├── test_sidecar_agents.py 299 行  agents.list / agents.models / agents.test、providers.list 的 agent 字段、providers.test 拒绝 agent_cli
+│   ├── test_agents_detect.py 472 行  路径解析、版本/登录探测、五个 agent 的模型列表解析
+│   ├── test_sidecar_agents.py 301 行  agents.list / agents.models / agents.test、providers.list 的 agent 字段、providers.test 拒绝 agent_cli
 │   ├── test_typesetting.py   172 行  字号适配纯函数（放不下时的缩字逻辑）
 │   ├── test_cli_options.py   286 行  CLI 排版选项解析与三态覆盖语义
 │   ├── test_sidecar_providers.py 181 行  providers.list 形状、密钥不外传
@@ -299,7 +299,9 @@ GoNoto 语言」与「未知语言码」，不是「支持/不支持」的分界
 `strip_reasoning()`、`DEFAULT_PROMPT`、`build_adapter()`。基类还提供两样给 agent
 适配器用的东西：`close()`（默认空实现，agent 适配器用它停批队列）和
 `cancellation_event`（`build_adapter(..., cancellation_event=)` 在构造后赋值；HTTP
-适配器忽略它，agent 适配器用它杀子进程）。
+适配器忽略它，agent 适配器用它杀子进程）。`AgentAuthError` 也定义在这里（agent
+未登录是**永久错误**，加入 `PERMANENT_TRANSLATION_ERRORS`，重试不会让 401 变成
+成功），`agents.runtime` 只是重导出它以避免 `base → agents` 的循环导入。
 
 **`DEFAULT_PROMPT` 故意保持短**（`${text}` 之前约 50 token）。实测这个网关的前缀
 缓存**不缓存第一个块**，且要到约 256 个 prompt token 才开始报命中：把模板加长到
@@ -1136,7 +1138,7 @@ key 名与渲染进程的 `dialog.*` 保持一致，便于人工对照。
 
 ```bash
 # Windows 的 venv 是 .venv/Scripts/python.exe，macOS/Linux 是 .venv/bin/python
-python/.venv/bin/python -m pytest tests/ -q          # Python，当前 373 passed
+python/.venv/bin/python -m pytest tests/ -q          # Python，当前 469 passed
 python/.venv/bin/python -m pytest tests/ -q -k cache # 单个方向
 npm run typecheck                                    # 前端类型检查
 npm run check:i18n                                   # 中英文字符串表一致性

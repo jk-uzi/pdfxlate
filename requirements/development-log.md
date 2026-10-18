@@ -2611,3 +2611,99 @@ README 里的截图是打包后的真实应用，不是设计稿：`dist/win-unp
 用 `gh release create` 把已验证的安装包挂到 `v0.1.0`，发布说明写清未签名导致的
 SmartScreen 提示、首次运行要联网下载模型、以及安装包的大小与 SHA256。没有重建安装包：
 asar 内的渲染进程与主进程文件与当前 `out/` 逐字节相同，已核对。
+
+---
+
+## 2026-10-18
+
+### 设置 › Agents：把外部 Agent CLI 接成翻译后端
+
+**目标**：让 pdfxlate 能用本机已登录的 agent CLI 的模型翻译，而不是只能填 API key。
+首批五个：Claude Code、Codex、WorkBuddy/CodeBuddy、ZCode、DeepSeek Harness。参考了
+本机安装的 Open Design 0.25.0（`AGENT_DEFS` / `agentId` / `agentModels` 的结构），
+但代码全部自研，不 import 它的运行时。
+
+**已完成**
+
+- **配置**：新增 `Provider.agent`、`ResolvedModel.agent`、可选 `AgentSettings.paths`
+  （`AppConfig.agents`）。`kind: agent_cli` 的供应商必须写 `agent`，否则加载时报错；
+  `_flatten()` 把它带进 `ResolvedModel`。`agents.paths` 用于 CLI 不在 PATH 时的
+  路径覆盖，同样支持 `${VAR}` 展开/写回。模板里加了一段注释示例。
+- **后端 `python/pdfxlate/agents/`**：`defs.py`（五个 agent 的静态定义）、`detect.py`
+  （路径解析：配置覆盖 → 环境变量 → PATH → 平台标准目录 / Windows 卸载注册表；版本
+  与登录探测；30 秒缓存）、`catalog.py`（Claude 内置列表、Codex `debug models`、
+  WorkBuddy help、ZCode `default`、DSH `--dump-config`）、`runtime.py`（按 agent 拼
+  命令、空临时 cwd、stdin/argv、输出解析、超时/取消杀进程树、严格重试 → 拆单段）、
+  `batch.py`（8 段 / 12000 字符 / 0.2 秒；argv agent 8000；自定义 prompt 时批大小为 1）。
+- **适配器 `models/agent_cli.py`**：`AgentCliAdapter` 把批队列接进 `ModelAdapter`；
+  `_cache_params()` 追加 `agent` + `agent_batch`（HTTP 适配器的缓存键不变）；
+  `close()` 停队列。`api.translate` / `translate_stream` 在 `finally` 里关闭适配器；
+  agent 供应商的线程数取 `max(thread, 8)`，让 8 个并发段落喂满一批。
+- **sidecar**：新增 `agents.list`（并行检测，≤8 秒，超时降级为「已安装、版本/登录
+  未知」）、`agents.models`（15 秒，失败回退内置列表）、`agents.test`（90 秒，后台
+  线程，真实调用一次 CLI 后关闭适配器）；`providers.list` 多回 `agent`；
+  `providers.test` 拒绝 `agent_cli` 并指向 Agents 面板。CLI `--list-models` 打印
+  `@ agent:<id>`；MCP `list_providers` 多回 `agent`；spec 加 hiddenimport。
+- **前端**：设置左栏新增「外部 Agent」，单栏卡片：状态 pill、版本、路径、安装/文档
+  链接、模型复选框（含已配置但 CLI 不再列出的自定义模型）、每行测试、刷新模型、
+  自定义模型 ID、CLI 路径覆盖。勾选模型写 `providers.<agent>`（`kind: agent_cli`）；
+  同名但 kind/agent 不匹配时显示冲突并禁用。`modelPanelProviderNames()` 把 agent
+  供应商从「模型」面板过滤掉；「选项 › 模型」仍列出，标签加 ` · CLI`，选中时禁用
+  推理强度。新增 `shell:openExternal` IPC（主进程只放行 `https:`）。
+- **文档**：`docs/development-plan.md` 新增决策一节；`docs/project-structure.md` 的
+  文件树、定位表、配置、翻译层、sidecar、设置、测试、运行期数据都更新；
+  `AGENTS.md` 与中英 README 各加一条说明。
+
+**关键决策**
+
+1. **spawn CLI，不读密钥**。OAuth/订阅额度只存在于 CLI 自己的登录态里；读
+   `~/.claude`、`~/.codex` 的凭据既脆弱又越界。调用 headless 模式是唯一既尊重登录态、
+   又不复制密钥的方式。代价是每次翻译多一次进程启动，所以有批队列。
+2. **agent 仍是一种 provider**，不是第二套配置树：`kind: agent_cli` + `agent` 字段，
+   复用 `resolve()` / `all_models()` / 选项下拉 / 缓存 / CLI / MCP。
+3. **检测只回状态，不回原始输出**：`codex login status` 会打印掩码 key，所以
+   `agents.list` 只回 `ok/missing/unknown`；错误里的 stderr 截断到 300 字符。
+4. **登录失败是永久错误**：`AgentAuthError` 定义在 `models/base.py`（避免
+   `base → agents` 循环导入），加入 `PERMANENT_TRANSLATION_ERRORS`；401 重试不会
+   变成成功。
+5. **自定义 prompt 不批处理**：模板有自己的输出契约，不能包进 translations 数组，
+   所以批大小为 1，逐段用原模板。
+
+**验证**
+
+- `python/.venv/Scripts/python.exe -m pytest tests/ -q` → **469 passed**
+  （worktree 里缺 `references/` 时 `test_mcp_server.py` 的 4 个用例会
+  `FileNotFoundError`，是既有的 `_find_sample_pdf()` 环境依赖问题；主仓库有
+  `references/`，全绿）。
+- `npm run typecheck`、`npm run check:i18n`（262 keys）、`npm run build` 通过。
+- **fake CLI 端到端**：用临时 `.cmd` 假 CLI 通过 `agents.paths.claude` 接进真实
+  `api.translate`，翻 `translate.cli.text.with.figure.pdf`，产出 mono/dual；
+  fake 日志显示 **2 次调用：8 段批量（4738 字符）+ 1 段（370 字符）**，证明批队列
+  在真实 PDF 管线上生效；不消耗任何额度。
+- **CDP 界面验收**：启动 Electron（独立 userData + `PDFXLATE_CONFIG_DIR`），打开
+  设置 › Agents：五张卡片正确显示 Claude（fake，已安装）、Codex（v0.154.0，6 个
+  模型）、WorkBuddy（不可用，只有桌面版）、ZCode（v0.16.9，未验证）、DSH
+  （v0.2.1-rc.2，未验证，2 个模型）；通过面板把 Claude 路径指到 fake CLI 并勾选
+  Sonnet 后，`config.get` 返回 `{kind: agent_cli, agent: claude, models: [sonnet]}`，
+  选项下拉出现 `claude / sonnet · CLI`；点「测试」返回
+  `正常 — 405 ms，Sonnet 返回「译文：Hello.」`。
+- **真实检测冒烟（不调模型）**：Claude 2.1.153 登录 ok；Codex 0.154.0 登录 ok、
+  6 个可见模型；WorkBuddy 正确报 `app_only`；ZCode 0.16.9 从
+  `D:\ZCode\resources\glm\zcode.cjs` 识别；DSH 0.2.1-rc.2 列出 `default` 与
+  `deepseek-flash`。`agents.list` 约 2.2 秒。
+- 验证过程中有一次误触发了真实的 `claude -p`（路径修正前），返回 403 auth、
+  没有产出译文，也没有消耗可用额度；之后全部改用 fake CLI。
+
+**限制 / 待办**
+
+- WorkBuddy 只装了桌面版，独立 `codebuddy`/`cbc` CLI 不在本机；它的运行/help/auth
+  路径只做了 parser 测试，未真实跑过。面板会提示安装并给链接。
+- ZCode 没有 `--model`，只能用它的当前模型（`default`）；切换模型要在 ZCode 里做。
+- DSH 的 `-` stdin 约定与 `--patch` 覆盖是按文档/帮助实现的，真实只验证了
+  `--dump-config`；需要一次真实 headless 调用来确认。
+- v1 不映射 agent 的 temperature/top_p/max_tokens/reasoning；这些由 CLI 自己的
+  配置决定，界面在选中 agent 时禁用推理强度。
+- 真实模型冒烟（每个 CLI 发一句）没有跑，避免消耗额度；可后续在 Agents 面板手动点
+  「测试」。
+- 打包版未重建：`pdfxlate.spec` 的 hiddenimport 已加，但 PyInstaller 产物需要下次
+  `bash scripts/build.sh` 验证。
