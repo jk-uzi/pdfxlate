@@ -9,6 +9,8 @@ key).
 
 from __future__ import annotations
 
+import json
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -22,8 +24,9 @@ from pdfxlate.agents.defs import AGENT_DEFS, get_agent_def  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def _clear_caches(tmp_path, monkeypatch):
-    # Never read the developer's real ~/.dsh in a unit test.
+    # Never read the developer's real ~/.dsh or ~/.zcode in a unit test.
     monkeypatch.setenv("DSH_HOME", str(tmp_path / "dsh-home"))
+    monkeypatch.setenv("ZCODE_HOME", str(tmp_path / "zcode-home"))
     detect._RESOLVE_CACHE.clear()
     detect._DETECT_CACHE.clear()
     catalog._MODELS_CACHE.clear()
@@ -31,6 +34,7 @@ def _clear_caches(tmp_path, monkeypatch):
     catalog._DSH_PROVIDERS = {}
     catalog._DSH_DEFAULT = None
     catalog._DSH_PROVIDER_LOADED = False
+    catalog._ZCODE_CURRENT_CACHE = None
     yield
     detect._RESOLVE_CACHE.clear()
     detect._DETECT_CACHE.clear()
@@ -39,6 +43,7 @@ def _clear_caches(tmp_path, monkeypatch):
     catalog._DSH_PROVIDERS = {}
     catalog._DSH_DEFAULT = None
     catalog._DSH_PROVIDER_LOADED = False
+    catalog._ZCODE_CURRENT_CACHE = None
 
 
 #: Synthetic desktop profile: two enabled providers, one disabled, three
@@ -692,3 +697,380 @@ def test_dsh_provider_for_model_refreshes_once(monkeypatch):
     # A second lookup must not re-run the dump for the same unknown id.
     assert catalog.provider_for_model("dsh", "unknown-model") is None
     assert len(calls) == 1
+
+
+# --- ZCode provider config -------------------------------------------------
+
+#: Synthetic ``provider_config.json``: two enabled providers, one enabled but
+#: provider-less rule, one disabled provider, a disabled model, a duplicate
+#: across the two rule lists, and a credential planted to prove it never leaks.
+ZCODE_PROVIDER_CONFIG: dict = {
+    "config": {
+        "providerOrder": ["p1", "p2", "p3"],
+        "providerConfigRules": {
+            "providerRules": [
+                {
+                    "providerId": "p1",
+                    "providerName": "Relay One",
+                    "enabled": True,
+                    "config": {"apiKey": "sk-should-never-leak"},
+                },
+                {
+                    "providerId": "p2",
+                    "providerName": "Relay Two",
+                    "enabled": None,
+                    "config": {"baseUrl": "https://relay-two.invalid"},
+                },
+                {
+                    "providerId": "p3",
+                    "providerName": "Off",
+                    "enabled": False,
+                    "config": {},
+                },
+                {
+                    "providerId": "p4",
+                    "providerName": "No Order",
+                    "enabled": True,
+                    "config": {},
+                },
+            ]
+        },
+        "modelConfigRules": {
+            "providerModelRules": [
+                {"providerId": "p1", "modelId": "m1", "config": {"enabled": True}},
+                {"providerId": "p1", "modelId": "m2", "config": {"enabled": False}},
+                {"providerId": "p3", "modelId": "hidden", "config": {}},
+                {"providerId": "p2", "modelId": "m3", "config": {"enabled": None}},
+            ],
+            "manualProviderModelRules": [
+                {"providerId": "p1", "modelId": "m1", "config": {}},
+                {"providerId": "p4", "modelId": "m4", "config": {}},
+            ],
+        },
+    }
+}
+
+
+def _write_zcode_provider_config(
+    tmp_path: Path, payload: dict | None = None
+) -> Path:
+    home = tmp_path / "zcode-home"
+    path = home / "v2" / "provider_config.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload or ZCODE_PROVIDER_CONFIG), encoding="utf-8")
+    return home
+
+
+def _write_zcode_db(home: Path, sessions: list[tuple[str, int, list[dict]]]) -> Path:
+    path = home / "cli" / "db" / "db.sqlite"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute(
+            "CREATE TABLE session (id TEXT PRIMARY KEY, time_created INTEGER)"
+        )
+        connection.execute("CREATE TABLE message (session_id TEXT, data TEXT)")
+        for session_id, created, messages in sessions:
+            connection.execute(
+                "INSERT INTO session (id, time_created) VALUES (?, ?)",
+                (session_id, created),
+            )
+            for message in messages:
+                connection.execute(
+                    "INSERT INTO message (session_id, data) VALUES (?, ?)",
+                    (session_id, json.dumps(message)),
+                )
+        connection.commit()
+    finally:
+        connection.close()
+    return path
+
+
+def _resolved_zcode(path: str = "fake-zcode.cjs") -> detect.ResolvedAgent:
+    return detect.ResolvedAgent(
+        defn=get_agent_def("zcode"),
+        installed=True,
+        command=("fake-node", path),
+        path=path,
+        reason=None,
+    )
+
+
+def test_zcode_provider_config_path_honours_zcode_home(tmp_path, monkeypatch):
+    home = _write_zcode_provider_config(tmp_path)
+    monkeypatch.setenv("ZCODE_HOME", str(home))
+    expected = home / "v2" / "provider_config.json"
+    assert catalog.zcode_home() == home
+    assert catalog.zcode_provider_config_path() == expected
+
+    monkeypatch.setenv("ZCODE_HOME", str(tmp_path / "nowhere"))
+    assert catalog.zcode_provider_config_path() is None
+
+
+def test_parse_zcode_provider_config_filters_and_orders(tmp_path):
+    parsed = catalog.parse_zcode_provider_config(
+        tmp_path / "unused.json", current=("p2", "m3")
+    )
+    # A path that does not exist is empty, not an exception.
+    assert parsed == {"models": [], "current": None, "providers": {}}
+
+    parsed = catalog.parse_zcode_provider_config(
+        json.dumps(ZCODE_PROVIDER_CONFIG), current=("p2", "m3")
+    )
+    assert parsed["current"] == ("p2", "m3")
+    # Provider order first, then providers missing from it; disabled providers
+    # and disabled models are gone.
+    assert [model["id"] for model in parsed["models"]] == [
+        "p1/m1",
+        "p2/m3",
+        "p4/m4",
+    ]
+    assert parsed["models"][0] == {
+        "id": "p1/m1",
+        "label": "m1 (Relay One)",
+        "provider": "p1",
+        "current": False,
+        "selectable": False,
+    }
+    assert parsed["models"][1]["label"] == "m3 (Relay Two)"
+    assert parsed["models"][1]["current"] is True
+    assert parsed["models"][1]["selectable"] is True
+    assert parsed["models"][2]["label"] == "m4 (No Order)"
+
+    # Only id -> name; the provider config (and its credential) is dropped.
+    assert parsed["providers"] == {
+        "p1": "Relay One",
+        "p2": "Relay Two",
+        "p4": "No Order",
+    }
+    assert "sk-should-never-leak" not in repr(parsed)
+    assert "baseUrl" not in repr(parsed)
+
+
+def test_parse_zcode_provider_config_tolerates_bad_json():
+    assert catalog.parse_zcode_provider_config("not json at all") == {
+        "models": [],
+        "current": None,
+        "providers": {},
+    }
+    assert catalog.parse_zcode_provider_config("[]") == {
+        "models": [],
+        "current": None,
+        "providers": {},
+    }
+
+
+def test_parse_zcode_provider_config_reads_a_path(tmp_path):
+    path = tmp_path / "provider_config.json"
+    path.write_text(json.dumps(ZCODE_PROVIDER_CONFIG), encoding="utf-8")
+    parsed = catalog.parse_zcode_provider_config(path, current=("p1", "m1"))
+    assert [model["id"] for model in parsed["models"]] == [
+        "p1/m1",
+        "p2/m3",
+        "p4/m4",
+    ]
+    assert parsed["models"][0]["selectable"] is True
+
+
+def test_zcode_current_model_reads_latest_non_subagent_session():
+    home = Path(catalog.zcode_home())
+    db = _write_zcode_db(
+        home,
+        [
+            (
+                "sess_user",
+                100,
+                [
+                    {"role": "user", "providerId": "p1", "modelId": "m1"},
+                    {
+                        "role": "assistant",
+                        "providerId": "new-provider-2",
+                        "modelId": "deepseek-v4.1-flash",
+                    },
+                ],
+            ),
+            # A newer subagent session must be ignored.
+            (
+                "sess_subagent_1",
+                200,
+                [
+                    {
+                        "role": "assistant",
+                        "providerId": "new-provider-4",
+                        "modelId": "other",
+                    }
+                ],
+            ),
+        ],
+    )
+    assert db.is_file()
+    assert catalog.zcode_current_model(refresh=True) == (
+        "new-provider-2",
+        "deepseek-v4.1-flash",
+    )
+
+
+def test_zcode_current_model_prefers_model_selection():
+    home = Path(catalog.zcode_home())
+    _write_zcode_db(
+        home,
+        [
+            (
+                "sess_user",
+                100,
+                [
+                    {
+                        "role": "assistant",
+                        "providerId": "top-level",
+                        "modelId": "top-model",
+                        "modelSelection": {
+                            "providerId": "selected",
+                            "modelId": "selected-model",
+                        },
+                    }
+                ],
+            )
+        ],
+    )
+    assert catalog.zcode_current_model(refresh=True) == (
+        "selected",
+        "selected-model",
+    )
+
+
+def test_zcode_current_model_prefers_the_newest_message():
+    """The production schema is ordered by time_created, not insertion order."""
+    db = Path(catalog.zcode_home()) / "cli" / "db" / "db.sqlite"
+    db.parent.mkdir(parents=True)
+    connection = sqlite3.connect(db)
+    try:
+        connection.execute(
+            "CREATE TABLE session (id TEXT PRIMARY KEY, time_created INTEGER)"
+        )
+        connection.execute(
+            "CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, "
+            "time_created INTEGER, data TEXT)"
+        )
+        connection.execute(
+            "INSERT INTO session (id, time_created) VALUES ('sess_user', 100)"
+        )
+        # Insert the newer message first so a rowid-based read would get it
+        # wrong; only time_created points at it.
+        for message_id, created, provider in (
+            ("m_new", 200, "p2"),
+            ("m_old", 100, "p1"),
+        ):
+            connection.execute(
+                "INSERT INTO message (id, session_id, time_created, data) "
+                "VALUES (?, 'sess_user', ?, ?)",
+                (
+                    message_id,
+                    created,
+                    json.dumps(
+                        {
+                            "role": "assistant",
+                            "providerId": provider,
+                            "modelId": f"{provider}-model",
+                        }
+                    ),
+                ),
+            )
+        connection.commit()
+    finally:
+        connection.close()
+    assert catalog.zcode_current_model(refresh=True) == ("p2", "p2-model")
+
+
+def test_zcode_current_model_missing_or_corrupt_returns_none():
+    # No database at all.
+    assert catalog.zcode_current_model(refresh=True) is None
+
+    # A file that is not a database: locked/corrupt is "unknown", not fatal.
+    home = Path(catalog.zcode_home())
+    db = home / "cli" / "db" / "db.sqlite"
+    db.parent.mkdir(parents=True)
+    db.write_text("this is not sqlite", encoding="utf-8")
+    assert catalog.zcode_current_model(refresh=True) is None
+
+
+def test_zcode_current_model_caches_until_refresh():
+    home = Path(catalog.zcode_home())
+    _write_zcode_db(
+        home,
+        [
+            (
+                "sess_user",
+                100,
+                [
+                    {
+                        "role": "assistant",
+                        "providerId": "p1",
+                        "modelId": "m1",
+                    }
+                ],
+            )
+        ],
+    )
+    assert catalog.zcode_current_model() == ("p1", "m1")
+    # A second read inside the TTL comes from the cache.
+    catalog._ZCODE_CURRENT_CACHE = (
+        catalog._ZCODE_CURRENT_CACHE[0],
+        ("cached", "value"),
+    )
+    assert catalog.zcode_current_model() == ("cached", "value")
+    assert catalog.zcode_current_model(refresh=True) == ("p1", "m1")
+
+
+def test_list_models_zcode_uses_the_provider_config(tmp_path, monkeypatch):
+    home = _write_zcode_provider_config(tmp_path)
+    monkeypatch.setenv("ZCODE_HOME", str(home))
+    monkeypatch.setattr(
+        catalog.detect, "resolve_agent", lambda *a, **k: _resolved_zcode()
+    )
+    monkeypatch.setattr(
+        catalog, "zcode_current_model", lambda refresh=False: ("p2", "m3")
+    )
+
+    result = catalog.list_models("zcode")
+    assert result["source"] == "profile"
+    assert [model["id"] for model in result["models"]] == [
+        "p1/m1",
+        "p2/m3",
+        "p4/m4",
+    ]
+    assert result["models"][1]["current"] is True
+    assert result["models"][1]["selectable"] is True
+    assert result["models"][0]["selectable"] is False
+
+    # The cached answer survives a profile edit until an explicit refresh.
+    path = home / "v2" / "provider_config.json"
+    changed = json.loads(json.dumps(ZCODE_PROVIDER_CONFIG))
+    changed["config"]["providerConfigRules"]["providerRules"][0][
+        "providerName"
+    ] = "Renamed"
+    path.write_text(json.dumps(changed), encoding="utf-8")
+    assert catalog.list_models("zcode") == result
+    refreshed = catalog.list_models("zcode", refresh=True)
+    assert refreshed["models"][0]["label"] == "m1 (Renamed)"
+
+
+def test_list_models_zcode_without_a_profile_falls_back(tmp_path, monkeypatch):
+    monkeypatch.setenv("ZCODE_HOME", str(tmp_path / "no-zcode"))
+    monkeypatch.setattr(
+        catalog.detect, "resolve_agent", lambda *a, **k: _resolved_zcode()
+    )
+    result = catalog.list_models("zcode")
+    assert result["source"] == "fallback"
+    assert result["models"] == [{"id": "default", "label": "Current model"}]
+    assert "error" not in result
+
+
+def test_zcode_provider_for_model():
+    assert catalog.provider_for_model("zcode", "p1/m1") == "p1"
+    # Only the first slash separates provider from model.
+    assert catalog.provider_for_model("zcode", "p1/vendor/m") == "p1"
+    assert catalog.provider_for_model("zcode", "m1") is None
+    assert catalog.provider_for_model("zcode", "default") is None
+    assert catalog.provider_for_model("zcode", "") is None
+    assert catalog.provider_for_model("claude", "sonnet") is None
+

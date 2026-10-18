@@ -674,6 +674,20 @@ def _build_command(
         return argv, prompt, env
 
     if defn.id == "zcode":
+        # The CLI has no --model flag, and sending "/model" through -p would be
+        # consumed as a real (billed) prompt.  The only honest thing to do with
+        # a configured model is verify it against the model ZCode itself is
+        # pointing at; a mismatch is reported instead of silently running the
+        # wrong model.
+        if has_model:
+            current = catalog.zcode_current_model()
+            if current is not None:
+                expected = f"{current[0]}/{current[1]}"
+                if chosen != expected and chosen != current[1]:
+                    raise AgentError(
+                        "ZCode CLI can only use its current model "
+                        f"({expected}); switch models inside ZCode first"
+                    )
         argv = [
             *base,
             "-p",

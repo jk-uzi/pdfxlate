@@ -43,8 +43,9 @@ from pdfxlate.models.base import (  # noqa: E402
 def _clear_caches(tmp_path, monkeypatch):
     from pdfxlate.agents import catalog, detect
 
-    # Never read the developer's real ~/.dsh in a unit test.
+    # Never read the developer's real ~/.dsh or ~/.zcode in a unit test.
     monkeypatch.setenv("DSH_HOME", str(tmp_path / "dsh-home"))
+    monkeypatch.setenv("ZCODE_HOME", str(tmp_path / "zcode-home"))
     detect._RESOLVE_CACHE.clear()
     detect._DETECT_CACHE.clear()
     catalog._MODELS_CACHE.clear()
@@ -52,6 +53,7 @@ def _clear_caches(tmp_path, monkeypatch):
     catalog._DSH_PROVIDERS = {}
     catalog._DSH_DEFAULT = None
     catalog._DSH_PROVIDER_LOADED = False
+    catalog._ZCODE_CURRENT_CACHE = None
     yield
     detect._RESOLVE_CACHE.clear()
     detect._DETECT_CACHE.clear()
@@ -60,6 +62,7 @@ def _clear_caches(tmp_path, monkeypatch):
     catalog._DSH_PROVIDERS = {}
     catalog._DSH_DEFAULT = None
     catalog._DSH_PROVIDER_LOADED = False
+    catalog._ZCODE_CURRENT_CACHE = None
 
 
 def _profile(agent: str = "claude", model: str = "sonnet"):
@@ -749,6 +752,87 @@ def test_composite_dsh_model_id_survives_config_round_trip(tmp_path):
     assert reloaded.providers["dsh"].models["w1/model-a"].model == "w1/model-a"
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert raw["providers"]["dsh"]["models"]["w1/model-a"]["model"] == "w1/model-a"
+
+
+# --- ZCode current-model guard --------------------------------------------
+
+
+def _build_zcode(
+    tmp_path: Path,
+    model: str | None,
+    current: tuple[str, str] | None,
+    monkeypatch,
+) -> tuple[list[str], str | None, dict[str, str]]:
+    """Build ZCode's argv with the current model and database mocked out."""
+    from pdfxlate.agents import catalog
+
+    monkeypatch.setattr(
+        catalog, "zcode_current_model", lambda refresh=False: current
+    )
+    workdir = tmp_path / "zcode-work"
+    workdir.mkdir()
+    return runtime._build_command(
+        get_agent_def("zcode"),
+        ("fake-node", "zcode.cjs"),
+        model,
+        "hello",
+        custom_prompt=False,
+        workdir=workdir,
+        last_message_path=tmp_path / "last.txt",
+    )
+
+
+def test_zcode_rejects_a_non_current_model(tmp_path, monkeypatch):
+    with pytest.raises(runtime.AgentError, match="current model") as caught:
+        _build_zcode(tmp_path, "p1/other-model", ("p1", "m1"), monkeypatch)
+    message = str(caught.value)
+    assert "p1/m1" in message
+    assert "switch models inside ZCode" in message
+
+
+def test_zcode_accepts_its_current_model(tmp_path, monkeypatch):
+    argv, stdin_prompt, _env = _build_zcode(tmp_path, "p1/m1", ("p1", "m1"), monkeypatch)
+    # The CLI has no --model flag; the prompt is still the argv payload.
+    assert "--model" not in argv
+    assert argv[:2] == ["fake-node", "zcode.cjs"]
+    assert argv[argv.index("-p") + 1] == "hello"
+    assert stdin_prompt is None
+
+
+def test_zcode_accepts_a_bare_current_model_id(tmp_path, monkeypatch):
+    argv, _stdin, _env = _build_zcode(tmp_path, "m1", ("p1", "m1"), monkeypatch)
+    assert "--model" not in argv
+
+
+def test_zcode_default_model_is_not_a_selection(tmp_path, monkeypatch):
+    # "default" means "leave the CLI alone"; there is nothing to verify.
+    argv, _stdin, _env = _build_zcode(tmp_path, "default", ("p1", "m1"), monkeypatch)
+    assert "--model" not in argv
+
+
+def test_zcode_unknown_current_model_does_not_block(tmp_path, monkeypatch):
+    # If the database cannot be read the CLI may still know its own selection.
+    argv, _stdin, _env = _build_zcode(tmp_path, "p1/other-model", None, monkeypatch)
+    assert "--model" not in argv
+
+
+def test_zcode_guard_runs_before_the_process(tmp_path, monkeypatch):
+    """A mismatch is rejected before any CLI process is spawned."""
+    from pdfxlate.agents import catalog
+
+    monkeypatch.setattr(
+        catalog, "zcode_current_model", lambda refresh=False: ("p1", "m1")
+    )
+    monkeypatch.setattr(runtime, "_make_workdir", _fake_workdir(tmp_path))
+
+    def must_not_spawn(*args, **kwargs):
+        raise AssertionError("the ZCode guard must run before spawning")
+
+    monkeypatch.setattr(runtime, "_run_process", must_not_spawn)
+    with pytest.raises(runtime.AgentError, match="current model"):
+        runtime.run_batch(
+            get_agent_def("zcode"), ("fake",), "p1/other-model", ["a"], "zh"
+        )
 
 
 # --- API wiring ------------------------------------------------------------
