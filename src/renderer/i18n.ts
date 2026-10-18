@@ -211,6 +211,8 @@ const EN: Table = {
   "agents.modelsFailed": "Could not refresh models: {error}",
   "agents.noModels": "This agent reported no models; add a model id below.",
   "agents.current": "Current",
+  "agents.zcode.currentOnly":
+    "ZCode CLI can only use its current model. Switch models inside ZCode first.",
   "agents.customModel": "custom",
   "agents.customModelPlaceholder": "custom model id",
   "agents.addModel": "Add",
@@ -508,6 +510,8 @@ const ZH: Table = {
   "agents.modelsFailed": "刷新模型失败：{error}",
   "agents.noModels": "该 agent 没有返回模型；可在下面手动添加模型 ID。",
   "agents.current": "当前",
+  "agents.zcode.currentOnly":
+    "ZCode CLI 只能使用它当前的模型；请先在 ZCode 内切换模型。",
   "agents.customModel": "自定义",
   "agents.customModelPlaceholder": "自定义模型 ID",
   "agents.addModel": "添加",

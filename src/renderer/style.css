@@ -2248,6 +2248,22 @@ body.overlays-pinned .viewer-saveas {
   flex: 1 1 auto;
 }
 
+/*
+ * ZCode only runs the model it is already pointing at. Its other models are
+ * still listed (they explain what the CLI has), but they cannot be selected.
+ */
+.agent-model-row--disabled {
+  opacity: 0.55;
+}
+
+.agent-model-row--disabled .agent-model-row__label {
+  color: var(--muted);
+}
+
+.agent-models__note {
+  margin: 6px 0 0;
+}
+
 /* The manual path override: one line, because it is a fallback, not a form. */
 .agent-card__path-edit {
   display: flex;

@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -49,6 +50,11 @@ _MODELS_CACHE: dict[tuple, tuple[float, dict[str, Any]]] = {}
 _DSH_PROVIDERS: dict[str, str] = {}
 _DSH_DEFAULT: tuple[str, str] | None = None
 _DSH_PROVIDER_LOADED = False
+
+#: Reading ZCode's 700 MB session database is not free; a short cache covers
+#: the handful of lookups a test/translate run can make in one go.
+_ZCODE_CURRENT_TTL = 8.0
+_ZCODE_CURRENT_CACHE: tuple[float, tuple[str, str] | None] | None = None
 
 _FENCE_RE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL)
 
@@ -570,6 +576,13 @@ def provider_for_model(
     paths from whatever config happens to be on disk.
     """
     global _DSH_PROVIDERS, _DSH_DEFAULT, _DSH_PROVIDER_LOADED
+    if agent == "zcode":
+        # ZCode stores a composite ``provider/model`` id, with only the first
+        # slash separating the two (a model id may contain further slashes).
+        if not model or model == "default" or "/" not in model:
+            return None
+        provider, _, tail = model.partition("/")
+        return provider if provider and tail else None
     if agent != "dsh" or not model or model == "default":
         return None
 
@@ -608,6 +621,271 @@ def provider_for_model(
             except Exception:  # noqa: BLE001 - an unknown model is reported by the caller
                 logger.debug("could not refresh the dsh model list", exc_info=True)
     return _DSH_PROVIDERS.get(model)
+
+
+# --- ZCode -----------------------------------------------------------------
+#
+# Unlike DSH, ZCode does not expose its model list through the CLI: the CLI has
+# no ``--model`` flag and a ``/model`` sent as a ``-p`` prompt is consumed as a
+# real (billed) turn.  The catalog therefore lives in two read-only places:
+#
+#     ~/.zcode/v2/provider_config.json   enabled providers and models
+#     ~/.zcode/cli/db/db.sqlite          the model of the latest session
+#
+# Only the current model is usable.  The UI marks every other row as
+# non-selectable, and the runtime refuses to run a configured mismatch rather
+# than silently letting the CLI pick its own model.
+
+
+def zcode_home() -> Path:
+    """The ZCode state directory (``$ZCODE_HOME``, else ``~/.zcode``)."""
+    override = (os.environ.get("ZCODE_HOME") or "").strip()
+    return Path(override).expanduser() if override else Path.home() / ".zcode"
+
+
+def zcode_provider_config_path() -> Path | None:
+    """``<ZCODE_HOME>/v2/provider_config.json``, if it exists."""
+    path = zcode_home() / "v2" / "provider_config.json"
+    try:
+        return path if path.is_file() else None
+    except OSError:
+        return None
+
+
+def parse_zcode_provider_config(
+    text_or_path: str | os.PathLike[str],
+    current: tuple[str, str] | None = None,
+) -> dict[str, Any]:
+    """Parse ZCode's ``provider_config.json`` into the model-list shape.
+
+    Returns ``{"models", "current", "providers"}``:
+
+    * ``models`` — ``[{id, label, provider, current, selectable}]`` with the
+      composite ``provider/model`` id, in ``providerOrder`` order (providers
+      missing from that list follow, in definition order).
+    * ``current`` — the ``(provider, model)`` pair that was passed in, if any.
+    * ``providers`` — only ``{providerId: providerName}``; provider configs can
+      contain credentials and are deliberately dropped here.
+
+    Only providers whose ``enabled`` is not ``False`` and models whose
+    ``config.enabled`` is not ``False`` are kept.  A missing/unreadable/invalid
+    file yields empty structures rather than an exception: the settings panel
+    must still render.
+    """
+    empty = {"models": [], "current": None, "providers": {}}
+    text = _profile_source_text(text_or_path)
+    if not text:
+        return empty
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return empty
+    if not isinstance(data, dict):
+        return empty
+    config = data.get("config")
+    if not isinstance(config, dict):
+        config = data
+
+    provider_rules: Any = config.get("providerConfigRules")
+    if isinstance(provider_rules, dict):
+        provider_rules = provider_rules.get("providerRules")
+    providers: dict[str, str] = {}
+    if isinstance(provider_rules, list):
+        for rule in provider_rules:
+            if not isinstance(rule, dict) or rule.get("enabled") is False:
+                continue
+            provider_id = str(
+                rule.get("providerId") or rule.get("id") or ""
+            ).strip()
+            if not provider_id:
+                continue
+            name = str(
+                rule.get("providerName") or rule.get("name") or ""
+            ).strip()
+            providers[provider_id] = name or provider_id
+
+    order: list[str] = []
+    raw_order = config.get("providerOrder")
+    if isinstance(raw_order, list):
+        for entry in raw_order:
+            provider_id = str(entry or "").strip()
+            if provider_id and provider_id not in order:
+                order.append(provider_id)
+    ordered_providers = [
+        provider_id for provider_id in order if provider_id in providers
+    ]
+    ordered_providers += [
+        provider_id for provider_id in providers if provider_id not in ordered_providers
+    ]
+
+    model_rules: Any = config.get("modelConfigRules")
+    if not isinstance(model_rules, dict):
+        model_rules = {}
+    merged: list[dict[str, Any]] = []
+    for key in ("providerModelRules", "manualProviderModelRules"):
+        entries = model_rules.get(key)
+        if isinstance(entries, list):
+            merged.extend(entry for entry in entries if isinstance(entry, dict))
+
+    deduped: dict[tuple[str, str], dict[str, Any]] = {}
+    for rule in merged:
+        provider_id = str(rule.get("providerId") or "").strip()
+        model_id = str(rule.get("modelId") or rule.get("id") or "").strip()
+        if not provider_id or not model_id or provider_id not in providers:
+            continue
+        deduped.setdefault((provider_id, model_id), rule)
+
+    by_provider: dict[str, list[str]] = {}
+    for (provider_id, model_id), rule in deduped.items():
+        rule_config = rule.get("config")
+        if isinstance(rule_config, dict) and rule_config.get("enabled") is False:
+            continue
+        by_provider.setdefault(provider_id, []).append(model_id)
+
+    current_pair: tuple[str, str] | None = None
+    if current is not None:
+        try:
+            current_provider, current_model = current
+        except (TypeError, ValueError):
+            current_provider, current_model = "", ""
+        current_provider = str(current_provider or "").strip()
+        current_model = str(current_model or "").strip()
+        if current_provider and current_model:
+            current_pair = (current_provider, current_model)
+
+    models: list[dict[str, Any]] = []
+    for provider_id in ordered_providers:
+        for model_id in by_provider.get(provider_id, ()):
+            is_current = current_pair == (provider_id, model_id)
+            models.append(
+                {
+                    "id": f"{provider_id}/{model_id}",
+                    "label": f"{model_id} ({providers[provider_id]})",
+                    "provider": provider_id,
+                    "current": is_current,
+                    # ZCode cannot switch models from the CLI: only the model
+                    # it already points at may be selected.
+                    "selectable": is_current,
+                }
+            )
+    return {"models": models, "current": current_pair, "providers": providers}
+
+
+def _zcode_message_rows(connection: sqlite3.Connection) -> list[str]:
+    """Recent assistant-message payloads, newest session first.
+
+    The database is ~700 MB, so the query is deliberately two-step: pick the
+    few newest non-subagent sessions from the small ``session`` table, then use
+    the ``(session_id, time_created, id)`` index for each session's messages.
+    A single ``message JOIN session ... ORDER BY session.time_created`` would
+    sort every message in every session before applying ``LIMIT``.
+    """
+    try:
+        cursor = connection.execute(
+            "SELECT id FROM session WHERE id NOT LIKE 'sess_subagent_%' "
+            "ORDER BY time_created DESC LIMIT 20"
+        )
+        session_ids = [row[0] for row in cursor if isinstance(row[0], str)]
+    except sqlite3.Error:
+        return []
+
+    rows: list[str] = []
+    message_queries = (
+        "SELECT data FROM message WHERE session_id = ? "
+        "ORDER BY time_created DESC, id DESC LIMIT 100",
+        # A minimal/hand-rolled database may not have the ordering columns.
+        "SELECT data FROM message WHERE session_id = ? ORDER BY rowid DESC LIMIT 100",
+    )
+    for session_id in session_ids:
+        for sql in message_queries:
+            try:
+                cursor = connection.execute(sql, (session_id,))
+                rows.extend(row[0] for row in cursor if isinstance(row[0], str))
+            except sqlite3.Error:
+                continue
+            break
+        if len(rows) >= 200:
+            break
+    return rows
+
+
+def _zcode_model_from_message(data: str) -> tuple[str, str] | None:
+    """Extract ``(providerId, modelId)`` from one ``message.data`` JSON blob."""
+    try:
+        payload = json.loads(data)
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if str(payload.get("role") or "").strip().lower() != "assistant":
+        return None
+    provider = ""
+    model = ""
+    selection = payload.get("modelSelection")
+    if isinstance(selection, dict):
+        provider = str(selection.get("providerId") or "").strip()
+        model = str(selection.get("modelId") or "").strip()
+    elif isinstance(selection, str) and "/" in selection:
+        provider, _, model = selection.partition("/")
+        provider, model = provider.strip(), model.strip()
+    if not provider:
+        provider = str(payload.get("providerId") or "").strip()
+    if not model:
+        model = str(payload.get("modelId") or "").strip()
+    if provider and model:
+        return (provider, model)
+    return None
+
+
+def zcode_current_model(refresh: bool = False) -> tuple[str, str] | None:
+    """The model of ZCode's most recent non-subagent session.
+
+    Reads ``<ZCODE_HOME>/cli/db/db.sqlite`` read-only.  A missing, locked or
+    corrupt database is not an error: the caller treats ``None`` as "unknown"
+    and leaves the CLI's own selection alone.
+    """
+    global _ZCODE_CURRENT_CACHE
+    now = time.monotonic()
+    if (
+        not refresh
+        and _ZCODE_CURRENT_CACHE is not None
+        and now - _ZCODE_CURRENT_CACHE[0] < _ZCODE_CURRENT_TTL
+    ):
+        return _ZCODE_CURRENT_CACHE[1]
+
+    value: tuple[str, str] | None = None
+    path = zcode_home() / "cli" / "db" / "db.sqlite"
+    try:
+        uri = f"{path.as_uri()}?mode=ro" if path.is_file() else ""
+    except (OSError, ValueError):
+        uri = ""
+    if uri:
+        connection: sqlite3.Connection | None = None
+        try:
+            connection = sqlite3.connect(uri, uri=True, timeout=2.0)
+            for data in _zcode_message_rows(connection):
+                value = _zcode_model_from_message(data)
+                if value is not None:
+                    break
+        except sqlite3.Error:
+            value = None
+        finally:
+            if connection is not None:
+                try:
+                    connection.close()
+                except sqlite3.Error:
+                    pass
+    _ZCODE_CURRENT_CACHE = (now, value)
+    return value
+
+
+def _zcode_model_list(refresh: bool = False) -> dict[str, Any]:
+    """The ZCode profile's enabled models, with the current one marked."""
+    path = zcode_provider_config_path()
+    if path is None:
+        return {"models": [], "current": None, "providers": {}}
+    current = zcode_current_model(refresh=refresh)
+    return parse_zcode_provider_config(path, current=current)
 
 
 def _models_command(
@@ -737,12 +1015,29 @@ def list_models(
                 },
             )
 
+    if agent == "zcode":
+        # The real model list is the profile on disk; the CLI itself has no
+        # enumeration command and must never be started just to list models.
+        cached = _cached(agent, resolved, refresh)
+        if cached is not None:
+            return cached
+        parsed = _zcode_model_list(refresh=refresh)
+        if parsed.get("models"):
+            return _store(
+                agent,
+                resolved,
+                {"models": parsed["models"], "source": "profile"},
+            )
+        if not resolved.installed:
+            return fallback_models(agent, not_installed_message(resolved))
+        return fallback_models(agent)
+
     if not resolved.installed:
         return fallback_models(agent, not_installed_message(resolved))
 
-    # Claude has no model-list command and ZCode has only its current model;
-    # their built-in lists are the answer, not a failure.
-    if agent in ("claude", "zcode"):
+    # Claude has no model-list command; its built-in list is the answer, not a
+    # failure.
+    if agent == "claude":
         return fallback_models(agent)
 
     cached = _cached(agent, resolved, refresh)
@@ -773,6 +1068,10 @@ __all__ = [
     "parse_codex_models",
     "parse_dsh_config",
     "parse_dsh_desktop_profile",
+    "parse_zcode_provider_config",
     "provider_for_model",
     "sanitize_provider_config",
+    "zcode_current_model",
+    "zcode_home",
+    "zcode_provider_config_path",
 ]

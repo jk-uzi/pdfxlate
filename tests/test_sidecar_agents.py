@@ -161,6 +161,38 @@ def test_agents_models_passes_the_desktop_profile_shape(monkeypatch):
     }
 
 
+def test_agents_models_passes_the_zcode_shape(monkeypatch):
+    """ZCode rows carry current/selectable; the sidecar must not reshape them."""
+
+    def fake_list(agent, refresh=False, paths=None):
+        return {
+            "models": [
+                {
+                    "id": "p1/m1",
+                    "label": "m1 (Relay One)",
+                    "provider": "p1",
+                    "current": False,
+                    "selectable": False,
+                },
+                {
+                    "id": "p2/m2",
+                    "label": "m2 (Relay Two)",
+                    "provider": "p2",
+                    "current": True,
+                    "selectable": True,
+                },
+            ],
+            "source": "profile",
+        }
+
+    monkeypatch.setattr(catalog, "list_models", fake_list)
+    result = sidecar.method_agents_models({"agent": "zcode"})
+    assert result["source"] == "profile"
+    assert result["models"][0]["selectable"] is False
+    assert result["models"][1]["current"] is True
+    assert result["models"][1]["selectable"] is True
+
+
 def test_agents_models_unknown_agent_is_rejected():
     with pytest.raises(ValueError, match="unknown agent"):
         sidecar.method_agents_models({"agent": "nope"})

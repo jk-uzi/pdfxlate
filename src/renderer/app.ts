@@ -85,6 +85,8 @@ interface AgentModelOption {
   provider?: string;
   /** Whether this is DSH's current `agent-default-model`. */
   current?: boolean;
+  /** Whether the CLI can actually be asked to use this model. */
+  selectable?: boolean;
 }
 
 /**
@@ -3199,11 +3201,13 @@ function normalizeAgentModels(models: unknown): AgentModelOption[] {
     const label = (entry as { label?: unknown }).label;
     const provider = (entry as { provider?: unknown }).provider;
     const current = (entry as { current?: unknown }).current;
+    const selectable = (entry as { selectable?: unknown }).selectable;
     options.push({
       id,
       label: typeof label === "string" && label ? label : id,
       ...(typeof provider === "string" && provider ? { provider } : {}),
       ...(current === true ? { current: true } : {}),
+      ...(typeof selectable === "boolean" ? { selectable } : {}),
     });
   }
   return options;
@@ -3594,6 +3598,13 @@ interface AgentModelRow {
   provider?: string;
   /** Whether DSH currently uses this model as its default. */
   current: boolean;
+  /**
+   * Whether the row can be ticked or tested.
+   *
+   * ZCode only runs the model it is already pointing at, so its other rows are
+   * shown for reference but cannot be selected.
+   */
+  selectable: boolean;
 }
 
 /**
@@ -3621,6 +3632,8 @@ function agentModelRows(agent: AgentStatus): AgentModelRow[] {
       testModel: entry?.model || model.id,
       ...(model.provider ? { provider: model.provider } : {}),
       current: model.current === true,
+      // Absent means selectable: the other agents have no such restriction.
+      selectable: model.selectable !== false,
     });
   }
   for (const alias of Object.keys(configured)) {
@@ -3633,6 +3646,9 @@ function agentModelRows(agent: AgentStatus): AgentModelRow[] {
       custom: true,
       testModel: entry?.model || alias,
       current: false,
+      // A hand-added ZCode model cannot be switched to, so it must not be
+      // offered as a selection either.
+      selectable: agent.id !== "zcode",
     });
   }
   return rows;
@@ -3659,7 +3675,9 @@ function agentModelRow(
   conflict: boolean,
 ): HTMLElement {
   const element = document.createElement("div");
-  element.className = "agent-model-row";
+  element.className = row.selectable
+    ? "agent-model-row"
+    : "agent-model-row agent-model-row--disabled";
 
   // `.check` supplies the row layout and un-does the shared stacked `label`
   // rule; the extra class only sizes it inside this row.
@@ -3668,7 +3686,7 @@ function agentModelRow(
   const tick = document.createElement("input");
   tick.type = "checkbox";
   tick.checked = row.configured;
-  tick.disabled = conflict;
+  tick.disabled = conflict || !row.selectable;
   tick.setAttribute("aria-label", row.label);
   tick.addEventListener("change", () => void setAgentModel(agent, row.id, tick.checked));
   const label = document.createElement("span");
@@ -3702,8 +3720,9 @@ function agentModelRow(
   test.type = "button";
   test.className = "btn btn--small";
   test.textContent = t("agents.test");
-  // Testing spawns the CLI, so there is nothing to test when it is not there.
-  test.disabled = !agent.installed;
+  // Testing spawns the CLI, so there is nothing to test when it is not there —
+  // and a model the CLI cannot switch to would only fail.
+  test.disabled = !agent.installed || !row.selectable;
   test.addEventListener("click", () => void testAgentModel(agent, row, test));
   element.append(test);
 
@@ -3771,6 +3790,15 @@ function agentModelsSection(
     list.className = "agent-models__list";
     for (const row of rows) list.append(agentModelRow(agent, row, conflict));
     section.append(list);
+  }
+
+  // ZCode only runs the model it already points at. Say so once, right under
+  // the list, instead of repeating a reason on every disabled row.
+  if (agent.id === "zcode" && rows.some((row) => !row.selectable)) {
+    const note = document.createElement("p");
+    note.className = "hint agent-models__note";
+    note.textContent = t("agents.zcode.currentOnly");
+    section.append(note);
   }
 
   if (conflict) {
