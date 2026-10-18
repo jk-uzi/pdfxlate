@@ -116,8 +116,8 @@ pdfxlate/
 │       │   ├── __init__.py    122 行  公开入口：list_agents()，并导出检测 / 模型列表 / 运行时的符号
 │       │   ├── defs.py        157 行  五个 agent 的静态定义（命令、安装链接、批上限）
 │       │   ├── detect.py      816 行  可执行文件解析（PATH / 注册表 / 路径覆盖）、版本与登录探测
-│       │   ├── catalog.py     416 行  模型列表（codex debug models / codebuddy help / dsh dump-config）
-│       │   ├── runtime.py     818 行  拼命令、spawn、输出解析、超时/取消、杀进程树
+│       │   ├── catalog.py    1077 行  模型列表（codex / codebuddy / DSH 桌面 profile / ZCode provider_config）
+│       │   ├── runtime.py     979 行  拼命令、spawn、输出解析、超时/取消、杀进程树、DSH --patch
 │       │   └── batch.py       208 行  批队列（8 段 / 12000 字符 / 0.2s；argv agent 8000）
 │       ├── models/
 │       │   ├── __init__.py     23 行  导出翻译层公开符号
@@ -146,10 +146,10 @@ pdfxlate/
 │   │   └── preload.ts       183 行  contextBridge，向渲染进程暴露 API（含 openExternal）
 │   └── renderer/
 │       ├── index.html       760 行  界面结构（文案走 data-i18n* 属性；图标在构建时内联）
-│       ├── app.ts          4378 行  界面逻辑（任务/设置双模式、折叠、标签页、文件夹浏览与搜索、拖放、缩放、进度、开始/取消合一、另存为、选项覆盖、侧栏拖拽、供应商/模型两栏编辑器、Agents 面板、MCP 配置）
-│       ├── i18n.ts          797 行  中英文字符串表 + t()/applyStaticTranslations()
+│       ├── app.ts          4436 行  界面逻辑（任务/设置双模式、折叠、标签页、文件夹浏览与搜索、拖放、缩放、进度、开始/取消合一、另存为、选项覆盖、侧栏拖拽、供应商/模型两栏编辑器、Agents 面板、MCP 配置）
+│       ├── i18n.ts          803 行  中英文字符串表 + t()/applyStaticTranslations()
 │       ├── icon.svg          49 行  应用标记的**唯一来源**（标题栏内联 + 打包图标）
-│       └── style.css       2269 行  样式（含标题栏标签、查看器浮层与常驻图钉、折叠与侧栏状态行、侧栏拖拽手柄、模型页两栏布局与开关、Agents 卡片）
+│       └── style.css       2297 行  样式（含标题栏标签、查看器浮层与常驻图钉、折叠与侧栏状态行、侧栏拖拽手柄、模型页两栏布局与开关、Agents 卡片）
 ├── assets/
 │   ├── icon.png               512×512，由 make_icon.py 从 icon.svg 生成后提交
 │   └── icon.ico               16–256 多尺寸，同上（Windows 用）
@@ -363,8 +363,8 @@ spawn 一次 CLI（见下），解析回 `{"translations": [...]}`。`_cache_par
 |---|---|
 | `defs.py` | `AgentDef` 数据类 + 五个定义：`claude` / `codex` / `workbuddy` / `zcode` / `dsh`。字段包括 PATH 名、fallback 名、环境变量、安装/文档链接、prompt 传递方式（stdin / argv）、内置模型、登录探测方式、标准安装相对路径与 Windows 应用名 |
 | `detect.py` | `resolve_agent()`：`agents.paths` 覆盖 → 环境变量 → `shutil.which` → 平台标准目录 / Windows 卸载注册表；`detect_agent()`：版本 + 登录探测。**登录探测只回 `ok/missing/unknown`**，绝不把 CLI 原始输出（`codex login status` 会打印掩码 key）传出去；结果缓存 30 秒 |
-| `catalog.py` | 模型列表：Claude 用内置 `sonnet/opus/haiku`；Codex 解析 `codex debug models`（过滤 `visibility == "hide"`）；WorkBuddy 解析 `codebuddy -p --help` 的 `Currently supported:`；ZCode 只有 `default`；DSH 解析 `--dump-config` 的 `agent-default-model` 与 `llm-pi-ai.providers[].models[]`。失败返回内置 fallback + `error`，不抛致命错误 |
-| `runtime.py` | `_build_command()` 按 agent 拼命令；`_run_process()` 在空临时 cwd 里 spawn，Windows 用 `CREATE_NO_WINDOW`，超时/取消用 `taskkill /F /T`（POSIX terminate→kill）杀进程树；输出解析（Claude JSON envelope / Codex last-message 文件 / 其余 stdout）；`parse_translations()` 依次接受 `translations` 数组、索引 key 对象、长度匹配且非回显的裸数组、单段纯文本；失败先严格重试再拆单段 |
+| `catalog.py` | 模型列表：Claude 用内置 `sonnet/opus/haiku`；Codex 解析 `codex debug models`（过滤 `visibility == "hide"`）；WorkBuddy 解析 `codebuddy -p --help` 的 `Currently supported:`；**ZCode** 解析 `~/.zcode/v2/provider_config.json`（`providerOrder` + 两组 model rules，过滤 `enabled: false`、去重；模型 id 为复合 `provider/model`，label 为 `modelId (providerName)`；当前模型从 `~/.zcode/cli/db/db.sqlite` 最近的非子代理 session 只读取，只有当前模型 `selectable`；不启动 CLI）；**DSH** 优先解析 `~/.dsh/profiles/desktop/cordis.patch.yml` 的 `llm-pi-ai.config.providers[].models[]` 与 `agent-default-model`（复合 `provider/model`，当前模型带 `current`；`sanitize_provider_config()` 只保留 `apiKeyEnv` 名称、丢弃任何 key/token/secret），没有桌面 profile 时回退 `--dump-config`。失败返回内置 fallback + `error`，不抛致命错误 |
+| `runtime.py` | `_build_command()` 按 agent 拼命令；`_run_process()` 在空临时 cwd 里 spawn，Windows 用 `CREATE_NO_WINDOW`，超时/取消用 `taskkill /F /T`（POSIX terminate→kill）杀进程树；输出解析（Claude JSON envelope / Codex last-message 文件 / 其余 stdout）；`parse_translations()` 依次接受 `translations` 数组、索引 key 对象、长度匹配且非回显的裸数组、单段纯文本；失败先严格重试再拆单段。DSH 非默认模型生成临时 `--patch`（`llm-pi-ai` 的选中 provider + `agent-default-model`），`apiKeyEnv` 的值从 `~/.dsh/.credentials.yaml` 的 `refs` 取出后只注入子进程 env；ZCode 在 spawn 前校验配置模型是否为 CLI 当前模型，不匹配报可读错误（CLI 没有 `--model`，绝不把 `/model` 当 prompt 发送） |
 | `batch.py` | `BatchQueue`：一个 daemon 线程 + `Condition`，8 段 / 12000 字符（argv 的 ZCode 8000）/ 首段后 0.2 秒触发；自定义 prompt 时 `max_items=1`；空闲 60 秒退出；`close()` 唤醒所有等待者 |
 | `__init__.py` | 公开 `list_agents()`（并行探测 + 模型列表，总预算 8 秒，超时项回退）与错误类型 |
 
@@ -769,6 +769,15 @@ agent CLI 的检测与模型勾选，见下）、**外观**（界面语言）、
   ID 输入。勾选模型会确保 `providers[agent.id] = {kind: "agent_cli", agent: id,
   enabled: true, models: {...}}` 并 `config.save`；取消勾选删 key。同名供应商但
   `kind/agent` 不匹配时显示冲突并禁用编辑，提示先去「模型」改名/删除。
+- **DSH** 的模型列表来自桌面 profile（`~/.dsh/profiles/desktop/cordis.patch.yml`），
+  行内显示 provider 与「当前」徽标；勾选任意模型写入复合 id `provider/model`，翻译时
+  runtime 生成临时 `--patch`（含选中 provider 的配置 + `agent-default-model`），
+  `apiKeyEnv` 的值只注入子进程 env，不改 `~/.dsh`、不写日志。
+- **ZCode** 的模型列表来自 `~/.zcode/v2/provider_config.json`（本机 30 个 enabled
+  模型），当前模型从 CLI 的 session DB 读取并标「当前」；CLI 没有 `--model`，所以
+  非当前行置灰、复选框和「测试」禁用，并在列表下提示需在 ZCode 内切换；已配置但
+  已不可选的旧行仍允许取消勾选，避免切换模型后卡在旧配置上。二者都**不启动 CLI**
+  枚举模型，返回 `models_source: "profile"`。
 - 模型列表来自 `agents.list`（检测与模型枚举并行、30 秒缓存）；「重新检测」用
   `refresh: true` 绕过缓存。检测在引擎里跑，引擎未就绪时面板显示提示，就绪后
   `applyEngineState()` 会自动重试。
@@ -1127,6 +1136,8 @@ key 名与渲染进程的 `dialog.*` 保持一致，便于人工对照。
 | 字体 `.ttf` | `assets_dir()/fonts/` |
 | OCR 数据 `.traineddata` | `assets_dir()/tessdata/` |
 | agent CLI 的临时工作目录 | `cache_dir()/agents/run-*`：每次调用创建一个空目录，CLI 的 cwd 指这里，结束即删 |
+| DSH 的临时 `--patch` | 本次 run 的空 cwd 里的 `dsh-patch-*.yaml`，进程结束随目录删除；内容只有选中 provider 的配置（`apiKeyEnv` 名称）与 `agent-default-model`，不含密钥值 |
+| ZCode 的当前模型 | 只读打开 `~/.zcode/cli/db/db.sqlite`（URI `mode=ro`，2 秒 timeout），不写、不锁、不复制凭据 |
 
 三者（桌面端 / CLI / MCP 服务）共享同一份 config、cache 与 assets——MCP 服务
 通过 `--config-dir` 指到桌面端同一个 userData 目录，所以它看到的就是界面上配好的
@@ -1138,7 +1149,7 @@ key 名与渲染进程的 `dialog.*` 保持一致，便于人工对照。
 
 ```bash
 # Windows 的 venv 是 .venv/Scripts/python.exe，macOS/Linux 是 .venv/bin/python
-python/.venv/bin/python -m pytest tests/ -q          # Python，当前 469 passed
+python/.venv/bin/python -m pytest tests/ -q          # Python，当前 502 passed
 python/.venv/bin/python -m pytest tests/ -q -k cache # 单个方向
 npm run typecheck                                    # 前端类型检查
 npm run check:i18n                                   # 中英文字符串表一致性

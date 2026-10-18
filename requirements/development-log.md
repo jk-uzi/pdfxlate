@@ -2707,3 +2707,78 @@ asar 内的渲染进程与主进程文件与当前 `out/` 逐字节相同，已�
   「测试」。
 - 打包版未重建：`pdfxlate.spec` 的 hiddenimport 已加，但 PyInstaller 产物需要下次
   `bash scripts/build.sh` 验证。
+
+## 2026-10-19 外部 Agent 模型目录扩展（DSH 桌面 profile / ZCode provider_config）
+
+**目标**：解决设置 › Agents 只识别 DSH `--dump-config` 的 2 个模型、ZCode 只有
+`default` 的问题；让面板列出用户真实可用的模型，并能选中 DSH 的任意模型（复合
+`provider/model`）、ZCode 的当前模型。
+
+**实现**
+
+- **DSH（`catalog.py`）**：新增 `dsh_home()` / `dsh_desktop_profile_path()` /
+  `parse_dsh_desktop_profile()` / `load_dsh_desktop_profile()` /
+  `dsh_provider_config()` / `dsh_default_model()`。读取
+  `~/.dsh/profiles/desktop/cordis.patch.yml` 的
+  `llm-pi-ai.config.providers` + `agent-default-model`，模型 id 为
+  `provider/model`，label 为 `Name (Provider)`，当前模型带 `current`；
+  `sanitize_provider_config()` 只保留 `apiKeyEnv` 名称，丢弃任何 key/token/secret；
+  `list_models("dsh")` 优先 profile（`source: "profile"`），否则回退
+  `--dump-config`；30 秒模型缓存 + profile mtime/size 缓存。
+- **DSH（`runtime.py`）**：`split_agent_model()` / `build_dsh_patch()` 生成临时
+  `--patch`（`llm-pi-ai` 的选中 provider 配置 + `agent-default-model
+  {provider, model}`）；`_write_dsh_patch()` 写在本次 run 的空 cwd，结束随目录删除；
+  `_inject_dsh_credentials()` 从 `~/.dsh/.credentials.yaml` 的 `refs[apiKeyEnv]` 取值，
+  只注入子进程 env，不写日志/配置/补丁；`default` 不生成 patch。
+- **ZCode（`catalog.py`）**：新增 `zcode_home()` /
+  `zcode_provider_config_path()` / `parse_zcode_provider_config()` /
+  `zcode_current_model()` / `_zcode_model_list()`。解析
+  `~/.zcode/v2/provider_config.json`（`providerOrder` / `providerRules` /
+  `providerModelRules` + `manualProviderModelRules`；过滤 `enabled: false`、去重、
+  按 `providerOrder` 排序；label 为 `modelId (providerName)`；只暴露 provider 名字，
+  不暴露 provider config/密钥）。当前模型从 `~/.zcode/cli/db/db.sqlite` 只读查询最近
+  非子代理 session 的 assistant `providerId` / `modelId`（优先 `modelSelection`；
+  8 秒缓存；异常回退 None）。`list_models("zcode")` 优先 profile
+  （`source: "profile"`），否则 `default`；不启动 ZCode CLI。
+- **ZCode（`runtime.py`）**：`_build_command` 在 spawn 前校验配置模型是否等于 ZCode
+  当前模型（或裸 model id），不匹配抛可读 `AgentError`；CLI 仍无 `--model`，绝不把
+  `/model` 当 prompt 发送。
+- **前端**：`AgentModelOption` / `AgentModelRow` 增加 `provider` / `current` /
+  `selectable`；DSH 行显示 provider + 「当前」徽标；ZCode 非当前行置灰、复选框和
+  「测试」禁用，列表下提示「ZCode CLI 只能使用它当前的模型…」；已配置但已不可选的
+  旧行仍可取消勾选（避免切换模型后卡在旧配置上）；i18n 264 keys。
+- **测试**：`tests/test_agents_detect.py`（DSH profile 解析/缓存/list_models/
+  provider_for_model；ZCode provider_config/current SQLite/list_models/
+  provider_for_model）、`tests/test_agent_cli.py`（DSH patch/凭证注入/fake run；
+  ZCode 当前模型保护/复合 id round-trip）、`tests/test_sidecar_agents.py`
+  （模型字段形状）；不读真实 `~/.dsh` / `~/.zcode`，不调真实模型。
+
+**验证**
+
+- `python/.venv/Scripts/python.exe -m pytest tests/ -q` → **502 passed**
+  （DSH 阶段 483，再加 ZCode 19；worktree 缺 `references/` 时 MCP 4 个已知环境失败）。
+- `npm run typecheck`、`npm run check:i18n`（264 keys）、`npm run build` 通过。
+- **CDP 界面**：DSH 卡片 25 个模型 + default，`Deepseek-V4.1-Flash (w国内反代)`
+  带「当前」徽标；ZCode 卡片 **30 个 enabled 模型**，当前
+  `deepseek-v4.1-flash (w国外反代)` 唯一可选，其余 29 行置灰/禁用，提示正确。
+- **fake DSH 端到端**：临时 `fake-dsh.cmd` 通过 `agents.paths.dsh` 接进真实
+  `api.translate`，翻 `translate.cli.text.with.figure.pdf`；2 次调用（8 段 4738
+  字符 + 1 段 370），`--patch` 含 `llm-pi-ai` / `agent-default-model` / `w1` /
+  `deepseek-v4.1-flash`，无 `sk-` / `apiKey:`；`W1_API_KEY` 只进子进程 env；
+  输出含「译文：」。
+- 没有发起真实 DSH/ZCode 模型调用；ZCode 目录/当前模型用只读合成 fixture +
+  本机只读检查验证。
+
+**限制 / 待办**
+
+- ZCode 仍不能从 pdfxlate 切换模型：只列目录 + 当前模型；非当前行置灰；切换需在
+  ZCode 内做。app-server `session/setModel` 未做（spike 发现非 JSON-RPC 自定义
+  协议，尚未证明可安全使用）。
+- ZCode 当前模型来自最近 session，切换后最多 8 秒缓存延迟；若刚切换但未在 ZCode
+  发消息，DB 可能还没记录。
+- WorkBuddy 桌面版仍未接入：面板只支持独立 `codebuddy` / `cbc` CLI；Phase 3
+  （桌面 auth 解密 + `/v3/config` / `/v2/enterprises/personal/models` 目录 +
+  `/v2/chat/completions` SSE 翻译）未开始。
+- DSH 真实 headless 调用未跑（配额原因）；patch 组合已用 `--dump-config` 和 fake
+  CLI 验证；`W1_API_KEY` 从 `.credentials.yaml` `refs` 注入的路径已用 fake 验证，
+  真实调用待用户点「测试」。

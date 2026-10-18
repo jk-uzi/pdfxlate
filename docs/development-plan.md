@@ -232,10 +232,14 @@ DeepSeek Harness 五个 CLI。
 v1 的限制（写进 UI 提示与文档）：
 
 - **WorkBuddy** 只认独立 `codebuddy`/`cbc` CLI；只有桌面版时提示安装，不强行调用
-  桌面版里缺模块的 CLI。
-- **ZCode** 的 CLI 没有 `--model`，只能用 ZCode 当前选中的模型（`default`）。
-- **DSH** 使用 `headless` profile；非默认模型通过临时 `--patch` 覆盖
-  `agent-default-model`，不修改用户的 profile。
+  桌面版里缺模块的 CLI。桌面 auth/catalog/HTTP 翻译是后续 Phase 3。
+- **ZCode** 的 CLI 没有 `--model`：目录读取 `~/.zcode/v2/provider_config.json`，
+  当前模型读取 session DB；面板列出 enabled 模型，但只有当前模型可选，非当前行
+  置灰并提示在 ZCode 内切换；不在 pdfxlate 里伪造切换。
+- **DSH** 使用 `headless` profile；模型目录来自桌面 profile
+  `~/.dsh/profiles/desktop/cordis.patch.yml`（复合 `provider/model`），非默认模型
+  通过临时 `--patch` 覆盖 `llm-pi-ai` + `agent-default-model`，不修改用户的 profile；
+  `apiKeyEnv` 的值从 `~/.dsh/.credentials.yaml` 只注入子进程 env。
 - agent 的 temperature/top_p/max_tokens/reasoning 参数 v1 不映射，由 CLI 自己的配置
   决定；这些供应商的「推理强度」控件在界面上禁用。
 - agent CLI 视为本地可信程序；翻译文本会发给它背后的模型，额度与条款由该 CLI 承担。
@@ -245,6 +249,12 @@ v1 的限制（写进 UI 提示与文档）：
 `agents.list` / `agents.models` / `agents.test`。参考实现是本地安装的 Open Design
 0.25.0（其 `AGENT_DEFS` / `agentId` / `agentModels` 结构），但代码全部自研，不 import
 它的运行时。
+
+2026-10-19 的模型目录扩展：DSH 已从桌面 profile 列出 25 个模型，并可通过临时
+`--patch` 选择任意 `provider/model`；ZCode 已列出 `provider_config.json` 的 30 个
+enabled 模型并标记当前模型（非当前模型不可选，切换仍需在 ZCode 内做）。WorkBuddy
+桌面版的 auth 解密、`/v3/config`/`/v2/enterprises/personal/models` 目录与
+`/v2/chat/completions` SSE 翻译仍在 Phase 3，尚未接入。
 
 ## 六、Electron 外壳
 
