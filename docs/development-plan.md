@@ -286,7 +286,7 @@ enabled 模型并标记当前模型，全部可勾选/翻译：当前与非当�
 
 | Agent | 本机目录（本次检测） | 每次调用如何选模型 | 改 agent 当前模型/配置？ |
 |---|---|---|---|
-| Claude Code | 3 个稳定别名；完整 ID 可手动添加 | `--model <id>` | 否 |
+| Claude Code | 3 个稳定别名（不可自定义添加） | `--model <id>` | 否 |
 | Codex | 6 个（`codex debug models`） | `-m <id>` | 否 |
 | WorkBuddy | 桌面目录 19 个 | CLI `--model` / 桌面请求 body 的 `model` | 否 |
 | ZCode | 30 个（provider config） | app-server selection `{providerId, modelId}` | 否 |

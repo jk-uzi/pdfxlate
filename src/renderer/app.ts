@@ -412,11 +412,6 @@ let lastAgentsMessage: {
   params?: Record<string, string>;
   error: boolean;
 } | null = null;
-/** Per-card messages (test results, refresh failures), keyed by agent id. */
-const agentMessages = new Map<
-  string,
-  { key: string; params?: Record<string, string>; error: boolean }
->();
 /**
  * Agents whose Test button has produced a real answer in this session.
  *
@@ -910,11 +905,11 @@ function applyEngineState(payload: { ok: boolean; error?: string }): void {
     void refreshProviders();
     void refreshAssets();
     void refreshEngineFacts();
-    // The panel may have been opened while the engine was still starting;
-    // retry now that detection can actually run.
-    if (!agentsLoaded && appMode === "settings" && settingsSection === "agents") {
-      void refreshAgents(false);
-    }
+    // Options needs the agent list for the CLI suffix and inherited-model
+    // filter even when the Agents panel has not been opened yet. `agents.list`
+    // prefers the persisted snapshot, so this does not spawn a live probe on a
+    // normal start.
+    if (!agentsLoaded) void refreshAgents(false);
   } else {
     // A failed engine cannot report agents. Drop the cached answer so the
     // panel retries when the engine comes up instead of showing a stale list.
@@ -2852,6 +2847,46 @@ function cleanError(err: unknown): string {
   return marker >= 0 ? raw.slice(marker + "Error: ".length) : raw;
 }
 
+/**
+ * Show a transient result at the bottom of the window.
+ *
+ * Test results used to live inside the agent card, which made them look like a
+ * property of the model row and pushed the card around. A small overlay keeps
+ * the layout stable; the close button is for results long enough to read twice.
+ */
+function showToast(
+  text: string,
+  options: { error?: boolean; timeout?: number } = {},
+): void {
+  const host = $("toast-host");
+  if (!host) return;
+  const toast = document.createElement("div");
+  toast.className = options.error ? "toast toast--error" : "toast toast--ok";
+  toast.setAttribute("role", options.error ? "alert" : "status");
+  const body = document.createElement("p");
+  body.className = "toast__text";
+  body.textContent = text;
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "toast__close";
+  close.textContent = "×";
+  close.title = t("toast.dismiss");
+  close.setAttribute("aria-label", t("toast.dismiss"));
+  let timer = 0;
+  const remove = (): void => {
+    window.clearTimeout(timer);
+    toast.remove();
+  };
+  timer = window.setTimeout(
+    remove,
+    options.timeout ?? (options.error ? 8000 : 6000),
+  );
+  close.addEventListener("click", remove);
+  toast.append(body, close);
+  host.append(toast);
+  while (host.children.length > 3) host.firstElementChild?.remove();
+}
+
 function setProviderTestMessage(
   key: string,
   params?: Record<string, string>,
@@ -3566,26 +3601,16 @@ function setAgentsMessage(
   paintAgentsMessage();
 }
 
-/** Paint one card's message in place, so a test result survives a rebuild. */
-function paintAgentMessage(agentId: string): void {
+/** Repaint one card's status pill after a test, without rebuilding the card. */
+function paintAgentStatus(agent: AgentStatus): void {
   const card = document.querySelector<HTMLElement>(
-    `.agent-card[data-agent="${cssEscape(agentId)}"]`,
+    `.agent-card[data-agent="${cssEscape(agent.id)}"]`,
   );
-  const msg = card?.querySelector<HTMLElement>(".agent-card__msg");
-  if (!msg) return;
-  const message = agentMessages.get(agentId);
-  msg.textContent = message ? t(message.key, message.params) : "";
-  msg.className = message?.error ? "msg msg--error agent-card__msg" : "msg agent-card__msg";
-}
-
-function setAgentMessage(
-  agentId: string,
-  key: string,
-  params?: Record<string, string>,
-  error = false,
-): void {
-  agentMessages.set(agentId, { key, params, error });
-  paintAgentMessage(agentId);
+  const pill = card?.querySelector<HTMLElement>(".agent-card__head .status");
+  if (!pill) return;
+  const state = agentState(agent);
+  pill.className = `status ${agentStatusClass(state)}`;
+  pill.textContent = agentStatusLabel(state);
 }
 
 /**
@@ -3627,6 +3652,8 @@ async function refreshAgents(force: boolean): Promise<void> {
     agentsLoading = false;
     $<HTMLButtonElement>("btn-rescan-agents").disabled = false;
     renderAgents();
+    // Agent status feeds both the CLI suffix and the inherited-model filter.
+    if (configLoaded && cachedConfig) renderOptionModels();
   }
 }
 
@@ -3693,39 +3720,6 @@ async function setAgentModel(
   renderAgents();
 }
 
-/** Add a model id the CLI did not list, as a configured model. */
-async function addAgentModel(agent: AgentStatus, input: HTMLInputElement): Promise<void> {
-  if (agentConflict(agent.id)) {
-    setAgentsMessage("agents.conflict", { provider: agent.id }, true);
-    return;
-  }
-  const id = input.value.trim();
-  // A pipe is the separator in the Options dropdown's value, and whitespace
-  // would have to be quoted by every CLI's argv — reject both here rather than
-  // writing a config the engine cannot address.
-  if (!id || /\s/.test(id) || id.includes("|")) {
-    setAgentsMessage("agents.modelInvalid", undefined, true);
-    return;
-  }
-  const providers = draftProviders();
-  let provider = providers[agent.id];
-  if (!provider) {
-    provider = { kind: AGENT_KIND, agent: agent.id, enabled: true, models: {} };
-    providers[agent.id] = provider;
-  }
-  // Same reasoning as ticking a model: adding one implies it should be usable.
-  provider.enabled = true;
-  if (!provider.models) provider.models = {};
-  if (provider.models[id]) {
-    setAgentsMessage("agents.modelExists", { name: id }, true);
-    return;
-  }
-  provider.models[id] = { model: id };
-  input.value = "";
-  if (await persistAgentConfig()) setAgentsMessage("agents.saved");
-  renderAgents();
-}
-
 /** Ask the CLI for its current model list, replacing the cached one. */
 async function refreshAgentModels(
   agent: AgentStatus,
@@ -3747,12 +3741,13 @@ async function refreshAgentModels(
     // A fallback list is still an answer; its reason is shown as a persistent
     // hint on the card (see `agentModelsSection`), so only the refresh itself
     // needs confirming here.
-    setAgentMessage(agent.id, "agents.modelsRefreshed");
+    showToast(t("agents.modelsRefreshed"));
   } catch (err) {
-    setAgentMessage(agent.id, "agents.modelsFailed", { error: cleanError(err) }, true);
+    showToast(t("agents.modelsFailed", { error: cleanError(err) }), { error: true });
   } finally {
     // Rebuild from the updated list; the old button goes away with the card.
     renderAgents();
+    if (configLoaded && cachedConfig) renderOptionModels();
   }
 }
 
@@ -3788,32 +3783,34 @@ async function testAgentModel(
         // app-server. Translation of that row also uses the app-server, so it
         // is usable; but the card's 可用 state is reserved for the current
         // CLI test and must not be claimed by this probe.
-        setAgentMessage(agent.id, "agents.testOkConnectivity", {
-          ms: String(result.latency_ms),
-          model: row.label,
-        });
+        showToast(
+          t("agents.testOkConnectivity", {
+            ms: String(result.latency_ms),
+            model: row.label,
+          }),
+        );
       } else {
         testedAgents.add(agent.id);
-        setAgentMessage(agent.id, "agents.testOk", {
-          ms: String(result.latency_ms),
-          model: row.label,
-          sample: truncateSample(result.sample ?? ""),
-        });
+        showToast(
+          t("agents.testOk", {
+            ms: String(result.latency_ms),
+            model: row.label,
+            sample: truncateSample(result.sample ?? ""),
+          }),
+        );
       }
     } else {
       if (row.current) testedAgents.delete(agent.id);
-      setAgentMessage(
-        agent.id,
-        "agents.testFailed",
-        { error: result.error || t("log.unknownError") },
-        true,
+      showToast(
+        t("agents.testFailed", { error: result.error || t("log.unknownError") }),
+        { error: true },
       );
     }
   } catch (err) {
     if (row.current) testedAgents.delete(agent.id);
-    setAgentMessage(agent.id, "agents.testFailed", { error: cleanError(err) }, true);
+    showToast(t("agents.testFailed", { error: cleanError(err) }), { error: true });
   } finally {
-    renderAgents();
+    paintAgentStatus(agent);
     button.disabled = false;
     button.textContent = t("agents.test");
   }
@@ -3861,8 +3858,6 @@ interface AgentModelRow {
   label: string;
   /** Whether the checkbox starts ticked: configured *and* switched on. */
   configured: boolean;
-  /** Configured here but absent from the CLI's current list. */
-  custom: boolean;
   /** The API model id to test: a hand-edited entry may differ from its alias. */
   testModel: string;
   /** DSH's provider route, for display and diagnostics. */
@@ -3871,62 +3866,33 @@ interface AgentModelRow {
   credit?: string;
   /** Whether DSH currently uses this model as its default. */
   current: boolean;
-  /**
-   * Whether the row can be ticked or tested.
-   *
-   * A listed ZCode model is selectable: all of them run through the app-server,
-   * with the current model falling back to the CLI. A hand-added ZCode id has no
-   * provider, so it cannot be routed and stays read-only.
-   */
+  /** Whether the agent reports this row as usable. */
   selectable: boolean;
 }
 
 /**
- * The rows a card shows: what the CLI reports, plus anything configured that
- * the list no longer contains.
+ * The rows a card shows: exactly the models the agent reports.
  *
- * The union is deliberate. A CLI that changes its model names would otherwise
- * hide — and make impossible to untick — a model the user configured earlier.
- * A stored entry with `enabled: false` reads as unticked: the checkbox means
- * "this model will be used", and ticking it again switches the entry back on
- * rather than finding it already present and doing nothing.
+ * There is no custom-model union any more. The agent's own catalogue is the
+ * only source; the checkbox is purely a choice about whether the model appears
+ * in Options, not a way to add a model definition.
  */
 function agentModelRows(agent: AgentStatus): AgentModelRow[] {
   const configured = draftProvider(agent.id)?.models ?? {};
-  const rows: AgentModelRow[] = [];
-  const seen = new Set<string>();
-  for (const model of agent.models) {
-    seen.add(model.id);
+  return agent.models.map((model) => {
     const entry = configured[model.id];
-    rows.push({
+    return {
       id: model.id,
       label: model.label || model.id,
       configured: !!entry && entry.enabled !== false,
-      custom: false,
       testModel: entry?.model || model.id,
       ...(model.provider ? { provider: model.provider } : {}),
       ...(model.credit ? { credit: model.credit } : {}),
       current: model.current === true,
       // Absent means selectable: the other agents have no such restriction.
       selectable: model.selectable !== false,
-    });
-  }
-  for (const alias of Object.keys(configured)) {
-    if (seen.has(alias)) continue;
-    const entry = configured[alias];
-    rows.push({
-      id: alias,
-      label: entry?.model || alias,
-      configured: entry?.enabled !== false,
-      custom: true,
-      testModel: entry?.model || alias,
-      current: false,
-      // A hand-added ZCode id has no provider to route through the app-server,
-      // so it must not be offered as a selection.
-      selectable: agent.id !== "zcode",
-    });
-  }
-  return rows;
+    };
+  });
 }
 
 /** A documentation/install link that opens in the browser, not in the app. */
@@ -3949,13 +3915,6 @@ function agentModelRow(
   row: AgentModelRow,
   conflict: boolean,
 ): HTMLElement {
-  // A ZCode row without a provider cannot be routed (the CLI has no --model and
-  // the app-server needs a provider). Show it read-only instead of a checkbox
-  // that would fail at translation time.
-  if (agent.id === "zcode" && !row.selectable) {
-    return zcodeLockedRow(agent, row, conflict);
-  }
-
   const element = document.createElement("div");
   element.className = row.selectable
     ? "agent-model-row"
@@ -3968,10 +3927,7 @@ function agentModelRow(
   const tick = document.createElement("input");
   tick.type = "checkbox";
   tick.checked = row.configured;
-  // A stale selection (configured, but no longer selectable) must still be
-  // clearable: after switching models inside ZCode, the old row would otherwise
-  // stay checked forever and keep feeding a model the CLI no longer runs.
-  tick.disabled = conflict || (!row.selectable && !row.configured);
+  tick.disabled = conflict || !row.selectable;
   tick.setAttribute("aria-label", row.label);
   tick.addEventListener("change", () => void setAgentModel(agent, row.id, tick.checked));
   const label = document.createElement("span");
@@ -3980,13 +3936,6 @@ function agentModelRow(
   label.title = row.id;
   check.append(tick, label);
   element.append(check);
-
-  if (row.custom) {
-    const badge = document.createElement("span");
-    badge.className = "agent-model-row__custom";
-    badge.textContent = t("agents.customModel");
-    element.append(badge);
-  }
 
   // WorkBuddy labels already carry the credit price; a backend that reports it
   // separately gets the same information as a small badge instead of a second
@@ -4016,8 +3965,7 @@ function agentModelRow(
   test.className = "btn btn--small";
   test.textContent = t("agents.test");
   // Testing spawns the CLI (or, for WorkBuddy, posts to its desktop gateway),
-  // so there is nothing to test when the backend is not there — and a model
-  // the CLI cannot switch to would only fail.
+  // so there is nothing to test when the backend is not there.
   test.disabled = (!agent.installed && !agentUsesDesktop(agent)) || !row.selectable;
   test.addEventListener("click", () => void testAgentModel(agent, row, test));
   element.append(test);
@@ -4025,102 +3973,30 @@ function agentModelRow(
   return element;
 }
 
-/**
- * A hand-added ZCode model id that has no provider.
- *
- * The CLI has no `--model` and the app-server route needs a provider, so this
- * row cannot be routed at all. A configured row keeps a checkbox so it can be
- * unchecked; it gets no Test button because there is no provider to probe.
- */
-function zcodeLockedRow(
-  agent: AgentStatus,
-  row: AgentModelRow,
-  conflict: boolean,
-): HTMLElement {
-  const element = document.createElement("div");
-  element.className = "agent-model-row agent-model-row--readonly";
+const AGENT_MODELS_OPEN_KEY = "pdfxlate.agentModels.";
+/** Lists longer than this start collapsed; short ones fit without hiding. */
+const AGENT_MODELS_OPEN_THRESHOLD = 8;
 
-  if (row.configured) {
-    const check = document.createElement("label");
-    check.className = "check agent-model-row__check";
-    const tick = document.createElement("input");
-    tick.type = "checkbox";
-    tick.checked = true;
-    tick.disabled = conflict;
-    tick.setAttribute("aria-label", row.label);
-    tick.addEventListener("change", () =>
-      void setAgentModel(agent, row.id, tick.checked),
-    );
-    const label = document.createElement("span");
-    label.className = "agent-model-row__label";
-    label.textContent = row.label;
-    label.title = row.id;
-    check.append(tick, label);
-    element.append(check);
-  } else {
-    const label = document.createElement("span");
-    label.className = "agent-model-row__label";
-    label.textContent = row.label;
-    label.title = row.id;
-    element.append(label);
+function agentModelsOpen(agentId: string, count: number): boolean {
+  try {
+    const stored = localStorage.getItem(`${AGENT_MODELS_OPEN_KEY}${agentId}`);
+    if (stored === "1") return true;
+    if (stored === "0") return false;
+  } catch {
+    // Storage can be unavailable; the default still applies.
   }
-
-  if (row.custom) {
-    const badge = document.createElement("span");
-    badge.className = "agent-model-row__custom";
-    badge.textContent = t("agents.customModel");
-    element.append(badge);
-  }
-  if (row.credit && !row.label.includes(row.credit)) {
-    const badge = document.createElement("span");
-    badge.className = "agent-model-row__credit";
-    badge.textContent = row.credit;
-    element.append(badge);
-  }
-
-  const spacer = document.createElement("span");
-  spacer.className = "agent-model-row__spacer";
-  element.append(spacer);
-
-  const note = document.createElement("span");
-  note.className = "agent-model-row__note";
-  note.textContent = t("agents.zcode.rowLocked");
-  element.append(note);
-
-  // Testing is safe for a non-current model: the sidecar uses ZCode's official
-  // app-server connectivity probe in a throwaway workspace, not a CLI switch.
-  const test = document.createElement("button");
-  test.type = "button";
-  test.className = "btn btn--small";
-  test.textContent = t("agents.test");
-  test.disabled = !agent.installed || !row.provider;
-  test.addEventListener("click", () => void testAgentModel(agent, row, test));
-  element.append(test);
-  return element;
+  return count <= AGENT_MODELS_OPEN_THRESHOLD;
 }
 
-function agentModelAdd(agent: AgentStatus): HTMLElement {
-  const box = document.createElement("div");
-  box.className = "add-inline";
-  const input = document.createElement("input");
-  input.type = "text";
-  input.placeholder = t("agents.customModelPlaceholder");
-  const add = document.createElement("button");
-  add.type = "button";
-  add.className = "btn btn--small btn--primary";
-  add.textContent = t("agents.addModel");
-  add.addEventListener("click", () => void addAgentModel(agent, input));
-  input.addEventListener("keydown", (event) => {
-    if ((event as KeyboardEvent).key === "Enter") {
-      event.preventDefault();
-      void addAgentModel(agent, input);
-    }
-  });
-  box.append(input, add);
-  return box;
+function setAgentModelsOpen(agentId: string, open: boolean): void {
+  try {
+    localStorage.setItem(`${AGENT_MODELS_OPEN_KEY}${agentId}`, open ? "1" : "0");
+  } catch {
+    // The in-place toggle still works for this session.
+  }
 }
 
-/** The models block of one card: list, refresh, add, and the card's message. */
+/** The models block of one card: collapsible list and refresh. */
 function agentModelsSection(
   agent: AgentStatus,
   rows: AgentModelRow[],
@@ -4129,16 +4005,32 @@ function agentModelsSection(
   const section = document.createElement("div");
   section.className = "agent-models";
 
+  const open = agentModelsOpen(agent.id, rows.length);
+  const bodyId = `agent-models-body-${agent.id}`;
+
   const head = document.createElement("div");
   head.className = "agent-models__head";
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "agent-models__toggle";
+  toggle.setAttribute("aria-expanded", String(open));
+  toggle.setAttribute("aria-controls", bodyId);
+  toggle.classList.toggle("is-open", open);
+  const chevron = document.createElement("span");
+  chevron.className = "agent-models__chevron";
+  chevron.textContent = "▸";
   const title = document.createElement("span");
   title.textContent = t("agents.modelsTitle");
+  const count = document.createElement("span");
+  count.className = "agent-models__count";
+  count.textContent = String(rows.length);
+  toggle.append(chevron, title, count);
   const refresh = document.createElement("button");
   refresh.type = "button";
   refresh.className = "btn btn--small btn--ghost";
   refresh.textContent = t("agents.refreshModels");
   refresh.addEventListener("click", () => void refreshAgentModels(agent, refresh));
-  head.append(title, refresh);
+  head.append(toggle, refresh);
   section.append(head);
 
   // A fallback list is still usable, but the reason the CLI could not be asked
@@ -4152,16 +4044,28 @@ function agentModelsSection(
     section.append(warning);
   }
 
+  if (conflict) {
+    const warning = document.createElement("p");
+    warning.className = "msg msg--error";
+    warning.textContent = t("agents.conflict", { provider: agent.id });
+    section.append(warning);
+  }
+
+  const body = document.createElement("div");
+  body.className = "agent-models__body";
+  body.id = bodyId;
+  body.hidden = !open;
+
   if (!rows.length) {
     const empty = document.createElement("p");
     empty.className = "hint";
     empty.textContent = t("agents.noModels");
-    section.append(empty);
+    body.append(empty);
   } else {
     const list = document.createElement("div");
     list.className = "agent-models__list";
     for (const row of rows) list.append(agentModelRow(agent, row, conflict));
-    section.append(list);
+    body.append(list);
   }
 
   // Explain how ZCode translation works: every listed model goes through a
@@ -4170,36 +4074,27 @@ function agentModelsSection(
     const note = document.createElement("p");
     note.className = "hint agent-models__note";
     note.textContent = t("agents.zcode.currentOnly");
-    section.append(note);
+    body.append(note);
   }
 
   // Claude Code cannot enumerate its models: the three aliases are all the CLI
-  // reports. Point at the manual "add model" row instead of leaving the short
-  // list looking like the whole catalogue.
+  // reports. The note only explains the short list; there is no add row.
   if (agent.id === "claude" && rows.length) {
     const note = document.createElement("p");
     note.className = "hint agent-models__note";
     note.textContent = t("agents.claudeModelsNote");
-    section.append(note);
+    body.append(note);
   }
 
-  if (conflict) {
-    const warning = document.createElement("p");
-    warning.className = "msg msg--error";
-    warning.textContent = t("agents.conflict", { provider: agent.id });
-    section.append(warning);
-  } else if (agent.id !== "zcode") {
-    // ZCode model ids come from its own provider config; a hand-added id has
-    // no resolvable provider for the app-server route.
-    section.append(agentModelAdd(agent));
-  }
+  toggle.addEventListener("click", () => {
+    const next = body.hidden;
+    body.hidden = !next;
+    toggle.setAttribute("aria-expanded", String(next));
+    toggle.classList.toggle("is-open", next);
+    setAgentModelsOpen(agent.id, next);
+  });
 
-  // The card's own message area: test results and refresh failures. Kept
-  // outside the row list so a result does not look like it belongs to the last
-  // row, and painted in place so a rebuild does not erase it.
-  const message = document.createElement("p");
-  message.className = "msg agent-card__msg";
-  section.append(message);
+  section.append(body);
   return section;
 }
 
@@ -4324,8 +4219,8 @@ function agentCard(agent: AgentStatus): HTMLElement {
 
   const rows = agentModelRows(agent);
   // A configured-but-uninstalled agent still needs its rows: that is the only
-  // place to untick a model whose CLI is gone. Presence, not the checkbox
-  // state, decides — a switched-off entry must stay reachable.
+  // place to untick a model whose CLI is gone. The rows themselves still come
+  // from the agent's own catalogue.
   const hasConfigured = Object.keys(draftProvider(agent.id)?.models ?? {}).length > 0;
   if (agent.installed || desktop || hasConfigured) {
     card.append(agentModelsSection(agent, rows, conflict));
@@ -4346,7 +4241,6 @@ function renderAgents(): void {
 
   for (const agent of cachedAgents) {
     list.append(agentCard(agent));
-    paintAgentMessage(agent.id);
   }
 
   if (!cachedAgents.length && agentsLoaded) {
@@ -4500,13 +4394,27 @@ function paintReasoningAvailability(): void {
 }
 
 /**
+ * The suffix that says a model is run through a CLI.
+ *
+ * Only actual CLI transports get it: ZCode goes through its app-server and a
+ * desktop-only WorkBuddy goes through its own gateway. Unknown/unloaded agents
+ * get no suffix rather than a guess; `refreshAgents()` re-renders this list.
+ */
+function agentOptionSuffix(agent: AgentStatus | undefined): string {
+  if (!agent) return "";
+  if (agent.id === "zcode") return "";
+  if (agentUsesDesktop(agent)) return "";
+  return t("options.agentSuffix");
+}
+
+/**
  * Rebuild the model dropdown from the loaded config.
  *
  * Every provider/model pair, labelled `provider · model`, with the alias as the
  * value so the job can name it exactly as the engine expects. Agent providers
  * are included here (unlike the Model panel): their models are ordinary
- * translation backends, and a ` · CLI` suffix is the only hint needed that the
- * work will run through an external program.
+ * translation backends. The suffix is transport-aware; see
+ * `agentOptionSuffix()`.
  */
 function renderOptionModels(): void {
   const select = $<HTMLSelectElement>("opt-model");
@@ -4518,10 +4426,21 @@ function renderOptionModels(): void {
     // A disabled provider takes its whole group out of rotation.
     if (provider.enabled === false) continue;
     const isAgent = provider.kind === AGENT_KIND;
+    const agent = isAgent
+      ? cachedAgents.find((candidate) => candidate.id === (provider.agent ?? providerName))
+      : undefined;
+    // The agent's catalogue is the source of truth. A configured model it no
+    // longer reports stays in the config but is not offered for a new job.
+    const inherited =
+      agent && agent.models.length
+        ? new Set(agent.models.map((model) => model.id))
+        : null;
     for (const [alias, entry] of Object.entries(provider.models ?? {})) {
       // A disabled model is not offered: the backend refuses to resolve it, so
       // listing it here would only turn into a failure at translate time.
       if (entry?.enabled === false) continue;
+      const modelId = entry?.model || alias;
+      if (inherited && !inherited.has(modelId)) continue;
       const opt = document.createElement("option");
       // `provider|model`: neither half may contain a pipe, so this round-trips
       // without needing a nested structure the DOM cannot carry.
@@ -4529,8 +4448,7 @@ function renderOptionModels(): void {
       // The label shows the API id, because that is what the user recognises;
       // the value keeps the alias, which is what `resolve()` expects. Two
       // aliases can point at one id, so the alias goes in the tooltip.
-      const modelId = entry?.model || alias;
-      const suffix = isAgent ? t("options.agentSuffix") : "";
+      const suffix = isAgent ? agentOptionSuffix(agent) : "";
       opt.textContent = `${providerName} / ${modelId}${suffix}`;
       opt.title =
         `${providerName} / ${modelId}${suffix}` + (alias !== modelId ? `（${alias}）` : "");

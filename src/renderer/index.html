@@ -102,7 +102,7 @@
             <div class="group__tools">
               <button
                 id="btn-refresh-docs"
-                class="icon-btn group__tool"
+                class="btn btn--settings group__tool"
                 type="button"
                 disabled
                 data-i18n-title="docs.refresh"
@@ -110,16 +110,16 @@
               >
                 <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                   <path d="M20 11a8 8 0 1 0-2.3 6.7" fill="none"
-                        stroke="currentColor" stroke-width="1.8"
+                        stroke="currentColor" stroke-width="1.6"
                         stroke-linecap="round" />
                   <path d="M20 4v7h-7" fill="none" stroke="currentColor"
-                        stroke-width="1.8" stroke-linecap="round"
+                        stroke-width="1.6" stroke-linecap="round"
                         stroke-linejoin="round" />
                 </svg>
               </button>
               <button
                 id="btn-open-folder"
-                class="icon-btn group__tool"
+                class="btn btn--settings group__tool"
                 type="button"
                 disabled
                 data-i18n-title="docs.openFolder"
@@ -795,6 +795,8 @@
         </div>
       </section>
     </div>
+
+    <div id="toast-host" class="toast-host" aria-live="polite"></div>
 
     <script type="module" src="app.js"></script>
   </body>

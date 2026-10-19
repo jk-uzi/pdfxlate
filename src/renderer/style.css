@@ -1236,14 +1236,14 @@ body.sidebar-collapsed .sidebar {
 
 /* Room for the two header tools, so a long title never runs underneath. */
 #group-docs > .group__head {
-  padding-right: 68px;
+  padding-right: 72px;
 }
 
 /* Header tools sit beside the summary instead of inside it: i18n rewrites the
    summary's textContent, and a button in it would toggle the group too. */
 .group__tools {
   position: absolute;
-  top: 6px;
+  top: 3px;
   right: 8px;
   display: flex;
   gap: 4px;
@@ -1256,24 +1256,11 @@ body.sidebar-collapsed .sidebar {
   display: flex;
 }
 
-.group__tool {
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.group__tool svg {
-  display: block;
-  width: 14px;
-  height: 14px;
-}
-
-.group__tool:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
+/* Size, border, radius and icon size come from `.btn.btn--settings`; this
+   class only adds the disabled state and the refresh animation. */
+.group__tool:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
 
 /* Manual refresh spins until the scan has run for at least 250 ms. */
@@ -1775,6 +1762,116 @@ input[readonly] {
   color: var(--danger);
 }
 
+/* --- transient toasts ---------------------------------------------------- */
+
+/* Bottom-centre overlay: test results and refresh failures no longer live in
+   the card, so they cannot push the model list around. */
+.toast-host {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: min(560px, calc(100vw - 32px));
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
+  border-radius: 10px;
+  background: var(--card);
+  box-shadow: 0 8px 24px rgb(31 35 40 / 14%);
+  pointer-events: auto;
+  animation: toast-in 0.14s ease-out;
+}
+
+.toast--ok {
+  border-color: #b7e1c0;
+  border-left-color: var(--ok);
+  background: #f0fff4;
+}
+
+.toast--ok .toast__text {
+  color: var(--ok);
+}
+
+.toast--ok .toast__close {
+  color: var(--ok);
+}
+
+.toast--error {
+  border-color: #f3c2c6;
+  border-left-color: var(--danger);
+  background: #fff5f5;
+}
+
+.toast__text {
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.toast--error .toast__text {
+  color: var(--danger);
+}
+
+.toast__close {
+  flex: 0 0 auto;
+  padding: 0 2px;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.toast__close:hover {
+  color: var(--text);
+}
+
+.toast--ok .toast__close:hover {
+  color: var(--ok);
+}
+
+.toast--error .toast__close {
+  color: var(--danger);
+}
+
+.toast--error .toast__close:hover {
+  color: var(--danger);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast {
+    animation: none;
+  }
+}
+
 /* --- log ----------------------------------------------------------------- */
 
 /*
@@ -2227,10 +2324,6 @@ body.overlays-pinned .viewer-saveas {
   text-decoration: underline;
 }
 
-.agent-card__msg {
-  margin: 8px 0 0;
-}
-
 /* Models block: separated from the header by a rule, like a detail section. */
 .agent-models {
   margin-top: 12px;
@@ -2250,10 +2343,57 @@ body.overlays-pinned .viewer-saveas {
   color: var(--muted);
 }
 
+.agent-models__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+
+.agent-models__toggle:hover {
+  color: var(--text);
+}
+
+.agent-models__toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+.agent-models__chevron {
+  display: inline-block;
+  font-size: 10px;
+  transition: transform 0.12s ease;
+}
+
+.agent-models__toggle.is-open .agent-models__chevron {
+  transform: rotate(90deg);
+}
+
+.agent-models__count {
+  padding: 0 5px;
+  border-radius: 8px;
+  background: #eef1f4;
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.7;
+}
+
+.agent-models__body {
+  margin-top: 4px;
+}
+
 .agent-models__list {
   display: flex;
   flex-direction: column;
-  margin-top: 4px;
 }
 
 .agent-model-row {
@@ -2294,16 +2434,6 @@ body.overlays-pinned .viewer-saveas {
   white-space: nowrap;
 }
 
-/* Configured here but absent from the CLI's own list. */
-.agent-model-row__custom {
-  flex: 0 0 auto;
-  padding: 1px 6px;
-  border-radius: 10px;
-  background: #eaeef2;
-  color: var(--muted);
-  font-size: 10.5px;
-}
-
 /* WorkBuddy's credit price, when the backend reports it separately. */
 .agent-model-row__credit {
   flex: 0 0 auto;
@@ -2332,8 +2462,8 @@ body.overlays-pinned .viewer-saveas {
 }
 
 /*
- * ZCode only runs the model it is already pointing at. Its other models are
- * still listed (they explain what the CLI has), but they cannot be selected.
+ * A model the agent marks as not selectable is listed for context but cannot be
+ * ticked or tested.
  */
 .agent-model-row--disabled {
   opacity: 0.55;
@@ -2341,20 +2471,6 @@ body.overlays-pinned .viewer-saveas {
 
 .agent-model-row--disabled .agent-model-row__label {
   color: var(--muted);
-}
-
-/*
- * A ZCode model that is not current is not a disabled checkbox; it is a
- * read-only explanation with a manual "switch inside ZCode" action.
- */
-.agent-model-row--readonly {
-  opacity: 0.85;
-}
-
-.agent-model-row__note {
-  color: var(--muted);
-  font-size: 12px;
-  white-space: nowrap;
 }
 
 .agent-models__note {
@@ -2382,11 +2498,6 @@ body.overlays-pinned .viewer-saveas {
   min-width: 0;
   padding: 6px 8px;
   font-size: 12px;
-}
-
-/* The "add a model id" row sits inside the card, not in the sidebar. */
-.agent-models .add-inline {
-  margin: 10px 0 0;
 }
 
 .agent-cards__unknown {

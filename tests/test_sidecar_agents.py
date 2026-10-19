@@ -20,7 +20,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pdfxlate.agents as agents_pkg  # noqa: E402
 from pdfxlate import config as config_mod  # noqa: E402
 from pdfxlate import sidecar  # noqa: E402
-from pdfxlate.agents import catalog, runtime  # noqa: E402
+from pdfxlate.agents import catalog, runtime, snapshot  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _no_real_snapshot(monkeypatch):
+    """Keep fake model lists out of the user's agents-snapshot.json."""
+    monkeypatch.setattr(snapshot, "save", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(snapshot, "update_agent", lambda *_args, **_kwargs: False)
+
 
 CONFIG = """\
 providers:

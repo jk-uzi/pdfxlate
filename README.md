@@ -61,7 +61,7 @@
 ## 下载与安装
 
 从 [Releases](https://github.com/jk-uzi/pdfxlate/releases) 下载最新版 Windows 安装包
-（形如 `pdfxlate-Setup-0.1.0.exe`，约 180 MB）。
+（形如 `pdfxlate-Setup-0.2.0.exe`，约 180 MB）。
 
 - **系统要求**：Windows 10 或 11，64 位。安装按当前用户进行，不需要管理员权限。
 - **未签名**：安装包没有代码签名证书，首次运行 Windows SmartScreen 会提示

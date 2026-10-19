@@ -1,6 +1,6 @@
 {
   "name": "pdfxlate",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Layout-preserving PDF translation with any OpenAI-compatible model",
   "main": "out/main/main.js",
   "author": "jk-uzi",

@@ -3283,3 +3283,137 @@ pdfxlate 仍要求先在 Agents 面板勾选模型（生成 provider 条目）�
 
 - 没有为纯前端 DOM 行为新增 pytest；Python 侧未改。手动刷新/自动刷新都不发网络
   请求，只读目录。
+
+## 2026-10-19 Agents 模型勾选 / 测试 Toast / 折叠 / CLI 标签 / 标题按钮
+
+**需求**
+
+- 自定义模型不能添加；模型定义只从 agent 继承，不新增、不编辑、不删除。
+- **保留勾选**：勾选某个继承模型后进入「选项 › 模型」；取消勾选后从 Options 移除。
+- 测试结果不再出现在卡片里，改为窗口底部的小提示（Toast）。
+- ZCode / WorkBuddy / DSH 等长模型列表可折叠，默认按数量收起。
+- 「选项」里的 ` · CLI` 只给真正走 CLI 的模型；WorkBuddy 桌面版、ZCode 不显示。
+- 「文档」标题右侧的刷新/打开文件夹按钮改成与设置按钮同款。
+
+**实现**
+
+- `app.ts`
+  - 删除 `agentModelAdd()` / `addAgentModel()` / 自定义模型草稿与校验；
+  - `agentModelRows()` 只映射 `agent.models`，不再合并配置里的 custom 行；
+  - 保留 `setAgentModel()`：勾选写入 `providers.<agent>.models`，取消删除该 key；
+  - `testAgentModel()` 删除 `finally` 里的 `renderAgents()`，改为 `paintAgentStatus()`
+    只更新 status pill；结果写入 `showToast()`；
+  - `refreshAgentModels()` 成功/失败改 Toast，刷新后重绘卡片和 Options；
+  - 新增 `agentModelsOpen()` / `setAgentModelsOpen()`，按 `localStorage` 持久化
+    折叠状态；超过 8 个模型默认折叠；
+  - `agentModelsSection()` 标题改为「chevron + 模型 + 数量」的折叠按钮，刷新按钮
+    仍在右侧；`models_error` / 冲突警告放在折叠区外；
+  - `renderOptionModels()` 对 agent provider 只保留当前 agent 目录里仍存在的模型；
+    新增 `agentOptionSuffix()`：ZCode 和 WorkBuddy 桌面版不加 ` · CLI`，其他
+    agent 走 CLI 时加；
+  - `applyEngineState()` 在 engine ready 后加载一次 agent 快照（优先读缓存，不
+    启动模型测试），这样任务页的 Options 也能拿到 CLI 后缀和继承过滤。
+  - 新增底部 `showToast()`：最多 3 条、成功 6 秒 / 错误 8 秒、可关闭；
+    删除 `agentMessages` / `setAgentMessage()` / `paintAgentMessage()` 与
+    `.agent-card__msg`。
+- `index.html`：末尾加 `#toast-host`；两个标题按钮改用
+  `btn btn--settings group__tool`。
+- `style.css`：新增 Toast、折叠标题、数量徽标样式；标题工具继承
+  `.btn.btn--settings` 的 28×28 / 圆角 8 / 17px 图标；移除自定义模型、locked 行、
+  卡片消息等不再使用的规则。
+- `i18n.ts`：删除自定义模型相关 key；`agents.noModels` / `agents.claudeModelsNote`
+  改为不再提示手动添加；新增 `toast.dismiss`。中英同步，274 keys。
+- `docs/project-structure.md` / `docs/development-plan.md`：同步 Agents 只读继承、
+  勾选进入 Options、折叠、Toast、CLI 后缀和文件行数。
+
+**验证**
+
+- `npm run typecheck`、`npm run check:i18n`（274 keys）、`npm run build` 通过。
+- `pytest tests/ -q` → **575 passed**（Python 未改）。
+- 隔离 `--user-data-dir` 启动 Electron（复制当前 config/snapshot，不动真实配置），
+  CDP 验证：
+  - 5 张 agent 卡，卡片内 `.add-inline` 为 0；复选框数量 3 / 6 / 19 / 30 / 29；
+  - 默认折叠：Claude 3、Codex 6 展开；WorkBuddy 19、ZCode 30、DSH 29 折叠；
+    手动展开/折叠后刷新页面仍保持；
+  - 勾选 WorkBuddy `Hy4 preview`：临时 config 写入 `hy4-preview`，Options 出现
+    `workbuddy / hy4-preview`；取消勾选后 config 删除、Options 消失；
+  - 临时 config 手写 `legacy-model`：Agents 不显示、Options 不显示，config 条目
+    保留未删除；
+  - 勾选 ZCode 模型：Options 显示 `zcode / ...`，无 ` · CLI`；
+  - Options 当前：`deepseek / ...` 无后缀、`workbuddy / hy3` 无后缀、
+    `dsh / ... · CLI`；
+  - 点「刷新模型」验证 Toast 出现在窗口底部居中、6 秒自动消失、关闭按钮有效；
+    卡片内没有测试结果行；
+  - 标题两个按钮与 `#btn-open-settings` 的计算样式一致：28×28、圆角 8、
+    17×17 图标、muted 色；
+  - 最终验证没有发起真实模型测试；测试结果的 Toast 与刷新模型共用同一组件，
+    代码路径检查。
+- `git diff --check` 通过。
+
+**说明 / 限制**
+
+- 自定义模型添加入口已整块移除；旧配置里手写的 custom 条目不会自动删除，但不再
+  出现在 Agents 行和 Options 中。
+- 勾选/取消勾选仍会写 pdfxlate 自己的 config（选择状态），不修改 agent 自己的
+  模型列表或配置。
+- 前端仍无 DOM 自动化测试；本轮用 CDP 做隔离验证。
+
+## 2026-10-19 修复 WorkBuddy 测试样例乱码与 Toast 配色
+
+**需求**
+
+- 测试结果 Toast 里的中文样例显示为 `ä½ å¥½`，需要修掉。
+- 「正常」和「测试失败」没有颜色区分；成功用绿色、失败用红色。
+
+**根因**
+
+- `workbuddy_desktop._read_stream()` 用
+  `response.iter_lines(decode_unicode=True)`；WorkBuddy 的 `text/event-stream`
+  没有可靠 charset 时，`requests` 默认按 ISO-8859-1 解码，UTF-8 的「你好」就变成
+  `ä½ å¥½`。
+- Toast 成功时只加 `.toast`，失败才加 `.toast--error`，所以成功提示仍是中性白底。
+- 另外发现测试隔离 bug：`test_workbuddy_desktop.py` 的 autouse fixture 在
+  `yield` **之后**才 patch `snapshot.save`，`test_sidecar_agents.py` 也没有 patch
+  `snapshot.update_agent`，导致跑测试会把 fake 的「全部未安装」快照写进真实
+  `%APPDATA%\pdfxlate\agents-snapshot.json`。本轮一并修复并恢复快照。
+
+**实现**
+
+- `workbuddy_desktop.py`
+  - `_read_stream()` 改为 `iter_lines(decode_unicode=False)`，对 bytes 按 UTF-8
+    解码；`str` 响应保持兼容。
+  - 新增 `_json_document()`：优先用 `response.content` 的 UTF-8 bytes 解析 JSON，
+    失败再回退 `response.json()`；用于 `_response_json()` 和
+    `_read_json_answer()`，避免配置/非 SSE 响应也走 Latin-1 猜测。
+- `app.ts`：`showToast()` 成功时用 `toast toast--ok`，失败继续用
+  `toast toast--error`。
+- `style.css`：成功 Toast 绿色边框/浅绿底/绿色文字和关闭按钮；失败 Toast 红色
+  左边框/浅红底/红色文字；保留底部居中、自动消失、关闭按钮、最多 3 条。
+- 测试：
+  - `FakeResponse.iter_lines()` 模拟 requests 的 `decode_unicode=True` →
+    Latin-1、`False` → UTF-8 bytes；
+  - 新增 `test_chat_decodes_utf8_sse_bytes` 和
+    `test_json_answer_uses_utf8_content_over_latin1_text`；
+  - `test_workbuddy_desktop` 的 autouse fixture 在 `yield` 前 patch
+    `snapshot.save`；
+  - `test_sidecar_agents` 增加 autouse fixture，patch `snapshot.save` /
+    `snapshot.update_agent`，不再写真实快照。
+
+**验证**
+
+- `pytest tests/test_workbuddy_desktop.py -q` → 47 passed。
+- `pytest tests/ -q` → **577 passed**（原 575，新增 2）。
+- 跑完整测试前后真实 `agents-snapshot.json` 的 mtime 不变，内容仍是
+  Claude 3 / Codex 6 / WorkBuddy 19 / ZCode 30 / DSH 29。
+- `npm run typecheck`、`npm run check:i18n`（274 keys）、`npm run build` 通过。
+- 隔离 `--user-data-dir` 启动 Electron + CDP：
+  - 「刷新模型」成功 Toast 的 class 为 `toast toast--ok`，计算样式
+    `border-left: rgb(26, 127, 55)`、背景 `rgb(240, 255, 244)`、文字绿色；
+  - 注入 `.toast--error` 检查为红色（`rgb(207, 34, 46)`、浅红底）；
+  - 不调用真实 WorkBuddy 模型；乱码修复由 fake SSE 单测覆盖。
+
+**说明**
+
+- WorkBuddy 的 JSON/SSE 按 UTF-8 处理；极端非 UTF-8 响应使用
+  `errors="replace"`，不会抛异常。
+- 没有改 agent 调用、模型、prompt 或 token 处理。

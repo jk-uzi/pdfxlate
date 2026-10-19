@@ -84,14 +84,14 @@ def _clean(monkeypatch):
     monkeypatch.delenv(wd.APP_EXECUTABLE_ENV, raising=False)
     monkeypatch.delenv(wd.AUTH_FILE_ENV, raising=False)
     monkeypatch.delenv(wd.PROXY_ENV, raising=False)
+    # These tests must not write a real agents-snapshot.json into the user's
+    # config directory; the snapshot module has its own dedicated tests.
+    monkeypatch.setattr(agents_pkg.snapshot, "save", lambda *_args, **_kwargs: None)
     yield
     wd.clear_caches()
     detect._RESOLVE_CACHE.clear()
     detect._DETECT_CACHE.clear()
     catalog._MODELS_CACHE.clear()
-    # These tests must not write a real agents-snapshot.json into the user's
-    # config directory; the snapshot module has its own dedicated tests.
-    monkeypatch.setattr(agents_pkg.snapshot, "save", lambda *_args, **_kwargs: None)
 
 
 class _FakeSession:
@@ -310,6 +310,7 @@ class FakeResponse:
         lines: list[str] | None = None,
         not_json: bool = False,
         headers: dict[str, str] | None = None,
+        content: bytes | None = None,
     ) -> None:
         self.status_code = status
         self._document = document
@@ -317,6 +318,7 @@ class FakeResponse:
         self._lines = lines or []
         self._not_json = not_json
         self.headers = headers or {}
+        self.content = content if content is not None else b""
         self.closed = False
 
     def json(self):
@@ -329,7 +331,11 @@ class FakeResponse:
         return self._text
 
     def iter_lines(self, decode_unicode: bool = False):
-        yield from self._lines
+        # Mimic requests: its decode_unicode path guesses ISO-8859-1 when the
+        # response has no charset, which is exactly the bug this suite covers.
+        for line in self._lines:
+            raw = line.encode("utf-8")
+            yield raw.decode("latin-1") if decode_unicode else raw
 
     def close(self) -> None:
         self.closed = True
@@ -441,6 +447,31 @@ def test_chat_sends_the_required_headers_and_parses_sse(monkeypatch):
     assert body["stream"] is True
     assert body["messages"][0]["role"] == "system"
     assert body["messages"][1] == {"role": "user", "content": "Translate: Hello"}
+
+
+def test_chat_decodes_utf8_sse_bytes(monkeypatch):
+    """The gateway sends UTF-8 bytes; requests must not Latin-1 them."""
+
+    def fake_post(url, headers=None, json=None, timeout=None, stream=None):
+        return FakeResponse(lines=_sse("你好", "，世界"))
+
+    _patch_http(monkeypatch, post=fake_post)
+    answer = wd.chat(_credential(), "model-1", "Translate: Hello")
+
+    assert answer == "你好，世界"
+
+
+def test_json_answer_uses_utf8_content_over_latin1_text():
+    payload = {"choices": [{"message": {"content": "你好，世界"}}]}
+    raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    response = FakeResponse(
+        document=None,
+        content=raw,
+        text=raw.decode("latin-1"),
+        headers={"content-type": "application/json"},
+    )
+
+    assert wd._read_json_answer(response, 200) == "你好，世界"
 
 
 def test_chat_reuses_one_keep_alive_session(monkeypatch):
@@ -995,6 +1026,9 @@ def test_agents_models_passes_the_desktop_shape(monkeypatch):
 
 
 def test_agents_list_includes_the_desktop_status(monkeypatch):
+    # `list_agents(refresh=True)` saves its result; this test uses fake blank
+    # detections, so it must not replace the user's real snapshot.
+    monkeypatch.setattr(agents_pkg.snapshot, "save", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         agents_pkg.detect,
         "detect_agent",

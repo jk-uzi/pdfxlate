@@ -970,12 +970,29 @@ def _classify_body(status: int, text: str) -> WorkBuddyError:
     )
 
 
+def _json_document(response: Any) -> Any:
+    """Read a JSON body as UTF-8 bytes when possible.
+
+    ``requests`` falls back to ISO-8859-1 when a response has no charset; the
+    WorkBuddy gateway sends UTF-8 JSON, so parsing its raw content avoids
+    turning Chinese text into mojibake.  Foreign/fake responses without
+    ``content`` keep using their own ``json()``.
+    """
+    content = getattr(response, "content", None)
+    if isinstance(content, (bytes, bytearray)):
+        try:
+            return json.loads(bytes(content).decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            pass
+    return response.json()
+
+
 def _response_json(response: Any) -> dict[str, Any]:
     """Read one JSON envelope, mapping HTTP/business failures to errors."""
     status = int(getattr(response, "status_code", 0) or 0)
     text = ""
     try:
-        document = response.json()
+        document = _json_document(response)
     except Exception:  # noqa: BLE001 - a non-JSON error body still needs reporting
         try:
             text = str(getattr(response, "text", "") or "")
@@ -1299,7 +1316,9 @@ def _raise_for_stream_error(chunk: Any) -> None:
 def _read_stream(response: Any, cancel_event: Any) -> str:
     chunks: list[str] = []
     try:
-        for raw in response.iter_lines(decode_unicode=True):
+        # Do not let requests decode the SSE bytes for us: without a charset it
+        # defaults to ISO-8859-1, which turns UTF-8 Chinese into `ä½ å¥½`.
+        for raw in response.iter_lines(decode_unicode=False):
             if cancel_event is not None:
                 try:
                     cancelled = bool(cancel_event.is_set())
@@ -1309,7 +1328,10 @@ def _read_stream(response: Any, cancel_event: Any) -> str:
                     raise asyncio.CancelledError("task cancelled")
             if raw is None:
                 continue
-            line = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+            if isinstance(raw, (bytes, bytearray)):
+                line = bytes(raw).decode("utf-8", "replace")
+            else:
+                line = str(raw)
             line = line.strip()
             if not line or line.startswith(":"):
                 continue
@@ -1355,7 +1377,7 @@ def _read_json_answer(response: Any, status: int) -> str | None:
     raises a classified :class:`WorkBuddyError` when it is an error envelope.
     """
     try:
-        document = response.json()
+        document = _json_document(response)
     except Exception:  # noqa: BLE001 - fall through to the body text
         document = None
     if isinstance(document, dict):

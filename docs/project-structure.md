@@ -21,7 +21,7 @@ Python 3.12，venv 在 `python/.venv`，包以 editable 方式安装，改源码
 | 接入外部 agent CLI 的模型 | `models/agent_cli.py` + `python/pdfxlate/agents/`（defs / detect / catalog / runtime / batch）+ 设置 › Agents |
 | 改 agent 的检测、登录探测或模型列表 | `agents/detect.py` / `agents/catalog.py`；五个 agent 的静态定义在 `agents/defs.py` |
 | 改 agent 的调用命令或批处理 | `agents/runtime.py`（拼 argv、解析输出、超时/取消、杀进程树、Claude 启动裁剪）/ `agents/batch.py`（8 段 / 12000 字符 / 0.2s） |
-| 改「设置 › Agents」面板 | `src/renderer/app.ts` 的 `refreshAgents()` / `renderAgents()` / `setAgentModel()` / `saveAgentPath()` + `index.html` + `style.css` |
+| 改「设置 › Agents」面板 | `src/renderer/app.ts` 的 `refreshAgents()` / `renderAgents()` / `setAgentModel()` / `agentModelsOpen()` / `paintAgentStatus()` / `saveAgentPath()` + `index.html` + `style.css` |
 | 改 agent 的 CLI 路径覆盖 | `config.py` 的 `AgentSettings` + `app.ts` 的 `draftAgents()` / `agentPathOverrides()` |
 | 调整发给模型的请求参数 | 对应适配器：`openai_compat.py` / `openai_responses.py` / `anthropic_messages.py`（`reasoning_effort` / `extra_body` / `stream` / `temperature`） |
 | 改重试策略 / 取消行为 | `pdf/converter.py` 的 `translate_segment()`（有界重试）+ `models/base.py` 的 `PERMANENT_TRANSLATION_ERRORS` |
@@ -148,11 +148,11 @@ pdfxlate/
 │   ├── preload/
 │   │   └── preload.ts       183 行  contextBridge，向渲染进程暴露 API（含 openExternal）
 │   └── renderer/
-│       ├── index.html       801 行  界面结构（文案走 data-i18n* 属性；图标在构建时内联）
-│       ├── app.ts          4846 行  界面逻辑（任务/设置双模式、折叠、标签页、文件夹浏览/搜索/自动刷新、拖放、缩放、进度、开始/取消合一、另存为、选项覆盖、侧栏拖拽、供应商/模型两栏编辑器、Agents 面板、MCP 配置）
-│       ├── i18n.ts          844 行  中英文字符串表 + t()/applyStaticTranslations()
+│       ├── index.html       803 行  界面结构（文案走 data-i18n* 属性；图标在构建时内联）
+│       ├── app.ts          4764 行  界面逻辑（任务/设置双模式、折叠、标签页、文件夹浏览/搜索/自动刷新、拖放、缩放、进度、开始/取消合一、另存为、选项覆盖、侧栏拖拽、供应商/模型两栏编辑器、Agents 面板、底部 Toast）
+│       ├── i18n.ts          834 行  中英文字符串表 + t()/applyStaticTranslations()
 │       ├── icon.svg          49 行  应用标记的**唯一来源**（标题栏内联 + 打包图标）
-│       └── style.css       2394 行  样式（含标题栏标签、查看器浮层与常驻图钉、折叠与侧栏状态行、文档组标题工具、侧栏拖拽手柄、模型页两栏布局与开关、Agents 卡片）
+│       └── style.css       2505 行  样式（含标题栏标签、查看器浮层与常驻图钉、折叠与侧栏状态行、文档组标题工具、侧栏拖拽手柄、模型页两栏布局与开关、Agents 卡片与可折叠模型区、底部 Toast）
 ├── assets/
 │   ├── icon.png               512×512，由 make_icon.py 从 icon.svg 生成后提交
 │   └── icon.ico               16–256 多尺寸，同上（Windows 用）
@@ -780,11 +780,20 @@ agent CLI 的检测与模型勾选，见下）、**外观**（界面语言）、
 - 头部：i18n 名称、状态 pill（已安装 / 未安装 / 未登录 / 可用 / 不可用）、版本、
   可执行文件路径；未安装时给安装/文档链接（走 `shell:openExternal`，主进程只放行
   `https:`）与「指定 CLI 路径」输入（写 `agents.paths`）。
-- 已安装：模型复选框（CLI 列出的 + 已配置但不在列表里的自定义模型）、每行「测试」
-  （`agents.test`，显示延迟与截断样例）、「刷新模型」（`agents.models`）、自定义模型
-  ID 输入。勾选模型会确保 `providers[agent.id] = {kind: "agent_cli", agent: id,
-  enabled: true, models: {...}}` 并 `config.save`；取消勾选删 key。同名供应商但
-  `kind/agent` 不匹配时显示冲突并禁用编辑，提示先去「模型」改名/删除。
+- 已安装：模型复选框（**只来自 agent 自己的模型目录**）、每行「测试」
+  （`agents.test`）、「刷新模型」（`agents.models`）。勾选模型会确保
+  `providers[agent.id] = {kind: "agent_cli", agent: id, enabled: true, models: {...}}`
+  并 `config.save`；取消勾选删 key。勾选只是“是否把该继承模型放进「选项」”，
+  不新增、编辑或删除模型定义，也没有自定义模型 ID 输入。同名供应商但
+  `kind/agent` 不匹配时显示冲突并禁用勾选，提示先去「模型」改名/删除。
+- **测试结果不在卡片里**：`testAgentModel()` 成功后只更新对应卡片的 status pill，
+  延迟/样例/错误写入窗口底部的 toast（成功绿色、失败红色；成功约 6 秒、错误约
+  8 秒，可手动关闭，最多 3 条）；失败时卡片不重建，滚动位置不跳。
+- **模型列表可折叠**：标题左侧是展开/折叠按钮，显示模型数量；超过 8 个模型的
+  agent（ZCode / WorkBuddy / DSH）默认折叠，少于等于 8 个的（Claude / Codex）
+  默认展开。用户选择写入 `localStorage["pdfxlate.agentModels.<id>"]`，重新渲染、
+  刷新模型、切换语言后保持。`models_error` 和供应商冲突警告放在折叠区外，
+  始终可见。
 - **状态不再自动探测登录**：CLI 安装即显示「已安装」，不会在启动/打开面板时执行
   `auth status` / `login status`；「测试」完全由用户手点。当前模型的 CLI 测试成功后
   才把 pill 升级为「可用」，失败回到「已安装」，不会出现「未验证」。ZCode 非当前模型
@@ -796,8 +805,7 @@ agent CLI 的检测与模型勾选，见下）、**外观**（界面语言）、
   runtime 生成临时 `--patch`（含选中 provider 的配置 + `agent-default-model`），
   `apiKeyEnv` 的值只注入子进程 env，不改 `~/.dsh`、不写日志。
 - **Claude** 的模型目录只有 CLI 暴露的三个稳定别名（`sonnet` / `opus` / `haiku`），
-  卡片底部会提示：完整模型 ID 可在「自定义模型」里手动添加；翻译仍然每次用
-  `--model` 指定，不切换 Claude Code 的默认模型。
+  卡片底部只说明这一点；翻译仍然每次用 `--model` 指定，不切换 Claude Code 的默认模型。
 - **ZCode** 的模型列表来自 `~/.zcode/v2/provider_config.json`（本机 30 个 enabled
   模型），当前模型从 CLI 的 session DB 读取并标「当前」。CLI 没有 `--model`，所以
   **所有模型（包括当前模型）都走 ZCode 官方 app-server 的
@@ -814,10 +822,11 @@ agent CLI 的检测与模型勾选，见下）、**外观**（界面语言）、
   `models_source: "profile"`。
 - **WorkBuddy** 只有桌面版时，卡片显示「桌面版 · 已登录/未登录」与 `/v3/config`
   的 CLI 模型（本机 19 个，label 带 credits），不再显示「安装 CLI」或 CLI 路径编辑器；
-  翻译/测试走桌面版 `/v2/chat/completions`，消耗该账号额度。HTTP 默认直连；系统里
-  留着失效代理也不影响，需要代理时设 `WORKBUDDY_PROXY`。桌面 auth 的 token
-  只在引擎内存（过期用 refresh token 换新，不写回 auth 文件）；独立
-  `codebuddy`/`cbc` 存在时仍走原来的 CLI 路径。
+  翻译/测试走桌面版 `/v2/chat/completions`，消耗该账号额度。SSE 按 UTF-8 bytes
+  解码（不依赖 `requests` 在无 charset 时猜测的 ISO-8859-1），避免中文样例乱码。
+  HTTP 默认直连；系统里留着失效代理也不影响，需要代理时设 `WORKBUDDY_PROXY`。
+  桌面 auth 的 token 只在引擎内存（过期用 refresh token 换新，不写回 auth 文件）；
+  独立 `codebuddy`/`cbc` 存在时仍走原来的 CLI 路径。
 - **启动不再重新检测**：`agents.list` 先读 `agents-snapshot.json`（安装/模型元数据，
   不含凭据，带 `paths` 签名），命中时直接返回，不 spawn CLI、不请求 WorkBuddy 网关；
   只有首次无快照、点「重新检测」或「刷新模型」时才走 live 检测并覆盖快照。升级后的
@@ -826,7 +835,10 @@ agent CLI 的检测与模型勾选，见下）、**外观**（界面语言）、
   「重新检测」用 `refresh: true` 绕过快照。检测在引擎里跑，引擎未就绪时面板显示提示，
   就绪后 `applyEngineState()` 会自动重试。
 - 这些供应商**不出现在「模型」面板**（`modelPanelProviderNames()` 过滤
-  `kind === "agent_cli"`）；「选项 › 模型」仍列出它们，标签加 ` · CLI`，并在选中时
+  `kind === "agent_cli"`）；「选项 › 模型」列出已勾选的模型，并且只保留当前
+  agent 目录里仍然存在的模型（旧配置里手写但 agent 不再报告的条目保留在文件中，
+  但不再出现在下拉里）。标签只在真正走 CLI 时加 ` · CLI`：Claude / Codex / DSH /
+  WorkBuddy CLI 有；WorkBuddy 桌面版、ZCode（app-server）没有。选中 agent 供应商时
   禁用「推理强度」下拉（agent 的推理由 CLI 自己决定）。
 
 ### 文档浏览与标签页（本轮重构）
@@ -904,8 +916,10 @@ PDF，它是空的，两个按钮就被禁用并提示"请先翻译"：程序**�
 
 **agent 供应商不在这张表里。** 它们没有 endpoint、密钥或采样参数，设置 › 模型会把
 `kind === "agent_cli"` 的供应商过滤掉（`modelPanelProviderNames()`）；勾选模型在
-设置 › Agents 完成。选项 › 模型仍列出它们，标签带 ` · CLI` 后缀；选中 agent 供应商
-时「推理强度」下拉禁用并带说明——agent 的推理由 CLI 自己的配置决定，v1 不映射。
+设置 › Agents 完成。选项 › 模型仍列出已勾选的模型，并且只保留 agent 当前目录里
+仍存在的那些；标签只在真正走 CLI 时带 ` · CLI` 后缀（WorkBuddy 桌面版、ZCode
+app-server 不带）；选中 agent 供应商时「推理强度」下拉禁用并带说明——agent 的推理
+由 CLI 自己的配置决定，v1 不映射。
 
 **模型行的开关是真的启用/禁用**，不是装饰：`ModelEntry.enabled`（默认 `true`，老配置无需
 迁移）。关掉之后，无参 `resolve()` 跳过它、选项面板不列出它，**显式点名它则报错**
@@ -935,7 +949,9 @@ config.yaml**——与同面板的页码、线程数、模式一致。存进 loc
 具体模型，会让人以为模型是在这里选定的。
 
 - **模型下拉**列出 `供应商 · 模型` 全部组合，值形如 `provider|model`（两半都不含 `|`，所以
-  能无歧义地还原）。agent 供应商的标签带 ` · CLI` 后缀；选中它时推理强度下拉禁用。
+  能无歧义地还原）。agent 供应商只列出 agent 当前目录里仍存在的已勾选模型；标签只在
+  真正走 CLI 时带 ` · CLI` 后缀（WorkBuddy 桌面版、ZCode app-server 不带）。选中它时
+  推理强度下拉禁用。
 - **语言列表是常见的那些，不是全集**。引擎对未知码**有意宽容回退**到 GoNoto
   （`font_filename` 的注释写明了理由），所以列表里没有 ≠ 不支持。语言名用
   `Intl.DisplayNames` 现取，不手写二十种译名。
@@ -1170,13 +1186,17 @@ key 名与渲染进程的 `dialog.*` 保持一致，便于人工对照。
   `t("...")` 与 `data-i18n*` 属性并逐个查表，缺失即非零退出。
 - `python/pdfxlate.spec` — PyInstaller onedir 打包 Python 侧，
   产物作为 Electron 的 `extraResources` 打进安装包（见 `electron-builder.yml`）。
-  三处不能删：
+  五处不能删：
   1. `collect_data_files("pdfminer")` —— `pdfminer/cmap/*.pickle.gz` 是运行时按
      `__file__` 读的数据文件；只收子模块会让打包版解析 CID 字体（中文 PDF 常见）失败。
   2. `collect_submodules("openai")` —— SDK 有 `__getattr__` 懒加载，静态分析看不全。
      同时 `on_error="ignore"` 跳过未安装的可选依赖（如 `mcp.cli` 需要 `typer`，服务端不需要）。
   3. `bundle_assets/` —— 由 `scripts/stage_assets.py` 放进去的默认中文字体；
      `assets.bundled_path()` 会优先把它复制到缓存，避免首次运行去 GitHub release 下载。
+  4. `collect_all("pdf_inspector")` —— `ultrafast` 在函数内延迟 import，静态分析容易漏；
+     漏掉时安装包里的 `ultrafast` 会直接报缺少依赖。
+  5. `collect_all("cryptography")` + 显式 `pdfxlate.agents.workbuddy_desktop` ——
+     WorkBuddy 桌面认证在函数内延迟 import AES-GCM；漏掉时登录态无法解密。
 
 ## 四、运行期数据位置
 
@@ -1204,7 +1224,7 @@ key 名与渲染进程的 `dialog.*` 保持一致，便于人工对照。
 
 ```bash
 # Windows 的 venv 是 .venv/Scripts/python.exe，macOS/Linux 是 .venv/bin/python
-python/.venv/bin/python -m pytest tests/ -q          # Python，当前 567 passed
+python/.venv/bin/python -m pytest tests/ -q          # Python，当前 577 passed
 python/.venv/bin/python -m pytest tests/ -q -k cache # 单个方向
 npm run typecheck                                    # 前端类型检查
 npm run check:i18n                                   # 中英文字符串表一致性
@@ -1218,7 +1238,7 @@ bash scripts/build.sh  # Git Bash；stage → PyInstaller → tsc → electron-b
 ```
 
 产物：`dist/win-unpacked/`（可直接运行）与
-`dist/pdfxlate Setup 0.1.0.exe`（NSIS，per-user，无需管理员）。本次实测：
+`dist/pdfxlate Setup 0.2.0.exe`（NSIS，per-user，无需管理员）。本次实测：
 
 - 安装包 **180 MB**，解包后 **576 MB**（Electron 228 MB + sidecar 308 MB，含字体）。
 - 干净 `LOCALAPPDATA` 下：`assets.status` 报告 `font_zh=true`（内置）、

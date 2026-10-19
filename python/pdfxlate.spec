@@ -8,6 +8,7 @@
 # every launch — slow, and prone to antivirus interference on Windows.
 
 from PyInstaller.utils.hooks import (
+    collect_all,
     collect_data_files,
     collect_dynamic_libs,
     collect_submodules,
@@ -39,6 +40,31 @@ def _collect_if_installed(*packages):
     return found
 
 
+def _collect_optional_all(package):
+    """Collect data, binaries and hidden imports for an installed package.
+
+    ``pdf-inspector`` is an optional extra and ``cryptography`` is imported
+    lazily by the WorkBuddy desktop backend.  Both have native extensions or
+    data that static analysis can miss; collecting them explicitly makes the
+    packaged app behave like the development environment.  A missing package
+    is not fatal (the UI/backend reports the missing optional feature).
+    """
+    if importlib.util.find_spec(package) is None:
+        return [], [], []
+    try:
+        return collect_all(package)
+    except Exception:
+        return [], [], []
+
+
+_pdf_inspector_datas, _pdf_inspector_binaries, _pdf_inspector_hidden = (
+    _collect_optional_all("pdf_inspector")
+)
+_cryptography_datas, _cryptography_binaries, _cryptography_hidden = (
+    _collect_optional_all("cryptography")
+)
+
+
 hiddenimports = [
     # pdfminer resolves its submodules dynamically; the ported interpreter
     # touches internals that static analysis does not see.
@@ -54,6 +80,16 @@ hiddenimports = [
     "pdfxlate.models.anthropic_messages",
     # The agent CLI adapter is also imported only for its @register side effect.
     "pdfxlate.models.agent_cli",
+    # Imported lazily / through the adapter; naming them explicitly keeps the
+    # packaged Agents panel and WorkBuddy desktop backend complete even if the
+    # import chain changes later.
+    "pdfxlate.agents.workbuddy_desktop",
+    "pdfxlate.agents.zcode_app_server",
+    # WorkBuddy desktop auth decrypts AES-GCM fields with cryptography; the
+    # import is inside a function, so collect its native extension explicitly.
+    *_cryptography_hidden,
+    # The optional ultrafast layout path imports pdf_inspector lazily.
+    *_pdf_inspector_hidden,
     # The OpenAI SDK lazily resolves resource/type modules through
     # ``__getattr__``; static analysis cannot see that dispatch. Collect the
     # package so a packaged adapter never dies on a missing openai.* module.
@@ -76,8 +112,9 @@ hiddenimports = [
     *_collect_if_installed("mcp", "mcp_types"),
 ]
 
-# Native libraries for the ONNX runtime, OpenCV and fontTools.
-binaries = []
+# Native libraries for the ONNX runtime, OpenCV, fontTools, and the optional
+# pdf-inspector / cryptography extensions.
+binaries = [*_pdf_inspector_binaries, *_cryptography_binaries]
 for package in ("onnxruntime", "cv2", "numpy", "pymupdf", "fontTools"):
     try:
         binaries += collect_dynamic_libs(package)
@@ -90,6 +127,8 @@ datas = [
     # those files, and without them CID-keyed PDFs (common for Chinese and
     # Japanese documents) fail to parse in the packaged app.
     *collect_data_files("pdfminer"),
+    *_pdf_inspector_datas,
+    *_cryptography_datas,
 ]
 
 # Fonts staged by scripts/stage_assets.py. Bundling the default Chinese face
