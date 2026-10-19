@@ -3597,18 +3597,33 @@ async function testAgentModel(
     const result = await api.request<{
       ok: boolean;
       latency_ms: number;
-      sample: string;
+      sample?: string;
+      via?: string;
       error?: string;
-    }>("agents.test", { agent: agent.id, model: row.testModel });
+    }>("agents.test", {
+      agent: agent.id,
+      model: row.testModel,
+      ...(row.provider ? { provider: row.provider } : {}),
+    });
     if (result.ok) {
-      testedAgents.add(agent.id);
-      setAgentMessage(agent.id, "agents.testOk", {
-        ms: String(result.latency_ms),
-        model: row.label,
-        sample: truncateSample(result.sample),
-      });
+      if (row.selectable) {
+        testedAgents.add(agent.id);
+        setAgentMessage(agent.id, "agents.testOk", {
+          ms: String(result.latency_ms),
+          model: row.label,
+          sample: truncateSample(result.sample ?? ""),
+        });
+      } else {
+        // A non-current ZCode row was checked through the temporary
+        // app-server session. It must not claim the card is usable for
+        // translation: the CLI still runs the current model.
+        setAgentMessage(agent.id, "agents.testOkConnectivity", {
+          ms: String(result.latency_ms),
+          model: row.label,
+        });
+      }
     } else {
-      testedAgents.delete(agent.id);
+      if (row.selectable) testedAgents.delete(agent.id);
       setAgentMessage(
         agent.id,
         "agents.testFailed",
@@ -3617,7 +3632,7 @@ async function testAgentModel(
       );
     }
   } catch (err) {
-    testedAgents.delete(agent.id);
+    if (row.selectable) testedAgents.delete(agent.id);
     setAgentMessage(agent.id, "agents.testFailed", { error: cleanError(err) }, true);
   } finally {
     renderAgents();
@@ -3892,6 +3907,16 @@ function zcodeLockedRow(
   note.className = "agent-model-row__note";
   note.textContent = t("agents.zcode.rowLocked");
   element.append(note);
+
+  // Testing is safe for a non-current model: the sidecar uses ZCode's official
+  // app-server connectivity probe in a throwaway workspace, not a CLI switch.
+  const test = document.createElement("button");
+  test.type = "button";
+  test.className = "btn btn--small";
+  test.textContent = t("agents.test");
+  test.disabled = !agent.installed;
+  test.addEventListener("click", () => void testAgentModel(agent, row, test));
+  element.append(test);
   return element;
 }
 

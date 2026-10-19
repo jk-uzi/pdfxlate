@@ -357,3 +357,60 @@ def test_run_bounded_default_timeout_message(monkeypatch):
     with pytest.raises(TimeoutError, match="no answer within"):
         sidecar._run_bounded(lambda: time.sleep(0.3), "test-default")
     time.sleep(0.4)
+
+def test_zcode_non_current_uses_the_app_server(monkeypatch):
+    from pdfxlate.agents import catalog, zcode_app_server
+
+    monkeypatch.setattr(
+        catalog,
+        "list_models",
+        lambda *args, **kwargs: {
+            "models": [
+                {
+                    "id": "new-provider-2/hy3",
+                    "provider": "new-provider-2",
+                    "selectable": False,
+                }
+            ]
+        },
+    )
+    calls: list[tuple[str, str, float]] = []
+    monkeypatch.setattr(
+        zcode_app_server,
+        "test_model",
+        lambda provider, model, timeout: calls.append((provider, model, timeout))
+        or {"ok": True, "latency_ms": 12, "via": "app_server"},
+    )
+    result = sidecar.method_agents_test(
+        {
+            "agent": "zcode",
+            "model": "new-provider-2/hy3",
+            "provider": "new-provider-2",
+        }
+    )
+    assert result == {"ok": True, "latency_ms": 12, "via": "app_server"}
+    assert calls == [("new-provider-2", "hy3", 80)]
+
+
+def test_zcode_current_keeps_the_cli_test(monkeypatch):
+    from pdfxlate.agents import catalog
+
+    monkeypatch.setattr(
+        catalog,
+        "list_models",
+        lambda *args, **kwargs: {
+            "models": [
+                {
+                    "id": "new-provider-2/deepseek-v4.1-flash",
+                    "provider": "new-provider-2",
+                    "selectable": True,
+                }
+            ]
+        },
+    )
+    assert (
+        sidecar._zcode_test_selection(
+            {"provider": "new-provider-2"}, "new-provider-2/deepseek-v4.1-flash"
+        )
+        is None
+    )

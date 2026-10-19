@@ -2986,3 +2986,85 @@ DSH/ZCode 卡片显示「未验证」，但点模型旁「测试」实际能返�
   WorkBuddy 网关或 spawn 登录探测。测试成功状态仍只在会话内，重启后回到「已安装」。
 - 快照不持久化登录凭据；WorkBuddy desktop auth 只来自快照/手动刷新，token 仍只在
   引擎内存。首次升级后的旧运行实例需要重启才能加载新 sidecar/renderer。
+
+## 2026-10-19 ZCode app-server：非当前模型可测试（test-only，不改当前模型）
+
+**用户反馈**
+
+- 截图里 ZCode 只有当前模型有复选框/「测试」，其他行只读；用户问“前面没有勾选，
+  只有一个可以”，希望非当前模型也能验证。选择先做 app-server spike。
+
+**Spike 结论：Go**
+
+- ZCode 0.16.9 自带官方命令 `zcode app-server --stdio`（`Run the ZCode Protocol
+  stdio app server`）。协议是**逐行 JSON、带 id/method/params 的信封，但没有
+  `jsonrpc` 字段**（发送 `jsonrpc` 会被 `-32600` 拒绝）；响应是
+  `{"id":…,"result":…}` / `{"error":…,"id":…}`，另有 `startup/storageState` 等通知。
+- 官方方法 `provider/testModelConnectivity` 正是“用一个模型做一次极小调用”：
+  `params = {workspace: {workspacePath, workspaceKey}, selection: {providerId,
+  modelId}}`；它在一个临时 workspace 里创建一次性 app 实例，**不创建 session**，
+  返回 `{success: true}`。不需要 `session/create`，也没有 `session/setModel` 的
+  当前模型副作用。
+- app-server 需要三个环境变量才能找到配置：
+  - `ZCODE_DATA_BASE_DIR`（用户 home，含 `.zcode` 的 DB/credentials）
+  - `ZCODE_BUILTIN_PROVIDER_CONFIG_FILE`（本机
+    `D:\ZCode\resources\config\provider\zcode-builtin.json`）
+  - `ZCODE_PERSONAL_PROVIDER_CONFIG_FILE`（`~/.zcode/v2/provider_config.json`）
+  否则会报 “无法定位 CLI ZCode Built-in Provider Config”。
+- **真实只读验证**：`hy3 (w国外反代)`（provider `new-provider-2`）通过
+  `provider/testModelConnectivity` 返回 `{success: true}`；首次 5.6 s，模块化后
+  2.8 s。测试前后：
+  - ZCode 当前模型仍是 `new-provider-2/deepseek-v4.1-flash`；
+  - `provider_config.json` sha `22a8a1b4…`、`credentials.json` sha `941c5a50…`、
+    `db.sqlite` sha `63b88709…` 全部不变；
+  - 无 session 残留、无 config/DB 写入、未复制 token。
+  之前的“非 JSON-RPC 自定义协议”判断过于悲观：它确实是 JSON-RPC 形状，只是
+  **不带 `jsonrpc` 字段**，并且要从 stdio 逐行读写。
+
+**实现**
+
+- 新增 `python/pdfxlate/agents/zcode_app_server.py`：解析 ZCode CLI/内置及个人
+  provider config 路径，设置上述 env，启动 `app-server --stdio`；`runtime/capabilities`
+  握手后发 `provider/testModelConnectivity`；临时 workspace、无 session；超时/退出
+  时 `taskkill /F /T` 杀进程树；返回 `{ok, latency_ms, via: "app_server"}`。
+- `sidecar.py`：`agents.test` 对 ZCode **非当前模型**改走 `zcode_app_server.test_model`；
+  当前模型仍走原 CLI 测试；用 `catalog.list_models("zcode")` 的 `selectable` 判断，
+  前端同时传 `provider`。
+- `app.ts`：`zcodeLockedRow` 增加「测试」按钮（非当前行仍**不**提供复选框）；
+  `testAgentModel` 对非当前行不写 `testedAgents`、不把卡片标成「可用」，只显示
+  “连接成功 — {ms} ms（{model}）；ZCode 当前模型未改变。”；当前行行为不变。
+- `i18n.ts`：新增 `agents.testOkConnectivity`（274 keys），更新
+  `agents.zcode.currentOnly` / `agents.zcode.rowLocked`：非当前模型仅测试，翻译仍
+  用当前模型；要翻译别的模型仍需在 ZCode 内切换后「重新检测」。
+- 测试：`tests/test_zcode_app_server.py` + `tests/fake_zcode_app_server.py`（fake
+  stdio 逐行 JSON、无 jsonrpc；selection、错误、超时、路径解析）、
+  `test_sidecar_agents.py` 的非当前/当前分支测试。
+
+**验证**
+
+- `pytest tests/ -q` → **561 passed**；`npm run typecheck`、`npm run check:i18n`
+  （274 keys）、`npm run build` 通过。
+- 真实 `sidecar.method_agents_test({"agent":"zcode","model":
+  "new-provider-2/hy3","provider":"new-provider-2"})` → `{ok: true,
+  latency_ms: 2827, via: "app_server"}`；当前模型/config/credentials/DB hash 不变。
+- 真实构建 + fake bridge：ZCode 非当前行 `hy3` 有「测试」、无复选框；点击后消息
+  “连接成功 — 2827 ms（hy3 (w国外反代)）；ZCode 当前模型未改变。”；卡片仍
+  「已安装」；当前行仍有复选框。截图
+  `%TEMP%\pdfxlate-agent-e2e\zcode-app-server-test.png`。
+
+**限制 / 待办**
+
+- 这个测试是**连通性检查**，不是翻译：app-server 只回 success，没有文本样例；
+  非当前模型仍不能用于翻译（翻译只用当前模型）。要翻译别的模型，仍在 ZCode 内
+  切换并重新检测。
+- 每次测试要启动 app-server，约 4–6 s（含读 DB/provider registry）；这是手动操作，
+  可接受；不自动跑。
+- 依赖 ZCode 0.16.9 的 app-server 协议与安装布局（`resources/config/provider/
+  zcode-builtin.json`）；ZCode 升级/换安装方式后可能失败，会返回可读错误，不回退到
+  伪造切换。
+- app-server 的 `provider/testModelConnectivity` 使用用户 ZCode 账号额度；必须由
+  用户手点，App 不在启动/打开面板时调用。
+- 不复制 token、不直接写 ZCode config/DB、不新建/删除 session；app-server 进程在
+  测试结束后杀掉（Windows `taskkill /F /T`）。
+- ZCode 桌面版同时运行时可能锁 DB；若测试报数据库锁，先关闭 ZCode 再测试；当前
+  默认行为不强制关闭。当前模型的「测试」仍走 CLI，不经过 app-server。

@@ -394,17 +394,73 @@ def method_agents_models(params: dict) -> dict:
     return result
 
 
+def _zcode_test_selection(params: dict, model: str) -> tuple[str, str] | None:
+    """Return ``(provider, model_id)`` for the app-server, or None for the CLI.
+
+    The current ZCode model keeps the existing CLI test.  A non-current row
+    cannot be run by the CLI at all, so it goes through the app-server's
+    ``provider/testModelConnectivity``.  The catalog is the source of the
+    provider id; the renderer also sends ``provider`` as a hint.
+    """
+    from pdfxlate.agents import catalog
+
+    provider = str(params.get("provider") or "").strip()
+    raw = model.strip()
+    bare = raw.split("/", 1)[1] if "/" in raw else raw
+    if "/" in raw and not provider:
+        provider = raw.split("/", 1)[0]
+    try:
+        listing = catalog.list_models("zcode", refresh=False)
+        rows = listing.get("models") or []
+    except Exception:  # noqa: BLE001 - fall back to the CLI path
+        return None
+    row = next(
+        (
+            candidate
+            for candidate in rows
+            if candidate.get("id") in {raw, bare}
+            or str(candidate.get("id", "")).endswith(f"/{bare}")
+        ),
+        None,
+    )
+    if row is None:
+        # A hand-configured id that is no longer listed; only attempt the
+        # app-server when we know its provider.
+        return (provider, bare) if provider else None
+    if row.get("selectable") is not False:
+        return None
+    if not provider:
+        provider = str(row.get("provider") or "").strip()
+    row_id = str(row.get("id") or bare)
+    model_id = row_id.split("/", 1)[1] if "/" in row_id else row_id
+    if not provider or not model_id:
+        return None
+    return provider, model_id
+
+
 def method_agents_test(params: dict) -> dict:
     """Send one short translation through an agent CLI.
 
     Runs on a background thread (it is a real model call), with a 90 s bound.
     Goes through ``do_translate`` so the cache is never read or written; the
     adapter's queue is always closed afterwards.
+
+    A non-current ZCode model cannot be selected by its CLI.  That case is a
+    manual connectivity check through ZCode's official app-server instead: no
+    session, no current-model change, no config/DB write.
     """
     from pdfxlate.models.base import build_adapter
 
     defn = _require_agent(params)
     model = str(params.get("model") or "default").strip() or "default"
+    if defn.id == "zcode":
+        selection = _zcode_test_selection(params, model)
+        if selection is not None:
+            from pdfxlate.agents import zcode_app_server
+
+            return zcode_app_server.test_model(
+                selection[0], selection[1], timeout=80
+            )
     cfg = config_mod.load()
     profile = config_mod.ResolvedModel(
         kind="agent_cli",

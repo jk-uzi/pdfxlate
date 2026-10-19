@@ -224,8 +224,8 @@ const EN: Table = {
   "agents.noModels": "This agent reported no models; add a model id below.",
   "agents.current": "Current",
   "agents.zcode.currentOnly":
-    "ZCode only runs the model it already points at. To use another model, switch inside ZCode (send a message there so it remembers the choice), then click Rescan. This app never switches it for you.",
-  "agents.zcode.rowLocked": "switch in ZCode, then Rescan",
+    "ZCode's non-current models can be tested here with a temporary app-server call; translation still uses the current model. To translate with another model, switch inside ZCode and click Rescan.",
+  "agents.zcode.rowLocked": "test only, does not switch",
   "agents.customModel": "custom",
   "agents.customModelPlaceholder": "custom model id",
   "agents.addModel": "Add",
@@ -234,6 +234,8 @@ const EN: Table = {
   "agents.test": "Test",
   "agents.testing": "Testing…",
   "agents.testOk": "OK — {ms} ms, {model} answered “{sample}”",
+  "agents.testOkConnectivity":
+    "Connection OK — {ms} ms ({model}); the ZCode current model was not changed.",
   "agents.testFailed": "Test failed: {error}",
   "agents.path.title": "CLI path",
   "agents.path.placeholder": "Path to the CLI executable (optional)",
@@ -535,8 +537,8 @@ const ZH: Table = {
   "agents.noModels": "该 agent 没有返回模型；可在下面手动添加模型 ID。",
   "agents.current": "当前",
   "agents.zcode.currentOnly":
-    "ZCode 只运行它当前指向的模型。要换模型，请在 ZCode 里切换（在 ZCode 发一条消息让它记住），然后回这里点「重新检测」。本应用不会替你切换。",
-  "agents.zcode.rowLocked": "在 ZCode 内切换后重新检测",
+    "ZCode 的非当前模型可以在这里测试（临时 app-server 调用，不改变当前模型）；翻译仍使用当前模型。要用别的模型翻译，请在 ZCode 内切换后点「重新检测」。",
+  "agents.zcode.rowLocked": "仅测试，不切换当前模型",
   "agents.customModel": "自定义",
   "agents.customModelPlaceholder": "自定义模型 ID",
   "agents.addModel": "添加",
@@ -545,6 +547,8 @@ const ZH: Table = {
   "agents.test": "测试",
   "agents.testing": "测试中…",
   "agents.testOk": "正常 — {ms} ms，{model} 返回「{sample}」",
+  "agents.testOkConnectivity":
+    "连接成功 — {ms} ms（{model}）；ZCode 当前模型未改变。",
   "agents.testFailed": "测试失败：{error}",
   "agents.path.title": "CLI 路径",
   "agents.path.placeholder": "CLI 可执行文件路径（可选）",
