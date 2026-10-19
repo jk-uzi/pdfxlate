@@ -94,6 +94,47 @@
 
           <details class="group" id="group-docs" open>
             <summary class="group__head" data-i18n="docs.title"></summary>
+            <!--
+              Header tools are siblings of <summary>, not children: i18n
+              replaces the summary's textContent, and a button inside it would
+              also toggle the group when clicked.
+            -->
+            <div class="group__tools">
+              <button
+                id="btn-refresh-docs"
+                class="icon-btn group__tool"
+                type="button"
+                disabled
+                data-i18n-title="docs.refresh"
+                data-i18n-aria-label="docs.refresh"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path d="M20 11a8 8 0 1 0-2.3 6.7" fill="none"
+                        stroke="currentColor" stroke-width="1.8"
+                        stroke-linecap="round" />
+                  <path d="M20 4v7h-7" fill="none" stroke="currentColor"
+                        stroke-width="1.8" stroke-linecap="round"
+                        stroke-linejoin="round" />
+                </svg>
+              </button>
+              <button
+                id="btn-open-folder"
+                class="icon-btn group__tool"
+                type="button"
+                disabled
+                data-i18n-title="docs.openFolder"
+                data-i18n-aria-label="docs.openFolder"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path d="M3 7.2a2 2 0 0 1 2-2h4.1a2 2 0 0 1 1.5.7l1.1 1.3H19a2 2 0 0 1 2 2v8.6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"
+                        fill="none" stroke="currentColor" stroke-width="1.6"
+                        stroke-linejoin="round" />
+                  <path d="M9 13h6M13 10l3 3-3 3" fill="none"
+                        stroke="currentColor" stroke-width="1.6"
+                        stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+              </button>
+            </div>
             <div class="group__body">
               <!--
                 The whole row picks a folder, not just a small button. Choosing

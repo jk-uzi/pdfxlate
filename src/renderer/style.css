@@ -1211,6 +1211,7 @@ body.sidebar-collapsed .sidebar {
 /* --- collapsible groups -------------------------------------------------- */
 
 .group {
+  position: relative;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--card);
@@ -1231,6 +1232,65 @@ body.sidebar-collapsed .sidebar {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+/* Room for the two header tools, so a long title never runs underneath. */
+#group-docs > .group__head {
+  padding-right: 68px;
+}
+
+/* Header tools sit beside the summary instead of inside it: i18n rewrites the
+   summary's textContent, and a button in it would toggle the group too. */
+.group__tools {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  display: flex;
+  gap: 4px;
+}
+
+/* A closed <details> hides everything after its summary. These are header
+   controls, not body content, so keep them visible while the list is collapsed;
+   the auto-refresh itself still pauses unless the group is open. */
+.group:not([open]) > .group__tools {
+  display: flex;
+}
+
+.group__tool {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.group__tool svg {
+  display: block;
+  width: 14px;
+  height: 14px;
+}
+
+.group__tool:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Manual refresh spins until the scan has run for at least 250 ms. */
+@keyframes docs-refresh-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.group__tool.is-spinning svg {
+  animation: docs-refresh-spin 0.8s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .group__tool.is-spinning svg {
+    animation: none;
+  }
 }
 
 .group__head::-webkit-details-marker {

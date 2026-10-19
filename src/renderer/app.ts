@@ -244,6 +244,20 @@ let checkedFiles = new Set<string>();
 let translatedFiles = new Set<string>();
 /** The folder being browsed, or null before one is chosen. */
 let currentFolder: string | null = null;
+/**
+ * Fingerprint of the folder scan the list was last painted from.
+ *
+ * Auto-refresh runs every five seconds; without this, every tick would rebuild
+ * the rows and throw away the list's scroll position and focused row even when
+ * nothing on disk changed.
+ */
+let lastFolderSignature: string | null = null;
+/** Shared in-flight scan, so the timer, focus and manual button cannot overlap. */
+let docsRefreshPromise: Promise<void> | null = null;
+/** True while the manual refresh button is showing its minimum spin. */
+let manualDocsRefreshActive = false;
+/** Last auto-refresh error, so a deleted folder is not logged every five seconds. */
+let lastDocsRefreshError = "";
 
 const FOLDER_STORAGE_KEY = "pdfxlate.folder";
 
@@ -441,9 +455,10 @@ function setSidebarCollapsed(collapsed: boolean): void {
   }
 }
 
-$("btn-toggle-sidebar").addEventListener("click", () =>
-  setSidebarCollapsed(!sidebarCollapsed),
-);
+$("btn-toggle-sidebar").addEventListener("click", () => {
+  setSidebarCollapsed(!sidebarCollapsed);
+  if (!sidebarCollapsed) requestDocsRefresh();
+});
 
 try {
   sidebarCollapsed = localStorage.getItem(SIDEBAR_STORAGE_KEY) === "1";
@@ -689,6 +704,7 @@ onLocaleChange(() => {
 function setAppMode(mode: AppMode): void {
   appMode = mode;
   paintSettingsMode();
+  if (mode === "task") requestDocsRefresh();
 }
 
 function setSettingsSection(section: SettingsSection): void {
@@ -990,6 +1006,31 @@ function baseName(file: string): string {
   return file.split(/[\\/]/).pop() ?? file;
 }
 
+/** Stable fingerprint of a scan: path plus translated flag, in folder order. */
+function folderSignature(found: PdfEntry[]): string {
+  return found
+    .map((entry) => `${entry.translated ? "1" : "0"}\t${entry.path}`)
+    .join("\n");
+}
+
+/**
+ * Apply a folder scan to the list, unless it is the one already painted.
+ *
+ * Returning false is the point of the fingerprint: an unchanged folder must not
+ * rebuild the rows, or auto-refresh would reset the list's scroll position and
+ * the focused row every five seconds.
+ */
+function applyFolderScan(found: PdfEntry[], force = false): boolean {
+  const signature = folderSignature(found);
+  if (!force && signature === lastFolderSignature) return false;
+  lastFolderSignature = signature;
+  translatedFiles = new Set(
+    found.filter((entry) => entry.translated).map((entry) => entry.path),
+  );
+  mergeFolderFiles(found.map((entry) => entry.path));
+  return true;
+}
+
 /**
  * List a folder's PDFs.
  *
@@ -1002,6 +1043,7 @@ async function openFolder(dir: string): Promise<void> {
   try {
     const found = await api.listPdfs(dir);
     currentFolder = dir;
+    lastDocsRefreshError = "";
     try {
       localStorage.setItem(FOLDER_STORAGE_KEY, dir);
     } catch {
@@ -1009,12 +1051,13 @@ async function openFolder(dir: string): Promise<void> {
     }
     // Rebuilt from the scan rather than merged: a `translated/` folder that has
     // been emptied or renamed must not leave stale rows behind.
-    translatedFiles = new Set(found.filter((e) => e.translated).map((e) => e.path));
-    mergeFolderFiles(found.map((e) => e.path));
+    applyFolderScan(found, true);
   } catch (err) {
     // A remembered folder that has since been deleted is an ordinary outcome.
     appendLog(t("log.folderFailed", { error: String(err) }));
     currentFolder = null;
+    lastFolderSignature = null;
+    lastDocsRefreshError = "";
     folderFiles = [];
     translatedFiles = new Set();
     renderFiles();
@@ -1033,6 +1076,132 @@ function mergeFolderFiles(found: string[]): void {
     if (!folderFiles.includes(file)) checkedFiles.delete(file);
   }
   renderFiles();
+}
+
+/**
+ * Rescan the current folder.
+ *
+ * Shared by the five-second timer, the focus/visibility/group-open triggers and
+ * the manual button; scans never overlap. A manual failure clears the list
+ * because the folder is gone, while an automatic failure is logged once and
+ * leaves the last good list in place until the next trigger.
+ */
+function refreshFolder(options: { manual?: boolean } = {}): Promise<void> {
+  const dir = currentFolder;
+  if (!dir) return Promise.resolve();
+  if (docsRefreshPromise) {
+    // A manual press during an automatic scan must not silently reuse a scan
+    // that started before the user asked; queue one real scan after it.
+    return options.manual
+      ? docsRefreshPromise.then(() => refreshFolder({ manual: true }))
+      : docsRefreshPromise;
+  }
+  const run = Promise.resolve().then(async () => {
+    // The promise is assigned by the time this callback runs; this repaint is
+    // what enables/disables the buttons after a folder change.
+    paintDocsTools();
+    try {
+      const found = await api.listPdfs(dir);
+      // A folder picked while this scan was in flight wins.
+      if (currentFolder !== dir) return;
+      lastDocsRefreshError = "";
+      applyFolderScan(found);
+    } catch (err) {
+      const message = String(err);
+      if (options.manual) {
+        appendLog(t("log.folderFailed", { error: message }));
+        currentFolder = null;
+        lastFolderSignature = null;
+        lastDocsRefreshError = "";
+        folderFiles = [];
+        translatedFiles = new Set();
+        renderFiles();
+      } else if (message !== lastDocsRefreshError) {
+        lastDocsRefreshError = message;
+        appendLog(t("log.folderFailed", { error: message }));
+      }
+    } finally {
+      docsRefreshPromise = null;
+      paintDocsTools();
+    }
+  });
+  docsRefreshPromise = run;
+  return run;
+}
+
+/** Keep the two header buttons in step with the folder and scan state. */
+function paintDocsTools(): void {
+  const refresh = $<HTMLButtonElement>("btn-refresh-docs");
+  const open = $<HTMLButtonElement>("btn-open-folder");
+  const hasFolder = currentFolder !== null;
+  // Do not disable for an automatic scan: the 5-second timer must not take
+  // keyboard focus away from the button (or anything else) when nothing
+  // changed. Only the manual press shows a busy state.
+  refresh.disabled = !hasFolder || manualDocsRefreshActive;
+  open.disabled = !hasFolder;
+  refresh.classList.toggle("is-spinning", manualDocsRefreshActive);
+}
+
+/** The manual button: rescan now, but show the spin for at least 250 ms. */
+async function manualRefreshDocs(): Promise<void> {
+  if (!currentFolder || manualDocsRefreshActive) return;
+  manualDocsRefreshActive = true;
+  paintDocsTools();
+  const minimum = new Promise<void>((resolve) => window.setTimeout(resolve, 250));
+  try {
+    await Promise.all([refreshFolder({ manual: true }), minimum]);
+  } finally {
+    manualDocsRefreshActive = false;
+    paintDocsTools();
+  }
+}
+
+/** Open the browsed folder in Explorer/Finder. */
+async function openCurrentFolder(): Promise<void> {
+  if (!currentFolder) return;
+  try {
+    await api.openPath(currentFolder);
+  } catch (err) {
+    appendLog(t("log.openPathFailed", { error: String(err) }));
+  }
+}
+
+/**
+ * Whether the five-second scan should run now.
+ *
+ * Only when the folder is actually being looked at: settings replaces the task
+ * sidebar, a collapsed sidebar or a closed group hides the list, and a hidden
+ * window cannot show a change anyway.
+ */
+function docsRefreshEligible(): boolean {
+  if (!currentFolder || document.hidden) return false;
+  if (appMode !== "task" || sidebarCollapsed) return false;
+  const group = $("group-docs") as HTMLDetailsElement;
+  return group.open;
+}
+
+/** Run a scan if the documents list is currently visible. */
+function requestDocsRefresh(): void {
+  if (docsRefreshEligible()) void refreshFolder();
+}
+
+/**
+ * Start the periodic scan and the "became visible again" triggers.
+ *
+ * The timer always ticks; `docsRefreshEligible()` is what keeps it cheap and
+ * silent while the list is hidden.
+ */
+function startDocsAutoRefresh(): void {
+  const DOCS_AUTO_REFRESH_MS = 5000;
+  window.setInterval(requestDocsRefresh, DOCS_AUTO_REFRESH_MS);
+  window.addEventListener("focus", requestDocsRefresh);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) requestDocsRefresh();
+  });
+  const group = $("group-docs") as HTMLDetailsElement;
+  group.addEventListener("toggle", () => {
+    if (group.open) requestDocsRefresh();
+  });
 }
 
 /**
@@ -1129,12 +1298,16 @@ function renderFiles(): void {
 
   renderFolderLabel();
   paintTranslateButton();
+  paintDocsTools();
 }
 
 $("btn-pick-folder").addEventListener("click", async () => {
   const dir = await api.pickFolder(getLocale());
   if (dir) await openFolder(dir);
 });
+
+$("btn-refresh-docs").addEventListener("click", () => void manualRefreshDocs());
+$("btn-open-folder").addEventListener("click", () => void openCurrentFolder());
 
 // Only the painted rows change; the ticked set is deliberately left alone.
 $("docs-search").addEventListener("input", () => renderFiles());
@@ -1771,7 +1944,11 @@ $("zoom-in").addEventListener("click", () => stepZoom(1));
 
 $("btn-open-file").addEventListener("click", () => {
   const file = previewSource();
-  if (file) void api.openPath(file);
+  if (file) {
+    void api
+      .openPath(file)
+      .catch((err) => appendLog(t("log.openFileFailed", { error: String(err) })));
+  }
 });
 
 // --- canvas drop target ----------------------------------------------------
@@ -4666,3 +4843,4 @@ async function restoreFolder(): Promise<void> {
 }
 
 void restoreFolder();
+startDocsAutoRefresh();

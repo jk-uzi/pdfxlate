@@ -3231,3 +3231,55 @@ pdfxlate 仍要求先在 Agents 面板勾选模型（生成 provider 条目）�
   或取消时杀掉。
 - 批并发本轮未通过 gate，没有合并多 worker 代码；若未来某个 agent 的网关/CLI 证明
   能并行，再单独实现并重跑基准。
+
+## 2026-10-19 「文档」标题刷新 / 打开文件夹与自动刷新
+
+**需求**
+
+- 「文档」分组标题行右侧加两个纯图标按钮：刷新当前文件夹、在系统文件管理器中打开
+  当前文件夹。
+- 自动刷新：窗口可见且分组展开时每 5 秒重扫；窗口重新获得焦点、从隐藏恢复、分组
+  重新展开时立即扫一次；列表没变化不重建 DOM。
+
+**实现**
+
+- `index.html`：`#group-docs` 的 `<summary>` 后加 `.group__tools`（**兄弟节点，不是
+  子节点**：`data-i18n` 会重写 summary 的 textContent，放进去会被清掉；点击也会连带
+  折叠分组）。两个按钮 `#btn-refresh-docs` / `#btn-open-folder` 带内联 SVG、
+  `data-i18n-title` + `data-i18n-aria-label`，初始 `disabled`。
+- `app.ts`：
+  - `openFolder()` 改为走 `applyFolderScan()`；`refreshFolder()` 重扫当前目录，
+    `folderSignature()`（路径 + `translated` 标记）没变就**不调用 `renderFiles()`**。
+  - `docsRefreshEligible()` 同时检查 `document.hidden`、`appMode === "task"`、
+    `sidebarCollapsed`、`#group-docs.open`、`currentFolder`。
+  - `startDocsAutoRefresh()` 起 5 秒定时器，并监听 `focus`、`visibilitychange`、
+    分组 `toggle`；`setSidebarCollapsed` / `setAppMode("task")` 恢复可见时也立即请求。
+  - 手动刷新 `manualRefreshDocs()` 加 `.is-spinning` 并至少等 250ms；打开文件夹走
+    `api.openPath(currentFolder)`，失败写 `log.openPathFailed`。
+  - `openFolder` 失败、手动刷新失败清空文件夹；自动刷新失败只按错误内容去重记一条
+    日志，保留上一次好列表。
+- `main.ts`：`shell:openPath` 原来忽略 Electron 返回的错误字符串，现在非空即 throw，
+  渲染进程才能把失败写进日志；`btn-open-file` 同步补 catch（`log.openFileFailed`）。
+- `style.css`：`.group` 改为 `position: relative`，标题右侧预留 68px；`.group__tools`
+  绝对定位；`.group:not([open]) > .group__tools { display: flex }` 覆盖浏览器对
+  closed `<details>` 非 summary 内容的隐藏，折叠时按钮仍在标题行；刷新图标 spin。
+- `i18n.ts`：`docs.refresh` / `docs.openFolder` / `log.openPathFailed` /
+  `log.openFileFailed`，中英同步。
+
+**验证**
+
+- `npm run typecheck`、`npm run check:i18n`（279 keys）、`npm run build` 通过。
+- 启动真实 Electron（`--remote-debugging-port`）用 CDP 验证：
+  - 外部新建 PDF：5 秒内 32 → 33 行且出现新文件名；删除后 33 → 32。
+  - 列表不变时连续两次扫描 `firstElementChild` 与 `innerHTML` 均不变。
+  - 分组折叠时 6 秒内不刷新（保持 32）；重新展开后 800ms 内立即变 33。
+  - 手动刷新点击后 80ms 为 disabled + spinning，480ms 已恢复，新文件已出现。
+  - 窗口 focus 触发、侧栏展开触发、真实文件夹 `openPath` 均通过。
+  - 折叠状态下 `.group__tools` computed display 为 flex、尺寸 52×24，按钮仍可见。
+- 测试环境窗口被系统最小化/遮挡时 `document.hidden` 会变 true，5 秒定时器用例在
+  页面内把 `hidden`/`visibilityState` 固定为可见后验证；真实 focus 触发另有用例。
+
+**未做**
+
+- 没有为纯前端 DOM 行为新增 pytest；Python 侧未改。手动刷新/自动刷新都不发网络
+  请求，只读目录。

@@ -67,9 +67,9 @@ Python 3.12，venv 在 `python/.venv`，包以 editable 方式安装，改源码
 | 改浮层显隐时机 / 常驻图钉 | `src/renderer/app.ts` 的 `flashViewerOverlay()` + `VIEWER_OVERLAYS`；图钉逻辑在同文件的 `paintOverlaysPinned()` / `setOverlaysPinned()`，标记在 `index.html` 的 `#viewer-saveas` 内 |
 | 改右侧 PDF 预览（标签/翻页/缩放） | `src/renderer/app.ts` 的 `renderPreview()` / `viewerUrl()` / `activateTab()` |
 | 改标签栏（宽度/箭头/拖动排序） | `src/renderer/app.ts` 的 `renderTabs()` / `updateTabbarScroll()` / `dragTabOver()` / `endTabDrag()` + `style.css` 的 `.tabbar` / `.tab` |
-| 改左侧文件列表（文件夹浏览/勾选/搜索） | `src/renderer/app.ts` 的 `openFolder()` / `renderFiles()` / `translatedFiles`；目录列举在 `src/main/main.ts` 的 `app:listPdfs` |
+| 改左侧文件列表（文件夹浏览/勾选/搜索/自动刷新） | `src/renderer/app.ts` 的 `openFolder()` / `refreshFolder()` / `applyFolderScan()` / `renderFiles()` / `manualRefreshDocs()` / `startDocsAutoRefresh()`；目录列举在 `src/main/main.ts` 的 `app:listPdfs` |
 | 改拖放行为（复制/改名） | `src/renderer/app.ts` 的 `handleDropped()`；复制与改名在 `src/main/main.ts` 的 `app:importPdf` / `uniquePath()` |
-| 改左侧栏分组 | `src/renderer/index.html` 的 `details.group` + `app.ts` 的 `expandGroup()` |
+| 改左侧栏分组 | `src/renderer/index.html` 的 `details.group` + `app.ts` 的 `expandGroup()`；「文档」标题右侧的刷新/打开文件夹按钮在 `.group__tools`，行为在 `refreshFolder()` / `openCurrentFolder()` |
 | 改供应商/模型的界面编辑 | `src/renderer/app.ts` 的 `renderProviderList()` / `renderModelList()` / `toggleModelEditor()` / `setModelEnabled()`；后端字段在 `config.py` 的 `ModelEntry`（含 `enabled`）。**agent 供应商不在这里编辑**：`modelPanelProviderNames()` 把它们过滤掉，改由设置 › Agents 面板（`renderAgents()` / `setAgentModel()`）管理 |
 | 改界面文案 / 加一门语言 | `src/renderer/i18n.ts`（`en`/`zh` 两张表），静态文案用 `data-i18n*` 属性标注 |
 | 改原生对话框文案 | `src/main/main.ts` 的 `DIALOG_STRINGS`（主进程另有一份小表，原因见该处注释） |
@@ -143,16 +143,16 @@ pdfxlate/
 │           └── text_spacing.py 44 行  中英混排间距（上游照搬）
 ├── src/
 │   ├── main/
-│   │   ├── main.ts          504 行  窗口 + 应用生命周期 + IPC（自建标题栏、另存为、目录列举（含 translated/）、拖入归档、openExternal）
+│   │   ├── main.ts          506 行  窗口 + 应用生命周期 + IPC（自建标题栏、另存为、目录列举（含 translated/）、拖入归档、openPath/openExternal）
 │   │   └── sidecar.ts       234 行  Python 子进程管理 + JSON 行协议
 │   ├── preload/
 │   │   └── preload.ts       183 行  contextBridge，向渲染进程暴露 API（含 openExternal）
 │   └── renderer/
-│       ├── index.html       760 行  界面结构（文案走 data-i18n* 属性；图标在构建时内联）
-│       ├── app.ts          4657 行  界面逻辑（任务/设置双模式、折叠、标签页、文件夹浏览与搜索、拖放、缩放、进度、开始/取消合一、另存为、选项覆盖、侧栏拖拽、供应商/模型两栏编辑器、Agents 面板、MCP 配置）
-│       ├── i18n.ts          832 行  中英文字符串表 + t()/applyStaticTranslations()
+│       ├── index.html       801 行  界面结构（文案走 data-i18n* 属性；图标在构建时内联）
+│       ├── app.ts          4846 行  界面逻辑（任务/设置双模式、折叠、标签页、文件夹浏览/搜索/自动刷新、拖放、缩放、进度、开始/取消合一、另存为、选项覆盖、侧栏拖拽、供应商/模型两栏编辑器、Agents 面板、MCP 配置）
+│       ├── i18n.ts          844 行  中英文字符串表 + t()/applyStaticTranslations()
 │       ├── icon.svg          49 行  应用标记的**唯一来源**（标题栏内联 + 打包图标）
-│       └── style.css       2334 行  样式（含标题栏标签、查看器浮层与常驻图钉、折叠与侧栏状态行、侧栏拖拽手柄、模型页两栏布局与开关、Agents 卡片）
+│       └── style.css       2394 行  样式（含标题栏标签、查看器浮层与常驻图钉、折叠与侧栏状态行、文档组标题工具、侧栏拖拽手柄、模型页两栏布局与开关、Agents 卡片）
 ├── assets/
 │   ├── icon.png               512×512，由 make_icon.py 从 icon.svg 生成后提交
 │   └── icon.ico               16–256 多尺寸，同上（Windows 用）
@@ -848,6 +848,16 @@ PDF，它是空的，两个按钮就被禁用并提示"请先翻译"：程序**�
 - **列表上方有搜索框**（`#docs-search`）。它**只影响画出来的行**，不动 `checkedFiles`：
   被搜索藏起来的已勾选项仍然计入任务，否则打字就会悄悄改变要翻什么。无匹配时显示
   `.file-list__empty`。locale 切换本来就会重跑 `renderFiles()`，文案自动跟上。
+- **「文档」标题右侧有两个纯图标按钮**（`.group__tools`，是 `<summary>` 的兄弟节点，
+  不是子节点——`data-i18n` 会重写 summary 的 `textContent`，按钮放进去会被清掉，点击
+  也会连带折叠分组）。刷新按钮手动重扫当前文件夹；打开文件夹按钮走 `shell:openPath`
+  在资源管理器/Finder 中打开。没有选文件夹时两个都禁用。
+- **自动刷新只在列表真的被看见时跑**：窗口可见、任务模式、侧栏未折叠、`#group-docs`
+  展开且已选文件夹，每 5 秒扫一次；`focus`、`visibilitychange`（恢复可见）、分组
+  `toggle` 打开、侧栏展开、从设置回到任务模式时也会立即扫一次。扫描结果先算
+  `folderSignature()`（路径 + 译文标记）；**签名没变就不调用 `renderFiles()`**，否则
+  每 5 秒重建一次 DOM 会把列表滚动位置和键盘焦点抖掉。手动刷新另有 ≥250ms 的
+  spin，避免本地扫描太快、按钮看起来没反应。
 - **标签栏在标题栏里**（`#tabbar`，标记与拖拽条之间）。省下一条独立标签栏的整条高度。
   `flex: 0 1 auto`：没标签时宽 0、拖拽条独占整条；标签多了才收缩滚动。
   **拖拽条必须保留 `min-width: 40px`**，否则标签铺满后窗口拖不动。

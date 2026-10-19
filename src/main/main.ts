@@ -416,7 +416,9 @@ function registerIpc(): void {
   });
 
   ipcMain.handle("shell:openPath", async (_event, target: string) => {
-    await shell.openPath(target);
+    // Electron reports failure as a non-empty string, not by rejecting.
+    const error = await shell.openPath(target);
+    if (error) throw new Error(error);
   });
 
   /**
