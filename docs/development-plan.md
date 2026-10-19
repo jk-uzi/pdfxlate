@@ -242,14 +242,15 @@ v1 的限制（写进 UI 提示与文档）：
   内存，不写 WorkBuddy 的 auth 文件；卡片显示「桌面版 · 已登录/未登录」，登录态
   只在快照/手动刷新时读取，不再每次启动读 key。
 - **ZCode** 的 CLI 没有 `--model`：目录读取 `~/.zcode/v2/provider_config.json`，
-  当前模型读取 session DB；面板列出 enabled 模型，全部可勾选、可翻译。当前模型仍走
-  CLI；非当前模型走 ZCode 官方 `app-server --stdio` 的 `workspace/generateText`
-  一次性生成：临时 workspace、无 session、不改当前模型/config/credentials/DB；同一
-  个 app-server 复用于整篇文档的多个批次。生成要求
-  `selection.options.reasoningLevel`，从 provider config 的
+  当前模型读取 session DB；面板列出 enabled 模型，全部可勾选、可翻译。当前模型与
+  非当前模型都走 ZCode 官方 `app-server --stdio` 的 `workspace/generateText`
+  一次性生成：临时 workspace、无 session、不改当前模型/config/credentials/DB；
+  当前模型在 app-server 不可用时回退 CLI，非当前模型绝不回退（CLI 会跑错模型）。
+  同一个 app-server 复用于整篇文档的多个批次，并在适配器构造时后台预热，与 PDF
+  解析重叠。生成要求 `selection.options.reasoningLevel`，从 provider config 的
   `optionSpecs.reasoningLevel.values` 选取（优先 low）。「测试」仍然只有用户手点：
-  非当前行走 `provider/testModelConnectivity`，当前行走 CLI；不自动调用、不伪造切换、
-  不写 ZCode 的 config/DB。
+  非当前行走 `provider/testModelConnectivity`，当前行走 CLI（验证登录态）；不自动
+  调用、不伪造切换、不写 ZCode 的 config/DB。
 - **DSH** 使用 `headless` profile；模型目录来自桌面 profile
   `~/.dsh/profiles/desktop/cordis.patch.yml`（复合 `provider/model`），非默认模型
   通过临时 `--patch` 覆盖 `llm-pi-ai` + `agent-default-model`，不修改用户的 profile；
@@ -266,15 +267,53 @@ v1 的限制（写进 UI 提示与文档）：
 
 2026-10-19 的模型目录扩展：DSH 已从桌面 profile 列出 25 个模型，并可通过临时
 `--patch` 选择任意 `provider/model`；ZCode 已列出 `provider_config.json` 的 30 个
-enabled 模型并标记当前模型，全部可勾选/翻译：当前模型走 CLI，非当前模型走官方
-app-server 的 `workspace/generateText`（不建 session、不改当前模型，已真实跑通
-`hy3` 翻译）。WorkBuddy
+enabled 模型并标记当前模型，全部可勾选/翻译：当前与非当前模型都走官方 app-server
+的 `workspace/generateText`（不建 session、不改当前模型；当前模型失败回退 CLI），
+已真实跑通 `hy3` 与当前 `deepseek-v4.1-flash` 翻译。WorkBuddy
 桌面版的 auth 解密、`/v3/config`/`/v2/enterprises/personal/models` 目录与
 `/v2/chat/completions` SSE 翻译已接入（只在没有独立 `codebuddy`/`cbc` CLI 时启用），
 卡片显示桌面版登录状态与 credits，不再只提示安装 CLI。HTTP 默认直连（避开失效的
 系统代理，`WORKBUDDY_PROXY` 可显式覆盖）。DSH/ZCode 不再自动探测登录状态，安装即
 显示「已安装」；「测试」成功后 pill 变「可用」，失败回到「已安装」，不再出现
 「未验证」。`agents.list` 优先读本地快照，启动不再每次重新检测。
+
+#### 2026-10-19 模型直用审计与调用延迟
+
+**结论：五个 agent 都能直接用各自目录里的模型，不需要切换 agent 自己的当前模型。**
+除 ZCode 外，其余四个没有“当前模型”概念；pdfxlate 每次调用都用参数指定模型，
+不写 agent 的配置。ZCode 的当前/非当前模型现在都走官方 app-server，只有当前模型
+在 app-server 失败时回退 CLI。
+
+| Agent | 本机目录（本次检测） | 每次调用如何选模型 | 改 agent 当前模型/配置？ |
+|---|---|---|---|
+| Claude Code | 3 个稳定别名；完整 ID 可手动添加 | `--model <id>` | 否 |
+| Codex | 6 个（`codex debug models`） | `-m <id>` | 否 |
+| WorkBuddy | 桌面目录 19 个 | CLI `--model` / 桌面请求 body 的 `model` | 否 |
+| ZCode | 30 个（provider config） | app-server selection `{providerId, modelId}` | 否 |
+| DSH | 26 个（桌面 profile） | 临时 `--patch` 的 `provider/model` | 否 |
+
+延迟优化（只动调用外围，不改模型/prompt/温度/推理强度）：
+
+- **ZCode 预热**：`TranslationSession.prewarm()` 在适配器构造时后台启动并握手；
+  4–6 秒启动与 PDF 解析重叠；失败只记 debug，首个批次重试。
+- **ZCode 当前模型走 app-server**：去掉每批 Node CLI 启动；真实当前模型
+  `deepseek-v4.1-flash` 已跑通，前后 `provider_config.json` / `credentials.json` /
+  `db.sqlite` hash 不变，当前模型不变；失败回退 CLI。
+- **WorkBuddy keep-alive**：chat 热路径按线程复用 `requests.Session`，连接错误
+  重置；adapter 关闭时统一关闭。
+- **Claude 启动裁剪**：批翻译加 `--strict-mcp-config --mcp-config '{"mcpServers":{}}'
+  --disable-slash-commands`，跳过 MCP/skills 启动成本；自定义 prompt 不加
+  disable-slash。真实模型验证被本机 Claude 账号的 403 拒绝挡住；用旧命令做对照
+  同样 403，确认不是新 flag 导致，属于账号/额度环境问题。
+- **Claude 常驻 stream-json：不采用**。协议 spike 确认 `--input-format stream-json`
+  能在一个进程里连续接收两轮并返回 result，但真实输出因 403 无法验证；上下文是否
+  累积、`/clear` 是否能重置、`--json-schema` 在常驻模式下的输出都无法确认，按
+  go/no-go 规则不合并，保留 per-batch + 启动裁剪。
+- **批并发：不启用，也未合并并发代码**。真实 WorkBuddy 基准 16 段 2 worker 快
+  21.5%，24 段只快 11.6%，未达到 ≥25% 的 gate，说明网关侧有限流/串行化；
+  `BatchQueue` 保持单 worker，全部 agent 串行取批。
+- **Codex / DSH 常驻 server：不做**。启动成本约 0.1–0.2 秒，Codex app-server 是
+  实验性 daemon、DSH web 是完整服务器，引入的后台进程/端口/版本兼容风险大于收益。
 
 ## 六、Electron 外壳
 

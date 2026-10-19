@@ -645,7 +645,18 @@ def _build_command(
                 "--json-schema",
                 json.dumps(CLAUDE_TRANSLATIONS_SCHEMA, separators=(",", ":")),
             ]
-        argv += ["--tools", "", "--no-session-persistence"]
+        argv += [
+            "--tools",
+            "",
+            "--no-session-persistence",
+            # Translation needs neither MCP servers nor skills; skipping both
+            # avoids their startup/health-check cost in every batch process.
+            "--strict-mcp-config",
+            "--mcp-config",
+            '{"mcpServers":{}}',
+        ]
+        if not custom_prompt:
+            argv += ["--disable-slash-commands"]
         if has_model:
             argv += ["--model", chosen]
         return argv, prompt, env

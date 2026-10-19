@@ -179,6 +179,65 @@ def test_translation_session_uses_workspace_generate_text(tmp_path, monkeypatch)
         session.close()
 
 
+def test_translation_session_prewarm_starts_the_server_once(tmp_path, monkeypatch):
+    server, _ = _translation_server(tmp_path)
+    starts = tmp_path / "starts.txt"
+    monkeypatch.setenv("FAKE_ZCODE_START_FILE", str(starts))
+    session = zcode_app_server.TranslationSession(
+        "new-provider-2", "hy3", server_paths=server, timeout=10
+    )
+    try:
+        session.prewarm()
+        assert starts.read_text(encoding="utf-8").count("start") == 1
+        text = session.generate([{"role": "user", "content": "hello"}], timeout=10)
+        assert text == '{"translations": ["你好"]}'
+        # The prewarmed process is the one that handled the batch.
+        assert starts.read_text(encoding="utf-8").count("start") == 1
+    finally:
+        session.close()
+
+
+def test_prewarm_runs_in_the_background(tmp_path, monkeypatch):
+    import threading
+    import time
+
+    server, _ = _translation_server(tmp_path)
+    starts = tmp_path / "starts.txt"
+    monkeypatch.setenv("FAKE_ZCODE_START_FILE", str(starts))
+    monkeypatch.setenv("FAKE_ZCODE_STARTUP_DELAY", "0.2")
+    session = zcode_app_server.TranslationSession(
+        "new-provider-2", "hy3", server_paths=server, timeout=10
+    )
+    worker = threading.Thread(target=session.prewarm, daemon=True)
+    try:
+        worker.start()
+        # The main thread can keep working (PDF parsing, in production) while
+        # the app-server starts.
+        deadline = time.monotonic() + 5
+        while not starts.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert starts.exists()
+        assert session.generate([{"role": "user", "content": "hello"}], timeout=10)
+        worker.join(timeout=5)
+        assert starts.read_text(encoding="utf-8").count("start") == 1
+    finally:
+        session.close()
+
+
+def test_prewarm_failure_does_not_raise_and_generate_retries(tmp_path, monkeypatch):
+    server, _ = _translation_server(tmp_path)
+    monkeypatch.setenv("FAKE_ZCODE_STARTUP_ERROR", "1")
+    session = zcode_app_server.TranslationSession(
+        "new-provider-2", "hy3", server_paths=server, timeout=2
+    )
+    try:
+        session.prewarm()  # must not break the job
+        with pytest.raises(ZCodeAppServerError):
+            session.generate([{"role": "user", "content": "hello"}], timeout=2)
+    finally:
+        session.close()
+
+
 def test_translation_session_reports_app_server_errors(tmp_path, monkeypatch):
     server, _ = _translation_server(tmp_path)
     monkeypatch.setenv("FAKE_ZCODE_ERROR", "1")

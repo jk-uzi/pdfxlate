@@ -3151,3 +3151,83 @@ DSH/ZCode 卡片显示「未验证」，但点模型旁「测试」实际能返�
   不同；如果 ZCode 桌面版同时运行并锁住 DB，先关闭 ZCode 再翻译。
 - 上一轮“非当前仅测试”的测试版本已被本轮取代；`agents.test` 的非当前分支仍是
   连通性检查，翻译现在有了独立路径。
+
+## 2026-10-19 外部 agent 模型直用审计与调用延迟优化
+
+**结论**
+
+五个 agent 都能直接使用各自目录里的模型，不需要切换 agent 自己的当前模型。
+Claude / Codex / WorkBuddy / DSH 本来就是 per-invocation 参数选模型；ZCode 有
+“当前模型”概念，本轮把当前模型也接到官方 app-server，失败时只对当前模型回退
+CLI，非当前模型绝不回退。
+
+| Agent | 本机目录（本次检测） | 每次调用如何选模型 | 改 agent 当前模型/配置？ |
+|---|---|---|---|
+| Claude Code | 3 个稳定别名，完整 ID 可手动添加 | `--model <id>` | 否 |
+| Codex | 6 个（`codex debug models`） | `-m <id>` | 否 |
+| WorkBuddy | 桌面目录 19 个 | CLI `--model` / 桌面请求 body 的 `model` | 否 |
+| ZCode | 30 个（provider config） | app-server selection `{providerId, modelId}` | 否 |
+| DSH | 26 个（桌面 profile） | 临时 `--patch` 的 `provider/model` | 否 |
+
+pdfxlate 仍要求先在 Agents 面板勾选模型（生成 provider 条目），但这不是在 agent
+里切换当前模型。启动/打开面板仍不测试模型；只有用户手点 Test 才发真实请求。
+
+**改动**
+
+- `agents/zcode_app_server.py`：`TranslationSession` 增加 `prewarm()`、`_start_lock`、
+  `_generate_lock`、`_closed`，启动/生成耗时 debug 日志；预热失败只记录，首个批次
+  重试；close 等启动锁再停进程。
+- `models/agent_cli.py`：ZCode 当前模型也识别为 `_backend = "zcode_app_server"`；
+  app-server 失败且是当前模型时关闭 session、置 `_zcode_app_server_failed`，用 CLI
+  完成本批，后续批次直接走 CLI；非当前模型失败仍报错。适配器构造末尾启动预热线程；
+  `close()` 先停队列，再关 app-server / WorkBuddy chat session。
+- `agents/workbuddy_desktop.py`：chat 热路径按线程复用 keep-alive
+  `requests.Session`（proxy 变化/连接错误时重置，`close_chat_sessions()` 统一关闭），
+  不再每次 `with _http_session()`；`clear_caches()` 也关闭 session。
+- `agents/runtime.py`：Claude 批翻译加 `--strict-mcp-config`、
+  `--mcp-config '{"mcpServers":{}}'`、`--disable-slash-commands`；自定义 prompt 不加
+  disable-slash。
+- `src/renderer/`：Claude 卡片增加“只有三个稳定别名，其他模型手动加完整 ID”的提示；
+  ZCode 过期注释/文案改为“所有模型走 app-server，当前模型失败回退 CLI”；手工添加
+  且没有 provider 的 ZCode 行不再显示无意义的 Test 按钮。
+- 新增/更新测试：模型参数审计、Claude 启动裁剪 argv、ZCode 预热/当前模型
+  成功/回退、WorkBuddy session 复用与连接错误重置。
+
+**真实验证**
+
+- ZCode 当前模型 `new-provider-2/deepseek-v4.1-flash` 通过 app-server 翻译一小段：
+  `backend=zcode_app_server`、`fallback=True`、`failed_over=False`，返回非空译文；
+  从构造到结果 3485 ms（含预热与模型）。前后
+  `provider_config.json` = `22a8a1b4b1195417`、`credentials.json` =
+  `941c5a501b398235`、`db.sqlite` = `63b88709782b89c6`，hash 不变；当前模型仍是
+  `new-provider-2/deepseek-v4.1-flash`。
+- Claude stream-json 协议 spike：`--input-format stream-json --output-format
+  stream-json` 能在同一进程连续接收两轮并各返回一个 `result`；但本机 Claude 账号
+  返回 403（`Failed to authenticate`），旧的最小命令也 403，确认是账号/额度环境
+  问题，不是新 flag 导致。因此 `--json-schema` 在常驻模式下的真实输出、上下文累积
+  和 `/clear` 重置都无法验证，按 go/no-go 规则**不合并常驻会话**，保留 per-batch
+  加启动裁剪。
+- WorkBuddy 并发基准（真实桌面网关，`hy3`，无错误）：
+  - 16 段：1 worker 36186 ms，2 workers 28391 ms（快 21.5%）。
+  - 24 段：1 worker 33938 ms，2 workers 29984 ms（快 11.6%）。
+  - 未达到 ≥25% 的 gate，且 24 段收益更小，说明网关侧有限流/串行化；因此**没有合并
+    并发代码**，`BatchQueue` 保持单 worker，全部 agent 串行取批。
+- WorkBuddy keep-alive：单测证明连续两次 chat 复用同一个 session，连接错误后重建；
+  没有单独做真实 TLS 延迟对比。
+- Codex / DSH 没有接常驻 server：启动约 0.1–0.2 秒，Codex app-server 是实验性
+  daemon、DSH web 是完整服务器，后台进程/端口/版本兼容风险大于收益。
+
+**测试**
+
+- `pytest tests/ -q` → **575 passed**（原 567，新增 8）。
+- `npm run typecheck`、`npm run check:i18n`（275 keys）通过。
+
+**限制 / 回退**
+
+- Claude 新 flag 未经过真实模型输出验证（账号 403）；如果用户登录恢复后出现行为
+  回归，先撤 `--disable-slash-commands`，再撤 MCP 两个 flag。
+- ZCode 当前模型 app-server 失败才回退 CLI；非当前模型失败直接报错，不会跑错模型。
+- 预热只发生在用户点“开始翻译”之后，不在启动/打开面板时；app-server 仍在任务结束
+  或取消时杀掉。
+- 批并发本轮未通过 gate，没有合并多 worker 代码；若未来某个 agent 的网关/CLI 证明
+  能并行，再单独实现并重跑基准。

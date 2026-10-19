@@ -3697,8 +3697,9 @@ interface AgentModelRow {
   /**
    * Whether the row can be ticked or tested.
    *
-   * ZCode only runs the model it is already pointing at, so its other rows are
-   * shown for reference but cannot be selected.
+   * A listed ZCode model is selectable: all of them run through the app-server,
+   * with the current model falling back to the CLI. A hand-added ZCode id has no
+   * provider, so it cannot be routed and stays read-only.
    */
   selectable: boolean;
 }
@@ -3743,8 +3744,8 @@ function agentModelRows(agent: AgentStatus): AgentModelRow[] {
       custom: true,
       testModel: entry?.model || alias,
       current: false,
-      // A hand-added ZCode model cannot be switched to, so it must not be
-      // offered as a selection either.
+      // A hand-added ZCode id has no provider to route through the app-server,
+      // so it must not be offered as a selection.
       selectable: agent.id !== "zcode",
     });
   }
@@ -3771,8 +3772,9 @@ function agentModelRow(
   row: AgentModelRow,
   conflict: boolean,
 ): HTMLElement {
-  // ZCode cannot switch models. Do not dress the other rows up as disabled
-  // checkboxes: show what they are and how to make one current instead.
+  // A ZCode row without a provider cannot be routed (the CLI has no --model and
+  // the app-server needs a provider). Show it read-only instead of a checkbox
+  // that would fail at translation time.
   if (agent.id === "zcode" && !row.selectable) {
     return zcodeLockedRow(agent, row, conflict);
   }
@@ -3847,12 +3849,11 @@ function agentModelRow(
 }
 
 /**
- * A ZCode model that is not the CLI's current one.
+ * A hand-added ZCode model id that has no provider.
  *
- * It cannot be ticked or tested from here: the CLI has no `--model`, so a
- * request for this row would silently run the current model instead.  A stale
- * configured row keeps a checkbox so it can be unchecked; everything else is
- * plain text plus the manual "switch in ZCode, then Rescan" instruction.
+ * The CLI has no `--model` and the app-server route needs a provider, so this
+ * row cannot be routed at all. A configured row keeps a checkbox so it can be
+ * unchecked; it gets no Test button because there is no provider to probe.
  */
 function zcodeLockedRow(
   agent: AgentStatus,
@@ -3915,7 +3916,7 @@ function zcodeLockedRow(
   test.type = "button";
   test.className = "btn btn--small";
   test.textContent = t("agents.test");
-  test.disabled = !agent.installed;
+  test.disabled = !agent.installed || !row.provider;
   test.addEventListener("click", () => void testAgentModel(agent, row, test));
   element.append(test);
   return element;
@@ -3986,12 +3987,22 @@ function agentModelsSection(
     section.append(list);
   }
 
-  // Explain how ZCode translation differs by row: current -> CLI, other ->
-  // temporary app-server generation. Shown once under the list.
+  // Explain how ZCode translation works: every listed model goes through a
+  // temporary app-server; the current model falls back to the CLI if needed.
   if (agent.id === "zcode" && rows.length) {
     const note = document.createElement("p");
     note.className = "hint agent-models__note";
     note.textContent = t("agents.zcode.currentOnly");
+    section.append(note);
+  }
+
+  // Claude Code cannot enumerate its models: the three aliases are all the CLI
+  // reports. Point at the manual "add model" row instead of leaving the short
+  // list looking like the whole catalogue.
+  if (agent.id === "claude" && rows.length) {
+    const note = document.createElement("p");
+    note.className = "hint agent-models__note";
+    note.textContent = t("agents.claudeModelsNote");
     section.append(note);
   }
 

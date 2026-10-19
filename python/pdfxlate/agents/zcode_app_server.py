@@ -356,32 +356,68 @@ class TranslationSession:
         self._workspace: Path | None = None
         self._request_id = 1
         self._reasoning: str | None = None
+        # Startup and generation are serialised independently: a prewarm thread
+        # may be starting the server while the first batch arrives, and the
+        # stdio client routes replies by request id, so two generations must not
+        # overlap on the same connection.
+        self._start_lock = threading.Lock()
+        self._generate_lock = threading.Lock()
+        self._closed = False
+
+    def prewarm(self) -> None:
+        """Start the app-server in the background, before the first batch.
+
+        Starting the real app-server takes ~4-6 s (storage state + provider
+        registry).  Translation is constructed before the PDF is parsed, so this
+        overlaps that work; a failure is only logged and the first ``generate``
+        tries again, keeping the existing lazy path intact.
+        """
+        try:
+            self._ensure_started()
+        except Exception:  # noqa: BLE001 - prewarm must never break the job
+            logger.debug("ZCode app-server prewarm failed", exc_info=True)
 
     def _ensure_started(self) -> None:
-        if self._client is not None:
-            return
-        server = self._server_paths or resolve_paths(self._paths)
-        self._reasoning = reasoning_level_for(
-            self.provider, self.model, paths=self._paths, server_paths=server
-        )
-        self._tmp = tempfile.TemporaryDirectory(prefix="pdfxlate-zcode-translate-")
-        self._workspace = Path(self._tmp.name) / "workspace"
-        self._workspace.mkdir()
-        env = dict(os.environ)
-        env["ZCODE_DATA_BASE_DIR"] = str(server.data_base)
-        env["ZCODE_BUILTIN_PROVIDER_CONFIG_FILE"] = str(server.builtin_config)
-        env["ZCODE_PERSONAL_PROVIDER_CONFIG_FILE"] = str(server.personal_config)
-        client = _StdioServer(
-            [*server.command, "app-server", "--stdio"], env, self._tmp.name
-        )
-        try:
-            client.send({"id": 1, "method": "runtime/capabilities", "params": {}})
-            client.wait_for(1, STARTUP_TIMEOUT)
-        except Exception:
-            client.stop()
-            self._cleanup_temp()
-            raise
-        self._client = client
+        with self._start_lock:
+            if self._closed:
+                raise ZCodeAppServerError(
+                    "the ZCode app-server session is already closed"
+                )
+            if self._client is not None:
+                return
+            started = time.monotonic()
+            server = self._server_paths or resolve_paths(self._paths)
+            self._reasoning = reasoning_level_for(
+                self.provider, self.model, paths=self._paths, server_paths=server
+            )
+            self._tmp = tempfile.TemporaryDirectory(
+                prefix="pdfxlate-zcode-translate-"
+            )
+            self._workspace = Path(self._tmp.name) / "workspace"
+            self._workspace.mkdir()
+            env = dict(os.environ)
+            env["ZCODE_DATA_BASE_DIR"] = str(server.data_base)
+            env["ZCODE_BUILTIN_PROVIDER_CONFIG_FILE"] = str(server.builtin_config)
+            env["ZCODE_PERSONAL_PROVIDER_CONFIG_FILE"] = str(server.personal_config)
+            client = _StdioServer(
+                [*server.command, "app-server", "--stdio"], env, self._tmp.name
+            )
+            try:
+                client.send(
+                    {"id": 1, "method": "runtime/capabilities", "params": {}}
+                )
+                client.wait_for(1, STARTUP_TIMEOUT)
+            except Exception:
+                client.stop()
+                self._cleanup_temp()
+                raise
+            self._client = client
+            logger.debug(
+                "ZCode app-server ready in %.0f ms (provider=%s model=%s)",
+                (time.monotonic() - started) * 1000,
+                self.provider,
+                self.model,
+            )
 
     def generate(
         self,
@@ -391,45 +427,58 @@ class TranslationSession:
         cancel_event: Any = None,
     ) -> str:
         """Run one text generation and return the model's text."""
-        self._ensure_started()
-        assert self._client is not None and self._workspace is not None
-        self._request_id += 1
-        request_id = self._request_id
-        selection: dict[str, Any] = {
-            "providerId": self.provider,
-            "modelId": self.model,
-        }
-        if self._reasoning:
-            selection["options"] = {"reasoningLevel": self._reasoning}
-        params = {
-            "workspace": {
-                "workspacePath": str(self._workspace),
-                "workspaceKey": "pdfxlate-agent-translate",
-            },
-            "selection": selection,
-            "messages": list(messages),
-            "querySource": self._query_source,
-            "maxOutputTokens": self._max_output_tokens,
-            "operationId": f"pdfxlate-{uuid.uuid4().hex}",
-        }
-        self._client.send(
-            {
-                "id": request_id,
-                "method": "workspace/generateText",
-                "params": params,
+        with self._generate_lock:
+            self._ensure_started()
+            if self._closed:
+                raise ZCodeAppServerError(
+                    "the ZCode app-server session is already closed"
+                )
+            assert self._client is not None and self._workspace is not None
+            self._request_id += 1
+            request_id = self._request_id
+            selection: dict[str, Any] = {
+                "providerId": self.provider,
+                "modelId": self.model,
             }
-        )
-        reply = self._client.wait_for(
-            request_id,
-            timeout if timeout is not None else self._timeout,
-            cancel_event,
-        )
-        text = reply.get("text")
-        if not isinstance(text, str):
-            raise ZCodeAppServerError(
-                "the ZCode app-server returned no text for this batch"
+            if self._reasoning:
+                selection["options"] = {"reasoningLevel": self._reasoning}
+            params = {
+                "workspace": {
+                    "workspacePath": str(self._workspace),
+                    "workspaceKey": "pdfxlate-agent-translate",
+                },
+                "selection": selection,
+                "messages": list(messages),
+                "querySource": self._query_source,
+                "maxOutputTokens": self._max_output_tokens,
+                "operationId": f"pdfxlate-{uuid.uuid4().hex}",
+            }
+            started = time.monotonic()
+            self._client.send(
+                {
+                    "id": request_id,
+                    "method": "workspace/generateText",
+                    "params": params,
+                }
             )
-        return text
+            reply = self._client.wait_for(
+                request_id,
+                timeout if timeout is not None else self._timeout,
+                cancel_event,
+            )
+            logger.debug(
+                "ZCode generate finished in %.0f ms (provider=%s model=%s)",
+                (time.monotonic() - started) * 1000,
+                self.provider,
+                self.model,
+            )
+            text = reply.get("text")
+            if not isinstance(text, str):
+                raise ZCodeAppServerError(
+                    "the ZCode app-server returned no text for this batch"
+                )
+            return text
+
 
     def _cleanup_temp(self) -> None:
         if self._tmp is not None:
@@ -438,10 +487,12 @@ class TranslationSession:
         self._workspace = None
 
     def close(self) -> None:
-        client, self._client = self._client, None
-        if client is not None:
-            client.stop()
-        self._cleanup_temp()
+        self._closed = True
+        with self._start_lock:
+            client, self._client = self._client, None
+            if client is not None:
+                client.stop()
+            self._cleanup_temp()
 
 
 def test_model(

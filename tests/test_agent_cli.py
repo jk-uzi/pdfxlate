@@ -835,6 +835,73 @@ def test_zcode_guard_runs_before_the_process(tmp_path, monkeypatch):
         )
 
 
+# --- model-selection audit -------------------------------------------------
+
+
+def test_each_agent_command_carries_the_selected_model(tmp_path):
+    """Every CLI that has a model flag receives the model chosen in the app.
+
+    This is the executable proof behind the audit: pdfxlate passes the model per
+    invocation; it does not switch the agent's own current model or rewrite its
+    configuration.  ZCode is the exception (its CLI has no flag) and is covered
+    by the current-model guard / app-server tests below.
+    """
+    workdir = tmp_path / "run"
+    workdir.mkdir()
+    last_message = workdir / "last-message.txt"
+    cases = (
+        ("claude", "sonnet", "--model"),
+        ("codex", "gpt-5.6-sol", "-m"),
+        ("workbuddy", "model-1", "--model"),
+    )
+    for agent, model, flag in cases:
+        argv, stdin_prompt, _env = runtime._build_command(
+            get_agent_def(agent),
+            ("fake-agent",),
+            model,
+            "hello",
+            custom_prompt=False,
+            workdir=workdir,
+            last_message_path=last_message,
+        )
+        assert flag in argv, agent
+        assert argv[argv.index(flag) + 1] == model, agent
+        assert stdin_prompt == "hello", agent
+
+
+def test_claude_skips_mcp_and_skills_for_translation(tmp_path):
+    """Translation needs neither MCP servers nor skills; both cost startup."""
+    workdir = tmp_path / "run"
+    workdir.mkdir()
+    last_message = workdir / "last-message.txt"
+    argv, _stdin, _env = runtime._build_command(
+        get_agent_def("claude"),
+        ("fake-claude",),
+        "sonnet",
+        "hello",
+        custom_prompt=False,
+        workdir=workdir,
+        last_message_path=last_message,
+    )
+    assert "--strict-mcp-config" in argv
+    assert argv[argv.index("--mcp-config") + 1] == '{"mcpServers":{}}'
+    assert "--disable-slash-commands" in argv
+
+    # A user template keeps slash-command semantics; the MCP skip is still safe.
+    custom_argv, _stdin, _env = runtime._build_command(
+        get_agent_def("claude"),
+        ("fake-claude",),
+        "sonnet",
+        "hello",
+        custom_prompt=True,
+        workdir=workdir,
+        last_message_path=last_message,
+    )
+    assert "--strict-mcp-config" in custom_argv
+    assert "--disable-slash-commands" not in custom_argv
+
+
+
 # --- API wiring ------------------------------------------------------------
 
 
@@ -961,6 +1028,9 @@ def test_zcode_non_current_model_uses_the_app_server(monkeypatch):
         def __init__(self, provider, model, **kwargs):
             calls.append(("init", provider, model))
 
+        def prewarm(self):
+            pass
+
         def generate(self, messages, **kwargs):
             calls.append(("generate", messages))
             return '{"translations": ["你好"]}'
@@ -984,13 +1054,33 @@ def test_zcode_non_current_model_uses_the_app_server(monkeypatch):
     assert calls[-1] == ("close",)
 
 
-def test_zcode_current_model_keeps_the_cli_backend(monkeypatch):
+def test_zcode_current_model_uses_the_app_server(monkeypatch):
     _zcode_resolution(monkeypatch)
     monkeypatch.setattr(
         agent_cli.catalog,
         "zcode_current_model",
         lambda: ("new-provider-2", "deepseek-v4.1-flash"),
     )
+    calls: list = []
+
+    class FakeSession:
+        def __init__(self, provider, model, **kwargs):
+            calls.append(("init", provider, model))
+
+        def prewarm(self):
+            pass
+
+        def generate(self, messages, **kwargs):
+            return '{"translations": ["你好"]}'
+
+        def close(self):
+            calls.append(("close",))
+
+    def must_not_run(*args, **kwargs):
+        raise AssertionError("the current model should use the app-server")
+
+    monkeypatch.setattr(agent_cli.zcode_app_server, "TranslationSession", FakeSession)
+    monkeypatch.setattr(runtime, "run_batch", must_not_run)
     adapter = agent_cli.AgentCliAdapter(
         _profile("zcode", "new-provider-2/deepseek-v4.1-flash"),
         "en",
@@ -998,7 +1088,59 @@ def test_zcode_current_model_keeps_the_cli_backend(monkeypatch):
         ignore_cache=True,
     )
     try:
-        assert adapter._backend == "cli"
-        assert adapter._zcode_session is None
+        assert adapter._backend == "zcode_app_server"
+        assert adapter.translate("hello") == "你好"
+        assert calls[0] == ("init", "new-provider-2", "deepseek-v4.1-flash")
+    finally:
+        adapter.close()
+
+
+def test_zcode_current_model_uses_the_app_server_with_cli_fallback(monkeypatch):
+    _zcode_resolution(monkeypatch)
+    monkeypatch.setattr(
+        agent_cli.catalog,
+        "zcode_current_model",
+        lambda: ("new-provider-2", "deepseek-v4.1-flash"),
+    )
+    calls: list = []
+    cli_calls: list = []
+
+    class FakeSession:
+        def __init__(self, provider, model, **kwargs):
+            calls.append(("init", provider, model))
+
+        def prewarm(self):
+            calls.append(("prewarm",))
+
+        def generate(self, messages, **kwargs):
+            calls.append(("generate", messages))
+            raise agent_cli.zcode_app_server.ZCodeAppServerError("app-server down")
+
+        def close(self):
+            calls.append(("close",))
+
+    def fake_run(defn, command, model, texts, lang_out, **kwargs):
+        cli_calls.append((model, list(texts)))
+        return [f"CLI:{text}" for text in texts]
+
+    monkeypatch.setattr(agent_cli.zcode_app_server, "TranslationSession", FakeSession)
+    monkeypatch.setattr(runtime, "run_batch", fake_run)
+    adapter = agent_cli.AgentCliAdapter(
+        _profile("zcode", "new-provider-2/deepseek-v4.1-flash"),
+        "en",
+        "zh",
+        ignore_cache=True,
+    )
+    try:
+        assert adapter._backend == "zcode_app_server"
+        assert adapter._zcode_cli_fallback is True
+        assert adapter.translate("hello") == "CLI:hello"
+        # The failed app-server is closed and the current model is finished by
+        # the CLI, never by silently running a different ZCode model.
+        assert cli_calls == [("new-provider-2/deepseek-v4.1-flash", ["hello"])]
+        assert ("close",) in calls
+        # Later batches go straight to the CLI.
+        assert adapter.translate("again") == "CLI:again"
+        assert len(cli_calls) == 2
     finally:
         adapter.close()

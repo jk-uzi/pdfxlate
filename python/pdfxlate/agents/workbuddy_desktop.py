@@ -815,6 +815,7 @@ def clear_caches() -> None:
         _CREDENTIAL_SIGNATURE = None
     with _KEY_CACHE_LOCK:
         _KEY_CACHE.clear()
+    close_chat_sessions()
 
 
 # --- region / HTTP plumbing ------------------------------------------------
@@ -875,6 +876,71 @@ def _http_session() -> requests.Session:
     if proxy:
         session.proxies = {"http": proxy, "https": proxy}
     return session
+
+
+# Chat is the hot path: one batch is one request, and a fresh TLS handshake for
+# every batch is pure latency.  Each worker thread keeps its own session (a
+# requests.Session is not documented as thread-safe), and a transport failure
+# drops that session so the next request reconnects cleanly.
+_CHAT_LOCAL = threading.local()
+_CHAT_SESSIONS: list[requests.Session] = []
+_CHAT_SESSIONS_LOCK = threading.Lock()
+_CHAT_GENERATION = 0
+
+
+def _drop_chat_session(session: requests.Session) -> None:
+    with _CHAT_SESSIONS_LOCK:
+        try:
+            _CHAT_SESSIONS.remove(session)
+        except ValueError:
+            pass
+    try:
+        session.close()
+    except Exception:  # noqa: BLE001 - a fake/foreign session must not crash
+        pass
+    if getattr(_CHAT_LOCAL, "session", None) is session:
+        _CHAT_LOCAL.session = None
+
+
+def _chat_session() -> requests.Session:
+    """Return this thread's keep-alive chat session, creating it if needed."""
+    proxy = os.environ.get(PROXY_ENV, "").strip()
+    generation = _CHAT_GENERATION
+    session = getattr(_CHAT_LOCAL, "session", None)
+    if session is not None and (
+        getattr(_CHAT_LOCAL, "proxy", None) != proxy
+        or getattr(_CHAT_LOCAL, "generation", None) != generation
+    ):
+        _drop_chat_session(session)
+        session = None
+    if session is None:
+        session = _http_session()
+        _CHAT_LOCAL.session = session
+        _CHAT_LOCAL.proxy = proxy
+        _CHAT_LOCAL.generation = generation
+        with _CHAT_SESSIONS_LOCK:
+            _CHAT_SESSIONS.append(session)
+    return session
+
+
+def _reset_chat_session() -> None:
+    session = getattr(_CHAT_LOCAL, "session", None)
+    if session is not None:
+        _drop_chat_session(session)
+
+
+def close_chat_sessions() -> None:
+    """Close every keep-alive chat session; later calls start fresh ones."""
+    global _CHAT_GENERATION
+    with _CHAT_SESSIONS_LOCK:
+        _CHAT_GENERATION += 1
+        sessions = list(_CHAT_SESSIONS)
+        _CHAT_SESSIONS.clear()
+    for session in sessions:
+        try:
+            session.close()
+        except Exception:  # noqa: BLE001 - closing must never mask the job error
+            pass
 
 
 def _classify_body(status: int, text: str) -> WorkBuddyError:
@@ -1338,36 +1404,43 @@ def _chat_once(
         "stream": True,
     }
     headers = _chat_headers(credential)
-    with _http_session() as session:
-        try:
-            response = session.post(
-                f"{_chat_base(credential)}/v2/chat/completions",
-                headers=headers,
-                json=body,
-                timeout=(10, timeout),
-                stream=True,
-            )
-        except requests.RequestException as exc:
-            raise _request_error(exc) from exc
-        try:
-            status = int(getattr(response, "status_code", 0) or 0)
-            if status >= 400:
-                try:
-                    text = str(getattr(response, "text", "") or "")
-                except Exception:  # noqa: BLE001
-                    text = ""
-                raise _classify_body(status, text)
-            content_type = _header(response, "content-type").lower()
-            if "json" in content_type and "event-stream" not in content_type:
-                answer = _read_json_answer(response, status)
-                if answer is not None:
-                    return answer
-            return _read_stream(response, cancel_event)
-        finally:
+    session = _chat_session()
+    try:
+        response = session.post(
+            f"{_chat_base(credential)}/v2/chat/completions",
+            headers=headers,
+            json=body,
+            timeout=(10, timeout),
+            stream=True,
+        )
+    except requests.RequestException as exc:
+        _reset_chat_session()
+        raise _request_error(exc) from exc
+    try:
+        status = int(getattr(response, "status_code", 0) or 0)
+        if status >= 400:
             try:
-                response.close()
+                text = str(getattr(response, "text", "") or "")
             except Exception:  # noqa: BLE001
-                pass
+                text = ""
+            raise _classify_body(status, text)
+        content_type = _header(response, "content-type").lower()
+        if "json" in content_type and "event-stream" not in content_type:
+            answer = _read_json_answer(response, status)
+            if answer is not None:
+                return answer
+        return _read_stream(response, cancel_event)
+    except WorkBuddyError as exc:
+        if exc.kind == "transport":
+            # A dropped connection may leave the pooled connection unusable;
+            # the next request should start from a fresh one.
+            _reset_chat_session()
+        raise
+    finally:
+        try:
+            response.close()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def chat(

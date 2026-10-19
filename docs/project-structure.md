@@ -20,12 +20,12 @@ Python 3.12，venv 在 `python/.venv`，包以 editable 方式安装，改源码
 | 接入新的模型后端 | `python/pdfxlate/models/` 新建文件 + `@register` 装饰器（内置四个 `kind`：`openai_compat` / `openai_responses` / `anthropic_messages` / `agent_cli`） |
 | 接入外部 agent CLI 的模型 | `models/agent_cli.py` + `python/pdfxlate/agents/`（defs / detect / catalog / runtime / batch）+ 设置 › Agents |
 | 改 agent 的检测、登录探测或模型列表 | `agents/detect.py` / `agents/catalog.py`；五个 agent 的静态定义在 `agents/defs.py` |
-| 改 agent 的调用命令或批处理 | `agents/runtime.py`（拼 argv、解析输出、超时/取消、杀进程树）/ `agents/batch.py`（8 段 / 12000 字符 / 0.2s） |
+| 改 agent 的调用命令或批处理 | `agents/runtime.py`（拼 argv、解析输出、超时/取消、杀进程树、Claude 启动裁剪）/ `agents/batch.py`（8 段 / 12000 字符 / 0.2s） |
 | 改「设置 › Agents」面板 | `src/renderer/app.ts` 的 `refreshAgents()` / `renderAgents()` / `setAgentModel()` / `saveAgentPath()` + `index.html` + `style.css` |
 | 改 agent 的 CLI 路径覆盖 | `config.py` 的 `AgentSettings` + `app.ts` 的 `draftAgents()` / `agentPathOverrides()` |
 | 调整发给模型的请求参数 | 对应适配器：`openai_compat.py` / `openai_responses.py` / `anthropic_messages.py`（`reasoning_effort` / `extra_body` / `stream` / `temperature`） |
 | 改重试策略 / 取消行为 | `pdf/converter.py` 的 `translate_segment()`（有界重试）+ `models/base.py` 的 `PERMANENT_TRANSLATION_ERRORS` |
-| 改「测试连接」 | HTTP 供应商：`sidecar.py` 的 `method_providers_test` + `app.ts` 的 `testProvider()`；agent：`method_agents_test` + `testAgentModel()`；ZCode 非当前模型：`agents/zcode_app_server.py` + `sidecar._zcode_test_selection()`；改 ZCode 非当前模型翻译：`zcode_app_server.TranslationSession` + `agent_cli._run_zcode_batch()` |
+| 改「测试连接」 | HTTP 供应商：`sidecar.py` 的 `method_providers_test` + `app.ts` 的 `testProvider()`；agent：`method_agents_test` + `testAgentModel()`；ZCode 非当前模型：`agents/zcode_app_server.py` + `sidecar._zcode_test_selection()`；改 ZCode 翻译：`zcode_app_server.TranslationSession`（所有模型）+ `agent_cli._run_zcode_batch()`（当前模型失败回退 CLI） |
 | 改「从上游拉取模型」 | `models/catalog.py` + `sidecar.py` 的 `method_providers_models` + `app.ts` 的 `openModelsDialog()` / `paintModelsOptions()` / `paintModelsCount()` / `configuredModelIds()` |
 | 改供应商改名 | `app.ts` 的 `renameProvider()` / `startRenamingProvider()` / `stopRenamingProvider()` |
 | 改翻译提示词 | `models/base.py` 的 `DEFAULT_PROMPT`，或配置里的 `translation.prompt` 指向模板文件 |
@@ -117,15 +117,15 @@ pdfxlate/
 │       │   ├── defs.py        157 行  五个 agent 的静态定义（命令、安装链接、批上限）
 │       │   ├── detect.py      823 行  可执行文件解析（PATH / 注册表 / 路径覆盖）、版本探测；不再自动探测登录
 │       │   ├── catalog.py    1155 行  模型列表（codex / codebuddy / WorkBuddy 桌面版 / DSH 桌面 profile / ZCode provider_config）
-│       │   ├── runtime.py     979 行  拼命令、spawn、输出解析、超时/取消、杀进程树、DSH --patch
-│       │   ├── workbuddy_desktop.py 1515 行  WorkBuddy 桌面版：auth 解密 / 模型目录 / HTTP SSE 翻译
-│       │   ├── zcode_app_server.py 508 行  ZCode 官方 app-server 客户端：provider/testModelConnectivity 测试 + workspace/generateText 翻译；临时 workspace、无 session
+│       │   ├── runtime.py     990 行  拼命令、spawn、输出解析、超时/取消、杀进程树、DSH --patch、Claude 启动裁剪
+│       │   ├── workbuddy_desktop.py 1588 行  WorkBuddy 桌面版：auth 解密 / 模型目录 / HTTP SSE 翻译 / chat keep-alive
+│       │   ├── zcode_app_server.py 559 行  ZCode 官方 app-server 客户端：provider/testModelConnectivity 测试 + workspace/generateText 翻译 + 预热；临时 workspace、无 session
 │       │   ├── snapshot.py    110 行  agents.list 的本地快照：缓存优先、路径签名、原子写；不含凭据
 │       │   └── batch.py       208 行  批队列（8 段 / 12000 字符 / 0.2s；argv agent 8000）
 │       ├── models/
 │       │   ├── __init__.py     23 行  导出翻译层公开符号
 │       │   ├── base.py       394 行  ModelAdapter 基类 + 注册表 + 永久错误分类 + 服务端缓存统计
-│       │   ├── agent_cli.py  264 行  AgentCliAdapter：把批队列接进 ModelAdapter；WorkBuddy 桌面版 HTTP 后端；ZCode 非当前模型走 app-server
+│       │   ├── agent_cli.py  299 行  AgentCliAdapter：把批队列接进 ModelAdapter；WorkBuddy 桌面版 HTTP 后端；ZCode 所有模型走 app-server（当前模型失败回退 CLI）
 │       │   ├── openai_compat.py 186 行  OpenAI Chat Completions 适配器（含 usage 缓存字段）
 │       │   ├── openai_responses.py 136 行  OpenAI Responses 适配器
 │       │   ├── anthropic_messages.py 247 行  Anthropic Messages 适配器
@@ -168,11 +168,11 @@ pdfxlate/
 │   ├── test_config_env_refs.py 142 行  **改名前后的密钥不落明文**
 │   ├── test_anthropic_messages.py 227 行  Messages 端点拼接、请求体、SSE、错误分级
 │   ├── test_config_providers.py 468 行  供应商→模型 schema、resolve、迁移（含已移除字段）、env 引用、agent 字段
-│   ├── test_agent_cli.py   1004 行  agent 适配器：批队列、提示词、解析、重试/拆单段、缓存键、关闭
+│   ├── test_agent_cli.py   1146 行  agent 适配器：批队列、模型参数审计、提示词、解析、重试/拆单段、缓存键、关闭、ZCode 当前模型回退
 │   ├── test_agents_detect.py 472 行  路径解析、版本/登录探测、五个 agent 的模型列表解析
 │   ├── test_agents_snapshot.py 177 行  agents.list 快照往返/路径签名/损坏/无凭据/缓存优先/刷新写快照
-│   ├── test_zcode_app_server.py 215 行  ZCode app-server：fake stdio、selection、测试/翻译、reasoning、错误、超时、取消
-│   ├── fake_zcode_app_server.py 78 行  ZCode app-server 测试替身（逐行 JSON，无 jsonrpc 字段）
+│   ├── test_zcode_app_server.py 274 行  ZCode app-server：fake stdio、selection、测试/翻译、预热、reasoning、错误、超时、取消
+│   ├── fake_zcode_app_server.py 87 行  ZCode app-server 测试替身（逐行 JSON，无 jsonrpc 字段）
 │   ├── test_sidecar_agents.py 417 行  agents.list / agents.models / agents.test、providers.list 的 agent 字段、providers.test 拒绝 agent_cli
 │   ├── test_typesetting.py   172 行  字号适配纯函数（放不下时的缩字逻辑）
 │   ├── test_cli_options.py   286 行  CLI 排版选项解析与三态覆盖语义
@@ -358,14 +358,16 @@ vLLM / Ollama / OpenRouter 等。一等支持 `reasoning_effort`、`extra_body`
 
 **`models/agent_cli.py`** — `AgentCliAdapter`，`name = "agent_cli"`。它把「外部
 agent CLI」接成翻译后端：`do_translate()` 把段落交给 `BatchQueue`，队列攒够一批后
-spawn 一次 CLI（见下），解析回 `{"translations": [...]}`。ZCode 是例外：当前模型仍
-spawn CLI；非当前模型在构造时识别为 `_backend = "zcode_app_server"`，`_run_batch()`
-通过 `zcode_app_server.TranslationSession` 的 `workspace/generateText` 翻译，**不建
-session、不改 ZCode 当前模型/config/DB**，并用同一套批提示词/解析/拆单段重试。
+spawn 一次 CLI（见下），解析回 `{"translations": [...]}`。ZCode 是例外：所有模型
+（包括当前模型）在构造时识别为 `_backend = "zcode_app_server"`，`_run_batch()` 通过
+`zcode_app_server.TranslationSession` 的 `workspace/generateText` 翻译，**不建
+session、不改 ZCode 当前模型/config/DB**，并用同一套批提示词/解析/拆单段重试；
+app-server 不可用时只有当前模型回退 CLI，非当前模型绝不回退（否则会跑错模型）。
 `_cache_params()` 只在这个适配器里追加 `agent` 与 `agent_batch`（批提示词版本），
-**HTTP 适配器的缓存键不受影响**；`close()` 停队列，并关闭 app-server 进程。
-构造时先解析可执行文件，找不到就抛 `AgentNotInstalledError`，`translate.start` 会把
-它变成任务错误而不是静默回退。
+**HTTP 适配器的缓存键不受影响**。构造时先解析可执行文件，找不到就抛
+`AgentNotInstalledError`，`translate.start` 会把它变成任务错误而不是静默回退。
+ZCode app-server 在构造末尾启动后台预热，与 PDF 解析重叠；`close()` 先停队列，
+再关 app-server / WorkBuddy chat session，避免关闭正在使用的连接。
 
 **`python/pdfxlate/agents/`** — 五个 agent 的共享实现，按职责拆开：
 
@@ -373,11 +375,11 @@ session、不改 ZCode 当前模型/config/DB**，并用同一套批提示词/�
 |---|---|
 | `defs.py` | `AgentDef` 数据类 + 五个定义：`claude` / `codex` / `workbuddy` / `zcode` / `dsh`。字段包括 PATH 名、fallback 名、环境变量、安装/文档链接、prompt 传递方式（stdin / argv）、内置模型、登录探测方式、标准安装相对路径与 Windows 应用名 |
 | `detect.py` | `resolve_agent()`：`agents.paths` 覆盖 → 环境变量 → `shutil.which` → 平台标准目录 / Windows 卸载注册表；`detect_agent()`：只做路径解析 + 版本探测，**不再自动探测登录状态**（测试由用户手动点「测试」）。`check_auth()` 仍保留给显式调用，但启动/打开面板不会执行；结果缓存 30 秒 |
-| `catalog.py` | 模型列表：Claude 用内置 `sonnet/opus/haiku`；Codex 解析 `codex debug models`（过滤 `visibility == "hide"`）；WorkBuddy 解析 `codebuddy -p --help` 的 `Currently supported:`，没有独立 CLI 时走 `workbuddy_desktop.fetch_models()`（`/v3/config` 的 CLI 模型，label 带 credits，`source: "desktop"`）；**ZCode** 解析 `~/.zcode/v2/provider_config.json`（`providerOrder` + 两组 model rules，过滤 `enabled: false`、去重；模型 id 为复合 `provider/model`，label 为 `modelId (providerName)`；当前模型从 `~/.zcode/cli/db/db.sqlite` 最近的非子代理 session 只读取；所有 enabled 模型 `selectable`（当前模型走 CLI，非当前模型走 app-server 的 `workspace/generateText`）；不启动 CLI）；**DSH** 优先解析 `~/.dsh/profiles/desktop/cordis.patch.yml` 的 `llm-pi-ai.config.providers[].models[]` 与 `agent-default-model`（复合 `provider/model`，当前模型带 `current`；`sanitize_provider_config()` 只保留 `apiKeyEnv` 名称、丢弃任何 key/token/secret），没有桌面 profile 时回退 `--dump-config`。失败返回内置 fallback + `error`，不抛致命错误 |
+| `catalog.py` | 模型列表：Claude 用内置 `sonnet/opus/haiku`；Codex 解析 `codex debug models`（过滤 `visibility == "hide"`）；WorkBuddy 解析 `codebuddy -p --help` 的 `Currently supported:`，没有独立 CLI 时走 `workbuddy_desktop.fetch_models()`（`/v3/config` 的 CLI 模型，label 带 credits，`source: "desktop"`）；**ZCode** 解析 `~/.zcode/v2/provider_config.json`（`providerOrder` + 两组 model rules，过滤 `enabled: false`、去重；模型 id 为复合 `provider/model`，label 为 `modelId (providerName)`；当前模型从 `~/.zcode/cli/db/db.sqlite` 最近的非子代理 session 只读取；所有 enabled 模型 `selectable`，翻译统一走 app-server 的 `workspace/generateText`（当前模型失败回退 CLI）；不启动 CLI）；**DSH** 优先解析 `~/.dsh/profiles/desktop/cordis.patch.yml` 的 `llm-pi-ai.config.providers[].models[]` 与 `agent-default-model`（复合 `provider/model`，当前模型带 `current`；`sanitize_provider_config()` 只保留 `apiKeyEnv` 名称、丢弃任何 key/token/secret），没有桌面 profile 时回退 `--dump-config`。失败返回内置 fallback + `error`，不抛致命错误 |
 | `snapshot.py` | `agents-list` 的持久化快照：`list_agents(refresh=False)` 命中时直接返回，不解析/探测/枚举；只保存安装与模型元数据（无 token/apiKey/凭据），带 `paths` 签名与版本（当前 `SNAPSHOT_VERSION = 2`，旧的 ZCode 只读模型缓存会被判失效后重新检测），原子写；`update_agent()` 供「刷新模型」更新单个 agent |
-| `zcode_app_server.py` | ZCode 官方 `app-server --stdio` 客户端。测试：`provider/testModelConnectivity` 做一次模型连通性调用。翻译：`TranslationSession` 用 `workspace/generateText` 做不带 session 的一次性生成，供非当前模型翻译；`selection.options.reasoningLevel` 从 provider config 的 `optionSpecs.reasoningLevel.values` 选取（优先 low，`hy3` 为 low/high）。两者都要求 `ZCODE_DATA_BASE_DIR` + 内置/个人 provider config 环境，临时 workspace、不改当前模型/config/credentials/DB；协议是逐行 JSON（无 `jsonrpc` 字段），app-server 进程在翻译任务结束后杀掉 |
-| `runtime.py` | `_build_command()` 按 agent 拼命令；`_run_process()` 在空临时 cwd 里 spawn，Windows 用 `CREATE_NO_WINDOW`，超时/取消用 `taskkill /F /T`（POSIX terminate→kill）杀进程树；输出解析（Claude JSON envelope / Codex last-message 文件 / 其余 stdout）；`parse_translations()` 依次接受 `translations` 数组、索引 key 对象、长度匹配且非回显的裸数组、单段纯文本；失败先严格重试再拆单段。DSH 非默认模型生成临时 `--patch`（`llm-pi-ai` 的选中 provider + `agent-default-model`），`apiKeyEnv` 的值从 `~/.dsh/.credentials.yaml` 的 `refs` 取出后只注入子进程 env；ZCode 在 spawn 前校验配置模型是否为 CLI 当前模型，不匹配报可读错误（CLI 没有 `--model`，绝不把 `/model` 当 prompt 发送） |
-| `workbuddy_desktop.py` | WorkBuddy 桌面版后端：探测 Windows 标准目录 / 卸载注册表 / macOS bundle；用 `ELECTRON_RUN_AS_NODE=1` 调 app 的 native binding 取 at-rest key；AES-256-GCM + AAD 解 `$wbEncrypted` 的 access/refresh/domain/identity；CN `https://copilot.tencent.com/v3/config`（回退 `/v2/enterprises/personal/models`）与 global `www.workbuddy.ai`/`www.codebuddy.ai/v3/config` 的 CLI 模型目录；`/v2/chat/completions` SSE（system 首条、conversation UUID、X-User-Id/Enterprise-Id/Domain）；HTTP 用 `trust_env=False` 直连，避开失效的 Windows 系统代理，需要代理时显式设 `WORKBUDDY_PROXY`；token 只在内存，过期用 refresh token 换新且不写 auth 文件；错误只回可读消息 |
+| `zcode_app_server.py` | ZCode 官方 `app-server --stdio` 客户端。测试：`provider/testModelConnectivity` 做一次模型连通性调用。翻译：`TranslationSession` 用 `workspace/generateText` 做不带 session 的一次性生成，当前模型与非当前模型都走这里；当前模型失败时由 `agent_cli` 回退 CLI。`selection.options.reasoningLevel` 从 provider config 的 `optionSpecs.reasoningLevel.values` 选取（优先 low，`hy3` 为 low/high）。`prewarm()` 在适配器构造时后台启动并握手，与 PDF 解析重叠；`_start_lock`/`_generate_lock`/`_closed` 处理预热、生成、关闭的竞态。两者都要求 `ZCODE_DATA_BASE_DIR` + 内置/个人 provider config 环境，临时 workspace、不改当前模型/config/credentials/DB；协议是逐行 JSON（无 `jsonrpc` 字段），app-server 进程在翻译任务结束后杀掉 |
+| `runtime.py` | `_build_command()` 按 agent 拼命令；Claude 批翻译额外带 `--strict-mcp-config --mcp-config '{"mcpServers":{}}' --disable-slash-commands`，跳过 MCP/skills 启动成本（自定义 prompt 不加 disable-slash）；`_run_process()` 在空临时 cwd 里 spawn，Windows 用 `CREATE_NO_WINDOW`，超时/取消用 `taskkill /F /T`（POSIX terminate→kill）杀进程树；输出解析（Claude JSON envelope / Codex last-message 文件 / 其余 stdout）；`parse_translations()` 依次接受 `translations` 数组、索引 key 对象、长度匹配且非回显的裸数组、单段纯文本；失败先严格重试再拆单段。DSH 非默认模型生成临时 `--patch`（`llm-pi-ai` 的选中 provider + `agent-default-model`），`apiKeyEnv` 的值从 `~/.dsh/.credentials.yaml` 的 `refs` 取出后只注入子进程 env；ZCode 在 spawn 前校验配置模型是否为 CLI 当前模型，不匹配报可读错误（CLI 没有 `--model`，绝不把 `/model` 当 prompt 发送；该 CLI 路径现在是 app-server 失败时的当前模型回退） |
+| `workbuddy_desktop.py` | WorkBuddy 桌面版后端：探测 Windows 标准目录 / 卸载注册表 / macOS bundle；用 `ELECTRON_RUN_AS_NODE=1` 调 app 的 native binding 取 at-rest key；AES-256-GCM + AAD 解 `$wbEncrypted` 的 access/refresh/domain/identity；CN `https://copilot.tencent.com/v3/config`（回退 `/v2/enterprises/personal/models`）与 global `www.workbuddy.ai`/`www.codebuddy.ai/v3/config` 的 CLI 模型目录；`/v2/chat/completions` SSE（system 首条、conversation UUID、X-User-Id/Enterprise-Id/Domain）；HTTP 用 `trust_env=False` 直连，避开失效的 Windows 系统代理，需要代理时显式设 `WORKBUDDY_PROXY`；chat 热路径按线程复用 keep-alive `requests.Session`（连接错误重置，adapter 关闭时统一 close）；token 只在内存，过期用 refresh token 换新且不写 auth 文件；错误只回可读消息 |
 | `batch.py` | `BatchQueue`：一个 daemon 线程 + `Condition`，8 段 / 12000 字符（argv 的 ZCode 8000）/ 首段后 0.2 秒触发；自定义 prompt 时 `max_items=1`；空闲 60 秒退出；`close()` 唤醒所有等待者 |
 | `__init__.py` | 公开 `list_agents()`：快照优先；无快照/`refresh=True` 时并行探测 + 模型列表，总预算 8 秒，超时项回退，成功后写快照 |
 
@@ -385,20 +387,20 @@ session、不改 ZCode 当前模型/config/DB**，并用同一套批提示词/�
 
 | agent | 命令 | prompt |
 |---|---|---|
-| Claude Code | `claude -p --input-format text --output-format json --json-schema <schema> --tools "" --no-session-persistence --model <id>` | stdin |
+| Claude Code | `claude -p --input-format text --output-format json --json-schema <schema> --tools "" --no-session-persistence --strict-mcp-config --mcp-config '{"mcpServers":{}}' [--disable-slash-commands] --model <id>` | stdin |
 | Codex | `codex exec --skip-git-repo-check --sandbox read-only --ephemeral --output-last-message <tmp> -m <id>` | stdin（**不加 `-`**） |
 | WorkBuddy | `codebuddy -p --output-format text --model <id>` | stdin |
-| ZCode | `node <zcode.cjs> -p <prompt> --no-color --mode plan --surface terminal --cwd <tmp>` | argv（≤ 8k 字符） |
+| ZCode | `node <zcode.cjs> -p <prompt> --no-color --mode plan --surface terminal --cwd <tmp>`（仅 app-server 失败时的当前模型回退） | argv（≤ 8k 字符） |
 | DSH | `dsh --profile headless [--patch <tmp>] -` | stdin（`-`） |
 
 **为什么 spawn CLI 而不是读密钥**：OAuth / 订阅额度只存在于 CLI 自己的登录态里，
 读 `~/.claude`、`~/.codex` 的凭据既脆弱又越界；调用 headless 模式是唯一既尊重登录态、
 又不复制密钥的方式。代价是每次翻译多一次进程启动，所以才有批队列。v1 不映射
 temperature / top_p / max_tokens / reasoning——由 CLI 自己的配置决定；ZCode 没有
-`--model`，只能用它的当前模型；WorkBuddy 在独立 CLI 不存在时走桌面版 HTTP，而不是
-伪装成 CLI 调用。
-安全上：空临时 cwd、Claude `--tools ""`、Codex read-only、ZCode plan 模式；DSH 没有
-通用 sandbox 开关，靠提示 + 空目录，残余风险在开发记录里注明。
+`--model`，翻译改走官方 app-server 的 `workspace/generateText`（当前模型失败才回退
+CLI）；WorkBuddy 在独立 CLI 不存在时走桌面版 HTTP，而不是伪装成 CLI 调用。
+安全上：空临时 cwd、Claude `--tools ""` / 跳过 MCP 与 skills、Codex read-only、ZCode
+plan 模式；DSH 没有通用 sandbox 开关，靠提示 + 空目录，残余风险在开发记录里注明。
 
 `api.translate()` / `translate_stream()` 在 `finally` 里调 `translator.close()`，取消或
 失败不会留下 CLI 子进程；agent 供应商的 `resolved_thread` 取 `max(thread, 8)`，让
@@ -569,7 +571,7 @@ mono/dual **共用同一个序号**（否则一对文件看起来像两次不相
 | `providers.test` / `providers.models` | HTTP 供应商的连接探针 / 上游模型清单；`providers.test` 对 `agent_cli` 直接报错并指向 Agents 面板 |
 | `agents.list` | 返回五个 agent 的安装状态、路径、版本、模型列表；优先读本地快照（不含凭据，带 `paths` 签名），`refresh: true` 绕过并重新检测。不再自动探测登录状态；WorkBuddy 只有桌面版时多回可选 `desktop: {available, auth, app_path?, error?}`（不含 token） |
 | `agents.models` | 刷新单个 agent 的模型列表，并更新快照中该 agent 的模型块；失败回退内置列表 + `error`，15 秒上限；DSH/ZCode 返回 `source: "profile"`，WorkBuddy 桌面版返回 `source: "desktop"` |
-| `agents.test` | 手动测试一次后端，返回 `{ok, latency_ms, sample}`；CLI 走 `spawn`，WorkBuddy 桌面版走 `/v2/chat/completions`。ZCode 当前模型走 CLI；非当前模型走 `zcode_app_server.test_model` 的官方 app-server `provider/testModelConnectivity`（临时 workspace、无 session、不改当前模型，返回 `{ok, latency_ms, via: "app_server"}`，无 sample）；90 秒上限，在后台线程跑 |
+| `agents.test` | 手动测试一次后端，返回 `{ok, latency_ms, sample}`；CLI 走 `spawn`，WorkBuddy 桌面版走 `/v2/chat/completions`。ZCode 当前模型走 CLI（验证登录态）；非当前模型走 `zcode_app_server.test_model` 的官方 app-server `provider/testModelConnectivity`（临时 workspace、无 session、不改当前模型，返回 `{ok, latency_ms, via: "app_server"}`，无 sample）；90 秒上限，在后台线程跑。翻译路径与测试路径不同：所有模型翻译走 app-server，当前模型失败回退 CLI |
 | `assets.status` / `assets.download` | 资源状态 / 触发下载 |
 | `pdf.info` | 只读元数据（页数），供预览工具栏显示「N / M」 |
 | `translate.start` / `translate.cancel` | 启停翻译任务 |
@@ -793,18 +795,22 @@ agent CLI 的检测与模型勾选，见下）、**外观**（界面语言）、
   行内显示 provider 与「当前」徽标；勾选任意模型写入复合 id `provider/model`，翻译时
   runtime 生成临时 `--patch`（含选中 provider 的配置 + `agent-default-model`），
   `apiKeyEnv` 的值只注入子进程 env，不改 `~/.dsh`、不写日志。
+- **Claude** 的模型目录只有 CLI 暴露的三个稳定别名（`sonnet` / `opus` / `haiku`），
+  卡片底部会提示：完整模型 ID 可在「自定义模型」里手动添加；翻译仍然每次用
+  `--model` 指定，不切换 Claude Code 的默认模型。
 - **ZCode** 的模型列表来自 `~/.zcode/v2/provider_config.json`（本机 30 个 enabled
   模型），当前模型从 CLI 的 session DB 读取并标「当前」。CLI 没有 `--model`，所以
-  **当前模型仍走 CLI；非当前模型改走 ZCode 官方 app-server 的
-  `workspace/generateText` 一次性生成**。所有 enabled 模型都可勾选、可翻译，不再需要
+  **所有模型（包括当前模型）都走 ZCode 官方 app-server 的
+  `workspace/generateText` 一次性生成**；当前模型在 app-server 不可用时回退 CLI，
+  非当前模型不回退（避免跑错模型）。所有 enabled 模型都可勾选、可翻译，不再需要
   先在 ZCode 内切换。`agents/zcode_app_server.py` 的 `TranslationSession` 复用同一个
-  app-server 跑完整篇文档的多个批次：临时 workspace、无 session、不改 ZCode 当前
-  模型/config/credentials/DB（真实 `hy3` 翻译前后 hash 不变），也不复制 token。
-  `workspace/generateText` 对 reasoning 模型强制要求
-  `selection.options.reasoningLevel`；取值从同一份 provider config 的
+  app-server 跑完整篇文档的多个批次，并在适配器构造时后台预热：临时 workspace、
+  无 session、不改 ZCode 当前模型/config/credentials/DB（真实当前模型与 `hy3`
+  翻译前后 hash 不变），也不复制 token。`workspace/generateText` 对 reasoning 模型
+  强制要求 `selection.options.reasoningLevel`；取值从同一份 provider config 的
   `optionSpecs.reasoningLevel.values` 读取，优先 `low`（`hy3` 支持 low/high）。
   非当前行的「测试」仍走 `provider/testModelConnectivity`，当前行的「测试」仍走
-  CLI；二者都只由用户手点。模型列表**不启动 CLI** 枚举，返回
+  CLI（验证登录态）；二者都只由用户手点。模型列表**不启动 CLI** 枚举，返回
   `models_source: "profile"`。
 - **WorkBuddy** 只有桌面版时，卡片显示「桌面版 · 已登录/未登录」与 `/v3/config`
   的 CLI 模型（本机 19 个，label 带 credits），不再显示「安装 CLI」或 CLI 路径编辑器；

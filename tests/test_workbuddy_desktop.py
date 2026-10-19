@@ -443,6 +443,47 @@ def test_chat_sends_the_required_headers_and_parses_sse(monkeypatch):
     assert body["messages"][1] == {"role": "user", "content": "Translate: Hello"}
 
 
+def test_chat_reuses_one_keep_alive_session(monkeypatch):
+    sessions: list[_FakeSession] = []
+
+    def factory():
+        session = _FakeSession(
+            post=lambda *args, **kwargs: FakeResponse(lines=_sse("ok"))
+        )
+        sessions.append(session)
+        return session
+
+    monkeypatch.setattr(wd, "_http_session", factory)
+    wd.close_chat_sessions()
+    assert wd.chat(_credential(), "model-1", "first") == "ok"
+    assert wd.chat(_credential(), "model-1", "second") == "ok"
+    assert len(sessions) == 1
+    assert sessions[0].closed is False
+
+
+def test_chat_drops_the_session_after_a_connection_error(monkeypatch):
+    sessions: list[_FakeSession] = []
+    attempts = {"n": 0}
+
+    def post(*args, **kwargs):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise requests.ConnectionError("gateway dropped the connection")
+        return FakeResponse(lines=_sse("ok"))
+
+    def factory():
+        session = _FakeSession(post=post)
+        sessions.append(session)
+        return session
+
+    monkeypatch.setattr(wd, "_http_session", factory)
+    wd.close_chat_sessions()
+    with pytest.raises(wd.WorkBuddyError):
+        wd.chat(_credential(), "model-1", "first")
+    assert wd.chat(_credential(), "model-1", "second") == "ok"
+    assert len(sessions) == 2
+
+
 def test_chat_honours_the_no_identity_headers(monkeypatch):
     calls: list[dict] = []
 

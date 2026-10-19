@@ -224,8 +224,10 @@ const EN: Table = {
   "agents.noModels": "This agent reported no models; add a model id below.",
   "agents.current": "Current",
   "agents.zcode.currentOnly":
-    "All of ZCode's models can be ticked and used for translation. The current model runs through the CLI; any other model runs through a temporary app-server generation, without changing ZCode's current model or writing its config/DB.",
-  "agents.zcode.rowLocked": "test only, does not switch",
+    "All of ZCode's models can be ticked and used for translation through a temporary app-server generation, without changing ZCode's current model or writing its config/DB. The current model falls back to the CLI if the app-server cannot run it.",
+  "agents.zcode.rowLocked": "hand-added id — no provider, cannot be used",
+  "agents.claudeModelsNote":
+    "Claude Code exposes only the stable aliases sonnet, opus and haiku. To use another model, add its full model id below.",
   "agents.customModel": "custom",
   "agents.customModelPlaceholder": "custom model id",
   "agents.addModel": "Add",
@@ -537,8 +539,10 @@ const ZH: Table = {
   "agents.noModels": "该 agent 没有返回模型；可在下面手动添加模型 ID。",
   "agents.current": "当前",
   "agents.zcode.currentOnly":
-    "ZCode 所有模型都可以勾选并用于翻译：当前模型走 CLI，其他模型走临时 app-server 生成，不改变 ZCode 当前模型，也不写它的 config/DB。",
-  "agents.zcode.rowLocked": "仅测试，不切换当前模型",
+    "ZCode 所有模型都可以勾选并用于翻译：通过临时 app-server 生成，不改变 ZCode 当前模型，也不写它的 config/DB；当前模型在 app-server 不可用时回退 CLI。",
+  "agents.zcode.rowLocked": "手动添加的 ID — 没有 provider，无法使用",
+  "agents.claudeModelsNote":
+    "Claude Code 只提供 sonnet / opus / haiku 三个稳定别名；要用其他模型，在下面添加完整模型 ID。",
   "agents.customModel": "自定义",
   "agents.customModelPlaceholder": "自定义模型 ID",
   "agents.addModel": "添加",

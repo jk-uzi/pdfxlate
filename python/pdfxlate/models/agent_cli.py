@@ -18,6 +18,7 @@ selection, the extra cache-key fields, and shutting the worker down.
 
 from __future__ import annotations
 
+import threading
 from typing import Any, Sequence
 
 from pdfxlate.agents import catalog, zcode_app_server, workbuddy_desktop
@@ -75,28 +76,39 @@ class AgentCliAdapter(ModelAdapter):
         self._resolved = resolved
 
         # ZCode's CLI can only run its current session model and has no
-        # --model.  A non-current ZCode model is translated through the
-        # official app-server's one-off ``workspace/generateText`` instead:
-        # no session, no current-model change, no config/DB write.
+        # --model.  The official app-server can run any provider/model without
+        # creating a session or changing the current one, so both the current
+        # and non-current models are routed through it; the current model keeps
+        # a CLI fallback for the case where the app-server cannot start.
         self._zcode_session = None
         self._zcode_provider = None
         self._zcode_model = None
-        if self.agent == "zcode" and self._model:
+        self._zcode_cli_fallback = False
+        self._zcode_app_server_failed = False
+        if self.agent == "zcode":
             current = catalog.zcode_current_model()
-            chosen = str(self._model).strip()
-            expected = f"{current[0]}/{current[1]}" if current else None
-            if expected and chosen not in {expected, current[1]}:
-                if "/" in chosen:
-                    provider, bare = chosen.split("/", 1)
-                else:
-                    provider, bare = (current[0] if current else ""), chosen
-                if not provider or not bare:
-                    raise ValueError(
-                        "a non-current ZCode model needs a provider-qualified id"
-                    )
-                self._backend = "zcode_app_server"
-                self._zcode_provider = provider
-                self._zcode_model = bare
+            chosen = str(self._model or "").strip()
+            if current:
+                expected = f"{current[0]}/{current[1]}"
+                if chosen in {"", "default", expected, current[1]}:
+                    self._backend = "zcode_app_server"
+                    self._zcode_provider = current[0]
+                    self._zcode_model = current[1]
+                    self._zcode_cli_fallback = True
+                elif chosen:
+                    if "/" in chosen:
+                        provider, bare = chosen.split("/", 1)
+                    else:
+                        provider, bare = current[0], chosen
+                    if not provider or not bare:
+                        raise ValueError(
+                            "a non-current ZCode model needs a provider-qualified id"
+                        )
+                    self._backend = "zcode_app_server"
+                    self._zcode_provider = provider
+                    self._zcode_model = bare
+            # If the current model cannot be read, keep the CLI path: a bare id
+            # cannot be routed to a provider we do not know.
 
         super().__init__(profile, lang_in, lang_out, prompt, ignore_cache)
 
@@ -109,6 +121,23 @@ class AgentCliAdapter(ModelAdapter):
             max_chars=self._defn.batch_char_limit,
             name=f"agent-{self.agent}",
         )
+
+        if self._backend == "zcode_app_server":
+            # Construct the session before the PDF is parsed and warm the real
+            # app-server in the background: its startup (4-6 s) then overlaps
+            # parsing instead of delaying the first translated batch.
+            from pdfxlate.agents.runtime import DEFAULT_TIMEOUT
+
+            self._zcode_session = zcode_app_server.TranslationSession(
+                self._zcode_provider or "",
+                self._zcode_model or "",
+                timeout=DEFAULT_TIMEOUT,
+            )
+            threading.Thread(
+                target=self._zcode_session.prewarm,
+                name=f"agent-{self.agent}-prewarm",
+                daemon=True,
+            ).start()
 
     # --- adapter contract ----------------------------------------------
     def do_translate(self, text: str) -> str:
@@ -152,8 +181,20 @@ class AgentCliAdapter(ModelAdapter):
                     raise AgentOutputError(str(exc)) from exc
                 raise AgentProcessError(str(exc)) from exc
 
-        if self._backend == "zcode_app_server":
-            return self._run_zcode_batch(texts)
+        if self._backend == "zcode_app_server" and not self._zcode_app_server_failed:
+            try:
+                return self._run_zcode_batch(texts)
+            except zcode_app_server.ZCodeAppServerError as exc:
+                if not self._zcode_cli_fallback:
+                    raise AgentProcessError(str(exc)) from exc
+                # The app-server cannot run even the current model.  Finish this
+                # batch through the CLI and stop trying the app-server for the
+                # rest of the document.  Only the current model may fall back:
+                # the CLI would silently run the wrong model for any other id.
+                self._zcode_app_server_failed = True
+                if self._zcode_session is not None:
+                    self._zcode_session.close()
+                    self._zcode_session = None
 
         return run_batch(
             self._defn,
@@ -172,7 +213,6 @@ class AgentCliAdapter(ModelAdapter):
         from pdfxlate.agents.runtime import (
             DEFAULT_TIMEOUT,
             AgentOutputError,
-            AgentProcessError,
             build_batch_prompt,
             build_single_prompt,
             parse_translations,
@@ -192,55 +232,47 @@ class AgentCliAdapter(ModelAdapter):
         }
 
         def generate(prompt: str, items: Sequence[str]) -> tuple[list[str] | None, str]:
-            try:
-                text = session.generate(
-                    [system, {"role": "user", "content": prompt}],
-                    timeout=DEFAULT_TIMEOUT,
-                    cancel_event=self.cancellation_event,
-                )
-            except zcode_app_server.ZCodeAppServerError as exc:
-                raise AgentProcessError(str(exc)) from exc
+            text = session.generate(
+                [system, {"role": "user", "content": prompt}],
+                timeout=DEFAULT_TIMEOUT,
+                cancel_event=self.cancellation_event,
+            )
             return parse_translations(text, items), text
 
-        try:
-            if self._custom_prompt is not None:
-                prompt = render_custom_prompt(
-                    self._custom_prompt, texts[0], self.lang_in, self.lang_out
-                )
-                _, text = generate(prompt, texts[:1])
-                translated = text.strip()
-                if not translated:
-                    raise AgentOutputError("ZCode returned an empty translation")
-                return [translated]
-
-            parsed, _ = generate(
-                build_batch_prompt(texts, self.lang_out), texts
+        if self._custom_prompt is not None:
+            prompt = render_custom_prompt(
+                self._custom_prompt, texts[0], self.lang_in, self.lang_out
             )
-            if parsed is not None:
-                return parsed
+            _, text = generate(prompt, texts[:1])
+            translated = text.strip()
+            if not translated:
+                raise AgentOutputError("ZCode returned an empty translation")
+            return [translated]
 
-            # The batch answer was not the promised JSON; fall back to one
-            # paragraph at a time, the same contract the CLI retry uses.
-            results: list[str] = []
-            for source in texts:
-                parsed, _ = generate(
-                    build_batch_prompt([source], self.lang_out), [source]
+        parsed, _ = generate(build_batch_prompt(texts, self.lang_out), texts)
+        if parsed is not None:
+            return parsed
+
+        # The batch answer was not the promised JSON; fall back to one
+        # paragraph at a time, the same contract the CLI retry uses.
+        results: list[str] = []
+        for source in texts:
+            parsed, _ = generate(
+                build_batch_prompt([source], self.lang_out), [source]
+            )
+            if parsed is None:
+                parsed, text = generate(
+                    build_single_prompt(source, self.lang_out), [source]
                 )
-                if parsed is None:
-                    parsed, text = generate(
-                        build_single_prompt(source, self.lang_out), [source]
-                    )
-                if parsed is not None:
-                    results.extend(parsed)
-                elif text.strip():
-                    results.append(text.strip())
-                else:
-                    raise AgentOutputError(
-                        "could not parse ZCode's output into a translation"
-                    )
-            return results
-        except zcode_app_server.ZCodeAppServerError as exc:
-            raise AgentProcessError(str(exc)) from exc
+            if parsed is not None:
+                results.extend(parsed)
+            elif text.strip():
+                results.append(text.strip())
+            else:
+                raise AgentOutputError(
+                    "could not parse ZCode's output into a translation"
+                )
+        return results
 
     def _cache_params(self) -> dict[str, Any]:
         # Only the agent adapter adds these: an HTTP provider's cache key must
@@ -255,10 +287,13 @@ class AgentCliAdapter(ModelAdapter):
         return params
 
     def close(self) -> None:
+        # Stop the worker first: a running batch may still be using the session.
+        self._queue.close()
+        if self._backend == "desktop":
+            workbuddy_desktop.close_chat_sessions()
         if self._zcode_session is not None:
             self._zcode_session.close()
             self._zcode_session = None
-        self._queue.close()
 
 
 __all__ = ["AgentCliAdapter"]

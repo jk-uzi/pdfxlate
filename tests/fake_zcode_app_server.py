@@ -21,6 +21,15 @@ def main() -> None:
             stream.reconfigure(encoding="utf-8")
         except (AttributeError, OSError):
             pass
+    start_file = os.environ.get("FAKE_ZCODE_START_FILE")
+    if start_file:
+        with open(start_file, "a", encoding="utf-8") as handle:
+            handle.write("start\n")
+    if os.environ.get("FAKE_ZCODE_STARTUP_ERROR"):
+        sys.exit(3)
+    startup_delay = float(os.environ.get("FAKE_ZCODE_STARTUP_DELAY", "0") or 0)
+    if startup_delay:
+        time.sleep(startup_delay)
     send({"method": "startup/storageState", "params": {"phase": "ready"}})
     for line in sys.stdin:
         try:
