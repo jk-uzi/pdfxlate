@@ -157,6 +157,29 @@ def test_emitted_lines_stay_well_formed_under_concurrency(capsys):
     assert all(m["message"] == "x" * 2000 for m in messages)
 
 
+def test_force_utf8_stdio_reconfigures_protocol_streams(monkeypatch):
+    """The frozen Windows runtime may ignore PYTHONIOENCODING; force UTF-8."""
+
+    class _Stream:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, str]] = []
+
+        def reconfigure(self, **kwargs: str) -> None:
+            self.calls.append(kwargs)
+
+    stdin, stdout, stderr = _Stream(), _Stream(), _Stream()
+    monkeypatch.setattr(sidecar.sys, "stdin", stdin)
+    monkeypatch.setattr(sidecar.sys, "stdout", stdout)
+    monkeypatch.setattr(sidecar.sys, "stderr", stderr)
+
+    sidecar._force_utf8_stdio()
+
+    expected = [{"encoding": "utf-8", "errors": "replace"}]
+    assert stdin.calls == expected
+    assert stdout.calls == expected
+    assert stderr.calls == expected
+
+
 def test_background_dispatch_covers_only_translation():
     """A cheap request must still be answered synchronously."""
     assert "translate.start" in sidecar._BACKGROUND_METHODS

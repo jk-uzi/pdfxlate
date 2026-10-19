@@ -72,7 +72,7 @@ they were. Point it at any OpenAI-compatible model endpoint.
 
 Get the latest Windows installer from
 [Releases](https://github.com/jk-uzi/pdfxlate/releases)
-(`pdfxlate-Setup-0.2.0.exe`, about 180 MB).
+(`pdfxlate-Setup-0.2.0.exe`, about 193 MB).
 
 - **Requirements:** Windows 10 or 11, 64-bit. The installer is per-user; no
   administrator rights are needed.
@@ -389,8 +389,8 @@ electron-builder. Output lands in `dist/`:
 - `dist/pdfxlate Setup <version>.exe` — NSIS installer for Windows
 - `npm run pack` builds only the unpacked directory
 
-For scale: `win-unpacked/` is about 576 MB unpacked (mostly the Python runtime
-and its dependencies) and the installer is about 180 MB.
+For scale: `win-unpacked/` is about 589 MB unpacked (mostly the Python runtime
+and its dependencies) and the installer is about 193 MB.
 
 The first electron-builder run downloads NSIS and winCodeSign. `scripts/build.sh`
 points it at the npmmirror binary mirror by default because `github.com` release

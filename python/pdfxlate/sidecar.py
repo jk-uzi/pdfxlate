@@ -73,6 +73,29 @@ _JOBS_LOCK = threading.Lock()
 #: JSON documents on one line and the renderer loses both.
 _EMIT_LOCK = threading.Lock()
 
+
+def _force_utf8_stdio() -> None:
+    """Make the JSON protocol UTF-8 regardless of the frozen runtime.
+
+    PyInstaller's Windows bootloader can leave stdio on the ANSI code page even
+    when Electron sets ``PYTHONIOENCODING=utf-8``.  The renderer reads stdout
+    as UTF-8, so Chinese model labels and paths would otherwise arrive as
+    mojibake (or make the JSON parse fail).  Reconfiguring here also covers
+    ``--mcp``, whose stdio transport has the same requirement.
+    """
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        if stream is None:
+            continue
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            # A redirected/closed stream is not worth failing startup over.
+            pass
+
+
 #: Methods that must not block the request loop.
 #:
 #: The loop is what receives ``translate.cancel``; running a whole translation
@@ -828,6 +851,7 @@ def _run_method(method: str, req_id: Any, params: dict[str, Any]) -> None:
 def main(argv: list[str] | None = None) -> int:
     global _DEBUG
 
+    _force_utf8_stdio()
     argv = list(sys.argv[1:] if argv is None else argv)
 
     # ``--mcp`` turns this same executable into the MCP server instead of the

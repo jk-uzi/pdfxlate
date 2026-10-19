@@ -61,7 +61,7 @@
 ## 下载与安装
 
 从 [Releases](https://github.com/jk-uzi/pdfxlate/releases) 下载最新版 Windows 安装包
-（形如 `pdfxlate-Setup-0.2.0.exe`，约 180 MB）。
+（形如 `pdfxlate-Setup-0.2.0.exe`，约 193 MB）。
 
 - **系统要求**：Windows 10 或 11，64 位。安装按当前用户进行，不需要管理员权限。
 - **未签名**：安装包没有代码签名证书，首次运行 Windows SmartScreen 会提示
@@ -347,8 +347,8 @@ TypeScript、用 electron-builder 打包。产物在 `dist/`：
 - `dist/pdfxlate Setup <版本>.exe` —— Windows NSIS 安装包
 - `npm run pack` 只生成未打包的目录
 
-数值说明：未压缩的 `win-unpacked/` 约 576 MB（Python 运行时与依赖占大头），安装包约
-180 MB。
+数值说明：未压缩的 `win-unpacked/` 约 589 MB（Python 运行时与依赖占大头），安装包约
+193 MB。
 
 第一次运行 electron-builder 会下载 NSIS 与 winCodeSign。`scripts/build.sh` 默认把
 binary 镜像指向 npmmirror，因为在部分网络下 `github.com` 的 release 资源不可达；可以

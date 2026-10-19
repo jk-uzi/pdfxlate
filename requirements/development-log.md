@@ -3417,3 +3417,71 @@ pdfxlate 仍要求先在 Agents 面板勾选模型（生成 provider 条目）�
 - WorkBuddy 的 JSON/SSE 按 UTF-8 处理；极端非 UTF-8 响应使用
   `errors="replace"`，不会抛异常。
 - 没有改 agent 调用、模型、prompt 或 token 处理。
+
+## 2026-10-19 发布 0.2.0：Windows 安装包检查与构建
+
+**目标**：把当前 develop 作为 0.2.0 发布，确认装到没有 Python 的 Windows 机器上
+也能用，并产出 NSIS 安装包。
+
+### 发布前审计发现
+
+1. **打包版缺少 `ultrafast` 依赖**：UI 一直提供 `ultrafast`，但
+   `pdf-inspector` 只是 `pyproject.toml` 的可选 extra，venv 未安装、PyInstaller
+   spec 未收集；全新安装的用户选 ultrafast 会报缺少依赖。
+2. **打包版 sidecar 输出 GBK**：PyInstaller 冻结后的 Python 无视 Electron 传入的
+   `PYTHONIOENCODING=utf-8`，`agents.list` 的中文模型名以 GBK 写 stdout；渲染进程
+   按 UTF-8 读取，WorkBuddy/ZCode 的模型名变成 `Hy3 �� x0.00 credits`。
+   - 修复：`sidecar.py` 在 `main()` 最前面调用 `_force_utf8_stdio()`，把
+     stdin/stdout/stderr 重新配置为 UTF-8；`--mcp` 分支同样覆盖。
+   - 新增 `test_force_utf8_stdio_reconfigures_protocol_streams`。
+3. **`cryptography` 未显式收集**：WorkBuddy 桌面认证在函数内延迟 import，上次日志
+   遗留“打包版需验证”。spec 增加 `collect_all("cryptography")` 与显式 agent 模块。
+
+### 实现
+
+- 版本：`package.json` / `package-lock.json` / `pyproject.toml` /
+  `pdfxlate.__version__` 全部 0.2.0。
+- `pyproject.toml`：`dev` extra 增加 `pdf-inspector>=1.25.2,<2`。
+- `pdfxlate.spec`：收集 `pdf_inspector`、`cryptography` 的数据/二进制/hidden
+  imports；显式加入 `pdfxlate.agents.workbuddy_desktop` 与
+  `pdfxlate.agents.zcode_app_server`。
+- 文档：README 安装包版本/大小、project-structure 测试数 578、打包说明与
+  sidecar UTF-8 说明同步。
+
+### 构建
+
+- `bash scripts/build.sh` 成功：
+  - PyInstaller onedir 包含 `bundle_assets` 字体、`pdfminer/cmap`、`cryptography`、
+    `pdf_inspector`、MCP。
+  - Electron 33.4.11 x64。
+- 产物：
+  - `dist/pdfxlate-Setup-0.2.0.exe`，**192,576,470 字节（183.7 MiB）**，
+    SHA256 `35923108E78517212294FEEC62320B0DF457E5985C9524B61FD9C1DD6F69BA6A`；
+  - `dist/win-unpacked/` 589 MB（Electron 268 MB + sidecar 321 MB）。
+- 未签名：`Get-AuthenticodeSignature` → `NotSigned`；SmartScreen 提示不可避免。
+
+### 验证
+
+- `pytest tests/ -q` → **578 passed**；真实 `agents-snapshot.json` mtime 不变。
+- `npm run typecheck`、`npm run check:i18n`（274 keys）、`npm run build` 通过。
+- 打包 sidecar（最小 PATH、无 Python、临时 `LOCALAPPDATA`/`APPDATA`）：
+  - `ping.version = 0.2.0`；
+  - `assets.status` → `font_zh=true`、`layout_model=false`；
+  - `agents.list` → WorkBuddy `desktop.auth="ok"`，证明 `cryptography` 已打包；
+  - `--mcp` initialize 成功，列出四个工具。
+- 打包版真实管线（fake OpenAI + `ultrafast` + 一页 PDF）：输出 mono PDF 含
+  「你好，世界」，不调用真实模型。
+- 首次模型下载：临时干净目录下 `assets.download` 成功拉取 75,324,598 字节
+  `doclayout_yolo_docstructbench_imgsz1024.onnx`。
+- NSIS：静默安装到临时目录 → 干净环境启动（`ping` 0.2.0、字体内置、无缺失
+  DLL）→ 静默卸载后目录清除。
+- 打包 UI：WorkBuddy 模型 label 的码点为 `Hy3 · x0.00 credits`（U+00B7），
+  Electron/33.4.11，`pdfxlate/0.2.0`。
+
+### 发布
+
+- 目标：push `develop` 与 `main`，打 `v0.2.0` tag，创建 GitHub Release 并上传
+  `pdfxlate-Setup-0.2.0.exe`。
+- Release URL：<https://github.com/jk-uzi/pdfxlate/releases/tag/v0.2.0>。
+- 已知限制：未签名、首次 fast 模式需联网下载模型、仅 Windows x64；OCR 数据仍按需
+  下载。

@@ -109,7 +109,7 @@ pdfxlate/
 │       ├── cache.py         179 行  sqlite3 翻译缓存 + 命中统计
 │       ├── api.py           274 行  公开 Python API（含取消透传与 adapter 关闭）
 │       ├── cli.py           244 行  命令行入口
-│       ├── sidecar.py       891 行  stdio JSON 行协议（Electron 调用，含缓存统计）；--mcp 转交 MCP 服务
+│       ├── sidecar.py       915 行  stdio JSON 行协议（Electron 调用，含缓存统计）；--mcp 转交 MCP 服务
 │       ├── mcp_server.py    509 行  MCP 服务（外部 agent 调用，stdio）
 │       ├── mcp_config.py    246 行  把 MCP 条目写进各 agent 配置（备份/合并/校验）
 │       ├── agents/
@@ -579,6 +579,9 @@ mono/dual **共用同一个序号**（否则一对文件看起来像两次不相
 请求 `{id, method, params}`，响应 `{id, ok, result|error}`，
 事件 `{event: "progress"|"done", ...}`。
 进程启动后先发一次 `{event: "ready", version}`，Electron 侧以此确认链路可用。
+启动时 `_force_utf8_stdio()` 会把 stdin/stdout/stderr 强制为 UTF-8：PyInstaller
+的 Windows bootloader 可能无视 `PYTHONIOENCODING=utf-8`，否则中文模型名和路径
+会以 GBK 输出，渲染进程按 UTF-8 读取后变成乱码。
 
 **`translate.start` 与 `agents.test` 在工作线程里跑，其余方法仍在主循环里同步执行。**
 这一点是取消能生效的前提：主循环是读 stdin 的地方，而 `translate.cancel` 就是
@@ -1224,7 +1227,7 @@ key 名与渲染进程的 `dialog.*` 保持一致，便于人工对照。
 
 ```bash
 # Windows 的 venv 是 .venv/Scripts/python.exe，macOS/Linux 是 .venv/bin/python
-python/.venv/bin/python -m pytest tests/ -q          # Python，当前 577 passed
+python/.venv/bin/python -m pytest tests/ -q          # Python，当前 578 passed
 python/.venv/bin/python -m pytest tests/ -q -k cache # 单个方向
 npm run typecheck                                    # 前端类型检查
 npm run check:i18n                                   # 中英文字符串表一致性
@@ -1240,7 +1243,7 @@ bash scripts/build.sh  # Git Bash；stage → PyInstaller → tsc → electron-b
 产物：`dist/win-unpacked/`（可直接运行）与
 `dist/pdfxlate Setup 0.2.0.exe`（NSIS，per-user，无需管理员）。本次实测：
 
-- 安装包 **180 MB**，解包后 **576 MB**（Electron 228 MB + sidecar 308 MB，含字体）。
+- 安装包 **193 MB**，解包后 **589 MB**（Electron 268 MB + sidecar 321 MB，含字体）。
 - 干净 `LOCALAPPDATA` 下：`assets.status` 报告 `font_zh=true`（内置）、
   `layout_model=false`；模型下载走 `hf-mirror.com` 成功；打包版 sidecar 用真实管线
   译出一页带 54 个汉字的 PDF；`--mcp` 握手并列出四个工具。
@@ -1392,7 +1395,7 @@ gitleaks detect                            # 扫 git 历史
 - **设置模式下折叠侧栏会连「← 返回」一起藏起来**，退出设置只能靠标题栏图标。图标
   常驻所以可恢复，属「图标折叠侧栏」的直接推论，未做特例。
 - **安装包未签名**：Windows SmartScreen 会在首次运行时提示；签名需要购买证书。
-  打包链本身已在本机验证：NSIS 180 MB、安装后启动、单实例、关窗回收 sidecar 均通过。
+  打包链本身已在本机验证：NSIS 193 MB、安装后启动、单实例、关窗回收 sidecar 均通过。
 - **版面模型仍在线下载**（75 MB，走 hf-mirror）：应用本身就需要网络调用翻译 API，
   因此没有把模型打进安装包；默认中文字体已经内置，解决的是实测必然失败的 GitHub 下载。
 - 前端尚无自动化测试，仅 `typecheck` 通过。自建标题栏的拖拽区属于「静默吞掉点击、
