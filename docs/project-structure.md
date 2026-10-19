@@ -118,7 +118,7 @@ pdfxlate/
 │       │   ├── detect.py      816 行  可执行文件解析（PATH / 注册表 / 路径覆盖）、版本与登录探测
 │       │   ├── catalog.py    1152 行  模型列表（codex / codebuddy / WorkBuddy 桌面版 / DSH 桌面 profile / ZCode provider_config）
 │       │   ├── runtime.py     979 行  拼命令、spawn、输出解析、超时/取消、杀进程树、DSH --patch
-│       │   ├── workbuddy_desktop.py 1485 行  WorkBuddy 桌面版：auth 解密 / 模型目录 / HTTP SSE 翻译
+│       │   ├── workbuddy_desktop.py 1515 行  WorkBuddy 桌面版：auth 解密 / 模型目录 / HTTP SSE 翻译
 │       │   └── batch.py       208 行  批队列（8 段 / 12000 字符 / 0.2s；argv agent 8000）
 │       ├── models/
 │       │   ├── __init__.py     23 行  导出翻译层公开符号
@@ -147,8 +147,8 @@ pdfxlate/
 │   │   └── preload.ts       183 行  contextBridge，向渲染进程暴露 API（含 openExternal）
 │   └── renderer/
 │       ├── index.html       760 行  界面结构（文案走 data-i18n* 属性；图标在构建时内联）
-│       ├── app.ts          4536 行  界面逻辑（任务/设置双模式、折叠、标签页、文件夹浏览与搜索、拖放、缩放、进度、开始/取消合一、另存为、选项覆盖、侧栏拖拽、供应商/模型两栏编辑器、Agents 面板、MCP 配置）
-│       ├── i18n.ts          824 行  中英文字符串表 + t()/applyStaticTranslations()
+│       ├── app.ts          4561 行  界面逻辑（任务/设置双模式、折叠、标签页、文件夹浏览与搜索、拖放、缩放、进度、开始/取消合一、另存为、选项覆盖、侧栏拖拽、供应商/模型两栏编辑器、Agents 面板、MCP 配置）
+│       ├── i18n.ts          829 行  中英文字符串表 + t()/applyStaticTranslations()
 │       ├── icon.svg          49 行  应用标记的**唯一来源**（标题栏内联 + 打包图标）
 │       └── style.css       2320 行  样式（含标题栏标签、查看器浮层与常驻图钉、折叠与侧栏状态行、侧栏拖拽手柄、模型页两栏布局与开关、Agents 卡片）
 ├── assets/
@@ -364,9 +364,9 @@ spawn 一次 CLI（见下），解析回 `{"translations": [...]}`。`_cache_par
 |---|---|
 | `defs.py` | `AgentDef` 数据类 + 五个定义：`claude` / `codex` / `workbuddy` / `zcode` / `dsh`。字段包括 PATH 名、fallback 名、环境变量、安装/文档链接、prompt 传递方式（stdin / argv）、内置模型、登录探测方式、标准安装相对路径与 Windows 应用名 |
 | `detect.py` | `resolve_agent()`：`agents.paths` 覆盖 → 环境变量 → `shutil.which` → 平台标准目录 / Windows 卸载注册表；`detect_agent()`：版本 + 登录探测。**登录探测只回 `ok/missing/unknown`**，绝不把 CLI 原始输出（`codex login status` 会打印掩码 key）传出去；结果缓存 30 秒 |
-| `catalog.py` | 模型列表：Claude 用内置 `sonnet/opus/haiku`；Codex 解析 `codex debug models`（过滤 `visibility == "hide"`）；WorkBuddy 解析 `codebuddy -p --help` 的 `Currently supported:`，没有独立 CLI 时走 `workbuddy_desktop.fetch_models()`（`/v3/config` 的 18 个 CLI 模型，label 带 credits，`source: "desktop"`）；**ZCode** 解析 `~/.zcode/v2/provider_config.json`（`providerOrder` + 两组 model rules，过滤 `enabled: false`、去重；模型 id 为复合 `provider/model`，label 为 `modelId (providerName)`；当前模型从 `~/.zcode/cli/db/db.sqlite` 最近的非子代理 session 只读取，只有当前模型 `selectable`；不启动 CLI）；**DSH** 优先解析 `~/.dsh/profiles/desktop/cordis.patch.yml` 的 `llm-pi-ai.config.providers[].models[]` 与 `agent-default-model`（复合 `provider/model`，当前模型带 `current`；`sanitize_provider_config()` 只保留 `apiKeyEnv` 名称、丢弃任何 key/token/secret），没有桌面 profile 时回退 `--dump-config`。失败返回内置 fallback + `error`，不抛致命错误 |
+| `catalog.py` | 模型列表：Claude 用内置 `sonnet/opus/haiku`；Codex 解析 `codex debug models`（过滤 `visibility == "hide"`）；WorkBuddy 解析 `codebuddy -p --help` 的 `Currently supported:`，没有独立 CLI 时走 `workbuddy_desktop.fetch_models()`（`/v3/config` 的 CLI 模型，label 带 credits，`source: "desktop"`）；**ZCode** 解析 `~/.zcode/v2/provider_config.json`（`providerOrder` + 两组 model rules，过滤 `enabled: false`、去重；模型 id 为复合 `provider/model`，label 为 `modelId (providerName)`；当前模型从 `~/.zcode/cli/db/db.sqlite` 最近的非子代理 session 只读取，只有当前模型 `selectable`；不启动 CLI）；**DSH** 优先解析 `~/.dsh/profiles/desktop/cordis.patch.yml` 的 `llm-pi-ai.config.providers[].models[]` 与 `agent-default-model`（复合 `provider/model`，当前模型带 `current`；`sanitize_provider_config()` 只保留 `apiKeyEnv` 名称、丢弃任何 key/token/secret），没有桌面 profile 时回退 `--dump-config`。失败返回内置 fallback + `error`，不抛致命错误 |
 | `runtime.py` | `_build_command()` 按 agent 拼命令；`_run_process()` 在空临时 cwd 里 spawn，Windows 用 `CREATE_NO_WINDOW`，超时/取消用 `taskkill /F /T`（POSIX terminate→kill）杀进程树；输出解析（Claude JSON envelope / Codex last-message 文件 / 其余 stdout）；`parse_translations()` 依次接受 `translations` 数组、索引 key 对象、长度匹配且非回显的裸数组、单段纯文本；失败先严格重试再拆单段。DSH 非默认模型生成临时 `--patch`（`llm-pi-ai` 的选中 provider + `agent-default-model`），`apiKeyEnv` 的值从 `~/.dsh/.credentials.yaml` 的 `refs` 取出后只注入子进程 env；ZCode 在 spawn 前校验配置模型是否为 CLI 当前模型，不匹配报可读错误（CLI 没有 `--model`，绝不把 `/model` 当 prompt 发送） |
-| `workbuddy_desktop.py` | WorkBuddy 桌面版后端：探测 Windows 标准目录 / 卸载注册表 / macOS bundle；用 `ELECTRON_RUN_AS_NODE=1` 调 app 的 native binding 取 at-rest key；AES-256-GCM + AAD 解 `$wbEncrypted` 的 access/refresh/domain/identity；CN `https://copilot.tencent.com/v3/config`（回退 `/v2/enterprises/personal/models`）与 global `www.workbuddy.ai`/`www.codebuddy.ai/v3/config` 的 CLI 模型目录；`/v2/chat/completions` SSE（system 首条、conversation UUID、X-User-Id/Enterprise-Id/Domain）；token 只在内存，过期用 refresh token 换新且不写 auth 文件；错误只回可读消息 |
+| `workbuddy_desktop.py` | WorkBuddy 桌面版后端：探测 Windows 标准目录 / 卸载注册表 / macOS bundle；用 `ELECTRON_RUN_AS_NODE=1` 调 app 的 native binding 取 at-rest key；AES-256-GCM + AAD 解 `$wbEncrypted` 的 access/refresh/domain/identity；CN `https://copilot.tencent.com/v3/config`（回退 `/v2/enterprises/personal/models`）与 global `www.workbuddy.ai`/`www.codebuddy.ai/v3/config` 的 CLI 模型目录；`/v2/chat/completions` SSE（system 首条、conversation UUID、X-User-Id/Enterprise-Id/Domain）；HTTP 用 `trust_env=False` 直连，避开失效的 Windows 系统代理，需要代理时显式设 `WORKBUDDY_PROXY`；token 只在内存，过期用 refresh token 换新且不写 auth 文件；错误只回可读消息 |
 | `batch.py` | `BatchQueue`：一个 daemon 线程 + `Condition`，8 段 / 12000 字符（argv 的 ZCode 8000）/ 首段后 0.2 秒触发；自定义 prompt 时 `max_items=1`；空闲 60 秒退出；`close()` 唤醒所有等待者 |
 | `__init__.py` | 公开 `list_agents()`（并行探测 + 模型列表，总预算 8 秒，超时项回退）与错误类型 |
 
@@ -384,7 +384,8 @@ spawn 一次 CLI（见下），解析回 `{"translations": [...]}`。`_cache_par
 读 `~/.claude`、`~/.codex` 的凭据既脆弱又越界；调用 headless 模式是唯一既尊重登录态、
 又不复制密钥的方式。代价是每次翻译多一次进程启动，所以才有批队列。v1 不映射
 temperature / top_p / max_tokens / reasoning——由 CLI 自己的配置决定；ZCode 没有
-`--model`，只能用它的当前模型；WorkBuddy 只认独立 CLI，只有桌面版时面板会提示安装。
+`--model`，只能用它的当前模型；WorkBuddy 在独立 CLI 不存在时走桌面版 HTTP，而不是
+伪装成 CLI 调用。
 安全上：空临时 cwd、Claude `--tools ""`、Codex read-only、ZCode plan 模式；DSH 没有
 通用 sandbox 开关，靠提示 + 空目录，残余风险在开发记录里注明。
 
@@ -763,7 +764,7 @@ agent CLI 的检测与模型勾选，见下）、**外观**（界面语言）、
 
 **设置 › Agents**（`#agent-cards`）是单栏卡片列表，每个 agent 一张卡：
 
-- 头部：i18n 名称、状态 pill（已安装 / 未安装 / 未登录 / 未验证 / 不可用）、版本、
+- 头部：i18n 名称、状态 pill（已安装 / 未安装 / 未登录 / 未验证 / 可用 / 不可用）、版本、
   可执行文件路径；未安装时给安装/文档链接（走 `shell:openExternal`，主进程只放行
   `https:`）与「指定 CLI 路径」输入（写 `agents.paths`）。
 - 已安装：模型复选框（CLI 列出的 + 已配置但不在列表里的自定义模型）、每行「测试」
@@ -781,10 +782,15 @@ agent CLI 的检测与模型勾选，见下）、**外观**（界面语言）、
   已不可选的旧行仍允许取消勾选，避免切换模型后卡在旧配置上。二者都**不启动 CLI**
   枚举模型，返回 `models_source: "profile"`。
 - **WorkBuddy** 只有桌面版时，卡片显示「桌面版 · 已登录/未登录」与 `/v3/config`
-  的 18 个 CLI 模型（label 带 credits），不再显示「安装 CLI」或 CLI 路径编辑器；
-  翻译/测试走桌面版 `/v2/chat/completions`，消耗该账号额度。桌面 auth 的 token
+  的 CLI 模型（本机 19 个，label 带 credits），不再显示「安装 CLI」或 CLI 路径编辑器；
+  翻译/测试走桌面版 `/v2/chat/completions`，消耗该账号额度。HTTP 默认直连；系统里
+  留着失效代理也不影响，需要代理时设 `WORKBUDDY_PROXY`。桌面 auth 的 token
   只在引擎内存（过期用 refresh token 换新，不写回 auth 文件）；独立
   `codebuddy`/`cbc` 存在时仍走原来的 CLI 路径。
+- **测试成功后状态会更新**：DSH/ZCode 的登录状态引擎探测不到，初始显示「未验证」；
+  任一行「测试」真实成功（有延迟与样例）后，该卡片的 pill 变「可用」，失败则回到
+  「未验证」；改 CLI 路径会清掉这个本会话标记。这是对「测试明明能用，卡片却说未验证」
+  的修正，不把 unknown 直接降级成「已安装」。
 - 模型列表来自 `agents.list`（检测与模型枚举并行、30 秒缓存）；「重新检测」用
   `refresh: true` 绕过缓存。检测在引擎里跑，引擎未就绪时面板显示提示，就绪后
   `applyEngineState()` 会自动重试。
@@ -1157,7 +1163,7 @@ key 名与渲染进程的 `dialog.*` 保持一致，便于人工对照。
 
 ```bash
 # Windows 的 venv 是 .venv/Scripts/python.exe，macOS/Linux 是 .venv/bin/python
-python/.venv/bin/python -m pytest tests/ -q          # Python，当前 542 passed
+python/.venv/bin/python -m pytest tests/ -q          # Python，当前 545 passed
 python/.venv/bin/python -m pytest tests/ -q -k cache # 单个方向
 npm run typecheck                                    # 前端类型检查
 npm run check:i18n                                   # 中英文字符串表一致性

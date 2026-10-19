@@ -232,7 +232,8 @@ DeepSeek Harness 五个 CLI。
 v1 的限制（写进 UI 提示与文档）：
 
 - **WorkBuddy** 独立 `codebuddy`/`cbc` 存在时走 CLI；只有桌面版时走桌面版
-  auth/catalog/HTTP（`/v3/config` + `/v2/chat/completions` SSE），token 只在引擎
+  auth/catalog/HTTP（`/v3/config` + `/v2/chat/completions` SSE）。HTTP 默认直连，
+  绕开系统里可能失效的代理；需要代理时显式设 `WORKBUDDY_PROXY`。token 只在引擎
   内存，不写 WorkBuddy 的 auth 文件；卡片显示「桌面版 · 已登录/未登录」，不再只
   提示安装 CLI。
 - **ZCode** 的 CLI 没有 `--model`：目录读取 `~/.zcode/v2/provider_config.json`，
@@ -257,7 +258,9 @@ v1 的限制（写进 UI 提示与文档）：
 enabled 模型并标记当前模型（非当前模型不可选，切换仍需在 ZCode 内做）。WorkBuddy
 桌面版的 auth 解密、`/v3/config`/`/v2/enterprises/personal/models` 目录与
 `/v2/chat/completions` SSE 翻译已接入（只在没有独立 `codebuddy`/`cbc` CLI 时启用），
-卡片显示桌面版登录状态与 credits，不再只提示安装 CLI。
+卡片显示桌面版登录状态与 credits，不再只提示安装 CLI。HTTP 默认直连（避开失效的
+系统代理，`WORKBUDDY_PROXY` 可显式覆盖）；DSH/ZCode 的「测试」成功后卡片 pill 由
+「未验证」变「可用」，避免出现“测试能用但状态未验证”的矛盾。
 
 ## 六、Electron 外壳
 

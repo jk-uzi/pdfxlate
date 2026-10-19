@@ -60,6 +60,8 @@ logger = logging.getLogger(__name__)
 APP_EXECUTABLE_ENV = "WORKBUDDY_APP_EXECUTABLE"
 #: Explicit override for the desktop auth file.
 AUTH_FILE_ENV = "WORKBUDDY_AUTH_FILE"
+#: Optional proxy for networks where the gateway is only reachable through one.
+PROXY_ENV = "WORKBUDDY_PROXY"
 
 #: The live auth file written by the desktop app.
 LIVE_AUTH_FILENAME = "workbuddy-desktop.info"
@@ -844,10 +846,35 @@ def _origin(credential: WorkBuddyCredential) -> str:
 
 
 def _request_error(exc: Exception) -> WorkBuddyError:
+    if isinstance(exc, requests.exceptions.ProxyError):
+        return WorkBuddyError(
+            "transport",
+            "could not reach the WorkBuddy service (the system proxy was "
+            "unreachable; WorkBuddy connects directly, or set "
+            f"{PROXY_ENV} to a working proxy)",
+        )
     return WorkBuddyError(
         "transport",
         f"could not reach the WorkBuddy service ({type(exc).__name__})",
     )
+
+
+def _http_session() -> requests.Session:
+    """A session that ignores the OS proxy unless the user names one.
+
+    ``requests`` falls back to the Windows registry proxy even when no
+    ``*_PROXY`` environment variable is set.  A stale Clash/V2Ray entry there
+    (the usual ``127.0.0.1:7890``) makes every WorkBuddy metadata and chat call
+    fail with ``ProxyError`` while the desktop app itself reaches the gateway
+    directly.  Match the desktop client: connect directly, unless the user
+    explicitly points ``WORKBUDDY_PROXY`` at a working proxy.
+    """
+    session = requests.Session()
+    session.trust_env = False
+    proxy = os.environ.get(PROXY_ENV, "").strip()
+    if proxy:
+        session.proxies = {"http": proxy, "https": proxy}
+    return session
 
 
 def _classify_body(status: int, text: str) -> WorkBuddyError:
@@ -918,11 +945,12 @@ def _response_json(response: Any) -> dict[str, Any]:
 
 
 def _get_json(url: str, headers: dict[str, str], timeout: float) -> dict[str, Any]:
-    try:
-        response = requests.get(url, headers=headers, timeout=timeout)
-    except requests.RequestException as exc:
-        raise _request_error(exc) from exc
-    return _response_json(response)
+    with _http_session() as session:
+        try:
+            response = session.get(url, headers=headers, timeout=timeout)
+        except requests.RequestException as exc:
+            raise _request_error(exc) from exc
+        return _response_json(response)
 
 
 def refresh_credential(
@@ -947,14 +975,15 @@ def refresh_credential(
     if credential.enterprise_id:
         headers["X-Enterprise-Id"] = credential.enterprise_id
     try:
-        response = requests.post(
-            f"{_chat_base(credential)}/v2/plugin/auth/token/refresh",
-            headers=headers,
-            timeout=timeout,
-        )
+        with _http_session() as session:
+            response = session.post(
+                f"{_chat_base(credential)}/v2/plugin/auth/token/refresh",
+                headers=headers,
+                timeout=timeout,
+            )
+            data = _response_json(response)
     except requests.RequestException as exc:
         raise _request_error(exc) from exc
-    data = _response_json(response)
     access_token = _clean_text(data.get("accessToken"))
     if not access_token:
         raise WorkBuddyError(
@@ -1309,35 +1338,36 @@ def _chat_once(
         "stream": True,
     }
     headers = _chat_headers(credential)
-    try:
-        response = requests.post(
-            f"{_chat_base(credential)}/v2/chat/completions",
-            headers=headers,
-            json=body,
-            timeout=(10, timeout),
-            stream=True,
-        )
-    except requests.RequestException as exc:
-        raise _request_error(exc) from exc
-    try:
-        status = int(getattr(response, "status_code", 0) or 0)
-        if status >= 400:
-            try:
-                text = str(getattr(response, "text", "") or "")
-            except Exception:  # noqa: BLE001
-                text = ""
-            raise _classify_body(status, text)
-        content_type = _header(response, "content-type").lower()
-        if "json" in content_type and "event-stream" not in content_type:
-            answer = _read_json_answer(response, status)
-            if answer is not None:
-                return answer
-        return _read_stream(response, cancel_event)
-    finally:
+    with _http_session() as session:
         try:
-            response.close()
-        except Exception:  # noqa: BLE001
-            pass
+            response = session.post(
+                f"{_chat_base(credential)}/v2/chat/completions",
+                headers=headers,
+                json=body,
+                timeout=(10, timeout),
+                stream=True,
+            )
+        except requests.RequestException as exc:
+            raise _request_error(exc) from exc
+        try:
+            status = int(getattr(response, "status_code", 0) or 0)
+            if status >= 400:
+                try:
+                    text = str(getattr(response, "text", "") or "")
+                except Exception:  # noqa: BLE001
+                    text = ""
+                raise _classify_body(status, text)
+            content_type = _header(response, "content-type").lower()
+            if "json" in content_type and "event-stream" not in content_type:
+                answer = _read_json_answer(response, status)
+                if answer is not None:
+                    return answer
+            return _read_stream(response, cancel_event)
+        finally:
+            try:
+                response.close()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def chat(

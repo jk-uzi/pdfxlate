@@ -403,6 +403,15 @@ const agentMessages = new Map<
   string,
   { key: string; params?: Record<string, string>; error: boolean }
 >();
+/**
+ * Agents whose Test button has produced a real answer in this session.
+ *
+ * The engine cannot prove a login for every CLI, so their cards start as
+ * "Unverified". A successful test is stronger evidence than that probe; keep
+ * the ids here (not in the saved config) so the pill can say "Available" until
+ * the app restarts or the CLI path changes.
+ */
+const testedAgents = new Set<string>();
 
 // --- sidebar collapse ------------------------------------------------------
 
@@ -3286,7 +3295,7 @@ function agentDesktopLabel(desktop: AgentDesktopStatus): string {
   }
 }
 
-type AgentState = "installed" | "missing" | "auth" | "unknown" | "unavailable";
+type AgentState = "installed" | "missing" | "auth" | "unknown" | "tested" | "unavailable";
 
 /**
  * What the status pill says.
@@ -3302,12 +3311,14 @@ function agentState(agent: AgentStatus): AgentState {
   if (desktop) {
     if (desktop.auth === "missing") return "auth";
     if (desktop.auth === "ok") return "installed";
+    if (testedAgents.has(agent.id)) return "tested";
     return "unknown";
   }
   if (agent.supported === false) return "unavailable";
   if (!agent.installed) return agentConfigured(agent.id) ? "unavailable" : "missing";
   if (agent.auth === "missing") return "auth";
   if (agent.auth === "ok") return "installed";
+  if (testedAgents.has(agent.id)) return "tested";
   return "unknown";
 }
 
@@ -3321,6 +3332,8 @@ function agentStatusLabel(state: AgentState): string {
       return t("agents.status.auth");
     case "unknown":
       return t("agents.status.unknown");
+    case "tested":
+      return t("agents.status.tested");
     default:
       return t("agents.status.unavailable");
   }
@@ -3329,6 +3342,7 @@ function agentStatusLabel(state: AgentState): string {
 function agentStatusClass(state: AgentState): string {
   switch (state) {
     case "installed":
+    case "tested":
       return "status--ok";
     case "missing":
     case "unknown":
@@ -3585,12 +3599,14 @@ async function testAgentModel(
       error?: string;
     }>("agents.test", { agent: agent.id, model: row.testModel });
     if (result.ok) {
+      testedAgents.add(agent.id);
       setAgentMessage(agent.id, "agents.testOk", {
         ms: String(result.latency_ms),
         model: row.label,
         sample: truncateSample(result.sample),
       });
     } else {
+      testedAgents.delete(agent.id);
       setAgentMessage(
         agent.id,
         "agents.testFailed",
@@ -3599,8 +3615,10 @@ async function testAgentModel(
       );
     }
   } catch (err) {
+    testedAgents.delete(agent.id);
     setAgentMessage(agent.id, "agents.testFailed", { error: cleanError(err) }, true);
   } finally {
+    renderAgents();
     button.disabled = false;
     button.textContent = t("agents.test");
   }
@@ -3629,6 +3647,8 @@ async function saveAgentPath(
     draftAgents().paths[agent.id] = value;
   }
   if (!(await persistAgentConfig())) return;
+  // A different executable invalidates the old "test passed" evidence.
+  testedAgents.delete(agent.id);
   // Detection depends on the override, so a fresh scan is needed — re-rendering
   // the old result would keep showing the path we just replaced.
   await refreshAgents(true);
@@ -4000,6 +4020,11 @@ function agentCard(agent: AgentStatus): HTMLElement {
     const hint = document.createElement("p");
     hint.className = "hint agent-card__reason";
     hint.textContent = t("agents.workbuddyDesktopHint");
+    card.append(hint);
+  } else if (!desktop && state === "unknown") {
+    const hint = document.createElement("p");
+    hint.className = "hint agent-card__reason";
+    hint.textContent = t("agents.authUnknownHint");
     card.append(hint);
   }
 

@@ -17,6 +17,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+import requests
 
 cryptography = pytest.importorskip("cryptography")
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM  # noqa: E402
@@ -82,11 +83,77 @@ def _clean(monkeypatch):
     wd.clear_caches()
     monkeypatch.delenv(wd.APP_EXECUTABLE_ENV, raising=False)
     monkeypatch.delenv(wd.AUTH_FILE_ENV, raising=False)
+    monkeypatch.delenv(wd.PROXY_ENV, raising=False)
     yield
     wd.clear_caches()
     detect._RESOLVE_CACHE.clear()
     detect._DETECT_CACHE.clear()
     catalog._MODELS_CACHE.clear()
+
+
+class _FakeSession:
+    """Stands in for ``requests.Session`` in the HTTP tests."""
+
+    def __init__(self, *, get=None, post=None):
+        self._get = get
+        self._post = post
+        self.closed = False
+        self.trust_env = True
+        self.proxies: dict[str, str] = {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        self.close()
+        return False
+
+    def close(self):
+        self.closed = True
+
+    def get(self, *args, **kwargs):
+        if self._get is None:
+            raise AssertionError("unexpected WorkBuddy GET")
+        return self._get(*args, **kwargs)
+
+    def post(self, *args, **kwargs):
+        if self._post is None:
+            raise AssertionError("unexpected WorkBuddy POST")
+        return self._post(*args, **kwargs)
+
+
+def _patch_http(monkeypatch, *, get=None, post=None) -> _FakeSession:
+    session = _FakeSession(get=get, post=post)
+    monkeypatch.setattr(wd, "_http_session", lambda: session)
+    return session
+
+
+def test_http_session_ignores_the_system_proxy():
+    session = wd._http_session()
+    try:
+        assert session.trust_env is False
+        assert session.proxies == {}
+    finally:
+        session.close()
+
+
+def test_http_session_honours_an_explicit_proxy(monkeypatch):
+    monkeypatch.setenv(wd.PROXY_ENV, "http://127.0.0.1:7999")
+    session = wd._http_session()
+    try:
+        assert session.trust_env is False
+        assert session.proxies == {
+            "http": "http://127.0.0.1:7999",
+            "https": "http://127.0.0.1:7999",
+        }
+    finally:
+        session.close()
+
+
+def test_proxy_error_names_the_explicit_override():
+    error = wd._request_error(requests.exceptions.ProxyError("proxy is down"))
+    assert wd.PROXY_ENV in str(error)
+    assert "proxy" in str(error).lower()
 
 
 # --- auth parsing / decryption --------------------------------------------
@@ -276,7 +343,7 @@ def test_fetch_models_cn_uses_v3_and_cli_headers(monkeypatch):
         calls.append((url, dict(headers or {})))
         return FakeResponse(document=_envelope(_catalog_document(cli_ids=["model-1"])))
 
-    monkeypatch.setattr(wd.requests, "get", fake_get)
+    _patch_http(monkeypatch, get=fake_get)
     models = wd.fetch_models(_credential())
 
     assert [model["id"] for model in models] == ["model-1"]
@@ -296,7 +363,7 @@ def test_fetch_models_cn_falls_back_to_the_personal_catalog(monkeypatch):
             return FakeResponse(500, text="boom")
         return FakeResponse(document=_envelope(_catalog_document(cli_ids=["model-3"])))
 
-    monkeypatch.setattr(wd.requests, "get", fake_get)
+    _patch_http(monkeypatch, get=fake_get)
     models = wd.fetch_models(_credential())
 
     assert [model["id"] for model in models] == ["model-3"]
@@ -313,7 +380,7 @@ def test_fetch_models_global_uses_the_desktop_channel(monkeypatch):
         calls.append((url, dict(headers or {})))
         return FakeResponse(document=_envelope(_catalog_document(cli_ids=["model-2"])))
 
-    monkeypatch.setattr(wd.requests, "get", fake_get)
+    _patch_http(monkeypatch, get=fake_get)
     models = wd.fetch_models(_credential(domain="www.workbuddy.ai"))
 
     assert [model["id"] for model in models] == ["model-2"]
@@ -345,7 +412,7 @@ def test_chat_sends_the_required_headers_and_parses_sse(monkeypatch):
         )
         return FakeResponse(lines=_sse("你好", "，世界"))
 
-    monkeypatch.setattr(wd.requests, "post", fake_post)
+    _patch_http(monkeypatch, post=fake_post)
     answer = wd.chat(_credential(), "model-1", "Translate: Hello")
 
     assert answer == "你好，世界"
@@ -380,7 +447,7 @@ def test_chat_honours_the_no_identity_headers(monkeypatch):
         calls.append(dict(headers or {}))
         return FakeResponse(lines=_sse("ok"))
 
-    monkeypatch.setattr(wd.requests, "post", fake_post)
+    _patch_http(monkeypatch, post=fake_post)
     wd.chat(_credential(uid="", enterprise=None, domain=""), "model-1", "hi")
     headers = calls[0]
     assert headers["X-No-User-Id"] == "1"
@@ -412,7 +479,7 @@ def test_chat_refreshes_a_rejected_credential_once(monkeypatch):
             return FakeResponse(401, text='{"code":12153,"msg":"session not found"}')
         return FakeResponse(lines=_sse("translated"))
 
-    monkeypatch.setattr(wd.requests, "post", fake_post)
+    _patch_http(monkeypatch, post=fake_post)
     answer = wd.chat(_credential(), "model-1", "Translate: Hello")
 
     assert answer == "translated"
@@ -429,7 +496,7 @@ def test_chat_reports_credit_exhaustion_readably(monkeypatch):
     def fake_post(url, headers=None, json=None, timeout=None, stream=None):
         return FakeResponse(429, text='{"code":6004,"msg":"积分不足，额度用尽"}')
 
-    monkeypatch.setattr(wd.requests, "post", fake_post)
+    _patch_http(monkeypatch, post=fake_post)
     with pytest.raises(wd.WorkBuddyError) as caught:
         wd.chat(_credential(), "model-1", "Translate: Hello")
     assert caught.value.kind == "rate_limit"
@@ -443,7 +510,7 @@ def test_chat_classifies_a_json_200_error(monkeypatch):
             headers={"content-type": "application/json"},
         )
 
-    monkeypatch.setattr(wd.requests, "post", fake_post)
+    _patch_http(monkeypatch, post=fake_post)
     with pytest.raises(wd.WorkBuddyError) as caught:
         wd.chat(_credential(), "model-1", "Translate: Hello")
     assert caught.value.kind == "rate_limit"
@@ -460,7 +527,7 @@ def test_chat_accepts_a_json_completion(monkeypatch):
             headers={"content-type": "application/json"},
         )
 
-    monkeypatch.setattr(wd.requests, "post", fake_post)
+    _patch_http(monkeypatch, post=fake_post)
     assert wd.chat(_credential(), "model-1", "hi") == "translated"
 
 
@@ -468,7 +535,7 @@ def test_chat_rejects_an_empty_answer(monkeypatch):
     def fake_post(url, headers=None, json=None, timeout=None, stream=None):
         return FakeResponse(lines=["data: [DONE]"])
 
-    monkeypatch.setattr(wd.requests, "post", fake_post)
+    _patch_http(monkeypatch, post=fake_post)
     with pytest.raises(wd.WorkBuddyError) as caught:
         wd.chat(_credential(), "model-1", "Translate: Hello")
     assert caught.value.kind == "output"
@@ -484,7 +551,7 @@ def test_chat_stops_when_cancelled(monkeypatch):
     def fake_post(url, headers=None, json=None, timeout=None, stream=None):
         return FakeResponse(lines=_sse("never"))
 
-    monkeypatch.setattr(wd.requests, "post", fake_post)
+    _patch_http(monkeypatch, post=fake_post)
     with pytest.raises(asyncio.CancelledError):
         wd.chat(_credential(), "model-1", "hi", cancel_event=cancel)
 
@@ -616,7 +683,7 @@ def test_workbuddy_credential_refreshes_without_rewriting_the_file(
             }
         )
 
-    monkeypatch.setattr(wd.requests, "post", fake_post)
+    _patch_http(monkeypatch, post=fake_post)
     credential = wd.workbuddy_credential()
 
     assert credential.access_token == "new-access"

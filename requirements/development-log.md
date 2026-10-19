@@ -2854,3 +2854,71 @@ Agents 卡片原来只提示安装 CLI；需要让桌面版自己的登录态、
 - 桌面模式下不显示 `agents.paths.workbuddy` 编辑器（它指 CLI，不指 app）；
   app 路径用 `WORKBUDDY_APP_EXECUTABLE` 覆盖。
 - 打包版需要下次 `bash scripts/build.sh` 验证 `cryptography` 已被 PyInstaller 收集。
+
+## 2026-10-19 WorkBuddy 代理失败与 Agents「测试后可用」状态
+
+**现象**：用户截图显示 WorkBuddy 卡片「刷新模型」和「测试」都报
+`could not reach the WorkBuddy service (ProxyError)`，fallback 目录也失败；
+DSH/ZCode 卡片显示「未验证」，但点模型旁「测试」实际能返回结果，且延迟偏高。
+
+**根因（已实测）**
+
+- 系统代理（Windows 注册表）指向 `127.0.0.1:7890`，该代理当时不可用。
+  Python `requests` 默认读取系统代理，于是 WorkBuddy 的 `/v3/config`、
+  `/v2/enterprises/personal/models`、`/v2/chat/completions` 全部 `ProxyError`；
+  同一个 URL 用 `requests.Session(trust_env=False)` 直连返回 **HTTP 200**。
+  WorkBuddy 桌面 App / Node 参考实现默认直连，所以登录态本身正常。
+- 卡片 pill 只由 `agents.list` 的 `auth` 推导；DSH/ZCode 没有可靠登录探测，
+  `auth: "unknown"` → 「未验证」。`agents.test` 成功只写一条消息，不更新卡片状态，
+  因此出现“测试能用但状态未验证”。
+
+**实现**
+
+- `python/pdfxlate/agents/workbuddy_desktop.py`：
+  - 新增 `PROXY_ENV = "WORKBUDDY_PROXY"` 与 `_http_session()`；
+  - `session.trust_env = False`，默认直连，绕开失效系统代理；
+  - 若显式设置 `WORKBUDDY_PROXY`，设 `session.proxies = {"http":..., "https":...}`；
+  - `_get_json()`、`refresh_credential()`、`_chat_once()`（含 SSE）全部走该 session；
+  - `_request_error()` 对 `ProxyError` 给出可操作文案（系统代理不可达 / 直连 /
+    `WORKBUDDY_PROXY`），不再只回一个异常类名。
+- `src/renderer/app.ts`：
+  - 新增会话级 `testedAgents: Set<string>`；
+  - `AgentState` 增加 `"tested"`；`agentState()` 在 installed + auth unknown 且测试成功
+    时返回 `"tested"`；desktop auth unknown 同理；
+  - `agentStatusLabel("tested")` → 「可用」/ `Available`，绿色 pill；
+  - `testAgentModel()` 成功 add、失败 delete，并 `renderAgents()`；改 CLI 路径时清除；
+  - 非 desktop 的 unknown 状态追加 `agents.authUnknownHint`：
+    “无法验证登录状态；点任一模型的「测试」确认。”
+- `src/renderer/i18n.ts`：新增 `agents.status.tested`、`agents.authUnknownHint`；
+  中英各两条，i18n 273 keys。
+- `tests/test_workbuddy_desktop.py`：新增 fake session 帮助类与 3 个测试
+  （`trust_env is False`、`WORKBUDDY_PROXY` 生效、ProxyError 文案包含
+  `WORKBUDDY_PROXY`）；原有 fake GET/POST 测试改为 patch `_http_session`，
+  覆盖目录 / chat / refresh 不变。
+
+**验证**
+
+- 真实只读目录（不调 chat）：`catalog.list_models("workbuddy", refresh=True)` →
+  `source: "desktop"`、`desktop.available: true`、**19 个模型**（比上次多
+  `mimo-v2.6-pro`），全部带 credits，**不再 ProxyError**。
+- 真实 Hy3 测试（x0.00 credits）：`agents.test` → `{"ok": true,
+  "latency_ms": 3093, "sample": "你好。"}`；WorkBuddy chat/SSE 真实可用。
+- 用 `out/renderer` 的真实构建 + fake preload bridge 在 Chrome 中验证：
+  DSH 卡片初始「未验证」，点「测试」后变「**可用**」，消息
+  `正常 — 437 ms，default 返回「ok」`；截图
+  `%TEMP%\pdfxlate-agent-e2e\dsh-tested-status.png`。
+- `pytest tests/ -q` → **545 passed**（原 542 + 3）；`npm run typecheck`、
+  `npm run check:i18n`（273 keys）、`npm run build` 通过。
+
+**限制 / 待办**
+
+- 已有 Electron 实例必须**重启**才会加载新的 Python sidecar 与 `out/renderer`；
+  重启前 WorkBuddy 仍会走旧 sidecar 的 ProxyError。
+- `tested` 是渲染进程会话内状态，重启/重新扫描后回到服务端真实 auth（可能再次
+  「未验证」）；不持久化，避免登录过期后仍谎称可用。测试失败或改 CLI 路径会清除。
+- 默认直连；如果用户所在网络只能经代理访问 WorkBuddy，需要显式设
+  `WORKBUDDY_PROXY`（例如 `http://127.0.0.1:7890`）。不再自动回退到失效的系统代理。
+- DSH/ZCode 的高延迟是真实 CLI 启动 + 模型首包，`agents.test` 的消息里已显示
+  `latency_ms`；本次不改超时/并发，避免误杀慢模型。
+- 旧配置里的 WorkBuddy `default` 回退模型不会自动删除；目录恢复后 19 个真实模型
+  会出现，用户可手动取消 `default`。不自动改用户配置。

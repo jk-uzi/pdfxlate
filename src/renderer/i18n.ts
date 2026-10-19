@@ -181,6 +181,7 @@ const EN: Table = {
   "agents.status.missing": "Not installed",
   "agents.status.auth": "Not signed in",
   "agents.status.unknown": "Unverified",
+  "agents.status.tested": "Available",
   "agents.status.unavailable": "Unavailable",
   "agents.reason.not_installed":
     "The CLI was not found on PATH or in the standard install locations.",
@@ -192,6 +193,8 @@ const EN: Table = {
   "agents.reason.unknown": "The agent reported an unrecognised problem.",
   "agents.authHint":
     "Sign in by running the CLI itself; this app never reads or stores its credentials.",
+  "agents.authUnknownHint":
+    "Sign-in state could not be verified. Run Test on a model to confirm.",
   "agents.configuredUnavailable":
     "Configured earlier, but the CLI is not installed now. Its models stay listed in Options until you untick them below.",
   "agents.workbuddyDesktopSignedIn": "Desktop app · signed in",
@@ -496,6 +499,7 @@ const ZH: Table = {
   "agents.status.missing": "未安装",
   "agents.status.auth": "未登录",
   "agents.status.unknown": "未验证",
+  "agents.status.tested": "可用",
   "agents.status.unavailable": "不可用",
   "agents.reason.not_installed": "在 PATH 与标准安装位置都没有找到该 CLI。",
   "agents.reason.app_only": "只检测到桌面版；这里需要它的独立 CLI。",
@@ -503,6 +507,7 @@ const ZH: Table = {
   "agents.reason.invalid_path": "配置的 CLI 路径不是可执行文件。",
   "agents.reason.unknown": "该 agent 报告了无法识别的问题。",
   "agents.authHint": "请先在命令行里完成该 CLI 的登录；本应用不会读取或保存它的凭据。",
+  "agents.authUnknownHint": "无法验证登录状态；点任一模型的「测试」确认。",
   "agents.configuredUnavailable":
     "之前配置过，但现在没有检测到该 CLI。在下面取消勾选之前，它的模型仍会出现在「选项」里。",
   "agents.workbuddyDesktopSignedIn": "桌面版 · 已登录",
