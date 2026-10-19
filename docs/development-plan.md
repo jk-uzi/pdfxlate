@@ -242,12 +242,14 @@ v1 的限制（写进 UI 提示与文档）：
   内存，不写 WorkBuddy 的 auth 文件；卡片显示「桌面版 · 已登录/未登录」，登录态
   只在快照/手动刷新时读取，不再每次启动读 key。
 - **ZCode** 的 CLI 没有 `--model`：目录读取 `~/.zcode/v2/provider_config.json`，
-  当前模型读取 session DB；面板列出 enabled 模型，当前模型可勾选、可翻译。非当前
-  模型可通过 ZCode 官方 `app-server --stdio` 的 `provider/testModelConnectivity`
-  手动测试：临时 workspace、无 session、不改当前模型/config/credentials/DB；只显示
-  连接结果，不提供复选框、不把整张卡标成「可用」。要用非当前模型翻译，仍需在 ZCode
-  内切换（建议发一条消息让 session DB 记录）后回面板「重新检测」；不伪造切换，不写
-  ZCode 的 config/DB。
+  当前模型读取 session DB；面板列出 enabled 模型，全部可勾选、可翻译。当前模型仍走
+  CLI；非当前模型走 ZCode 官方 `app-server --stdio` 的 `workspace/generateText`
+  一次性生成：临时 workspace、无 session、不改当前模型/config/credentials/DB；同一
+  个 app-server 复用于整篇文档的多个批次。生成要求
+  `selection.options.reasoningLevel`，从 provider config 的
+  `optionSpecs.reasoningLevel.values` 选取（优先 low）。「测试」仍然只有用户手点：
+  非当前行走 `provider/testModelConnectivity`，当前行走 CLI；不自动调用、不伪造切换、
+  不写 ZCode 的 config/DB。
 - **DSH** 使用 `headless` profile；模型目录来自桌面 profile
   `~/.dsh/profiles/desktop/cordis.patch.yml`（复合 `provider/model`），非默认模型
   通过临时 `--patch` 覆盖 `llm-pi-ai` + `agent-default-model`，不修改用户的 profile；
@@ -264,8 +266,9 @@ v1 的限制（写进 UI 提示与文档）：
 
 2026-10-19 的模型目录扩展：DSH 已从桌面 profile 列出 25 个模型，并可通过临时
 `--patch` 选择任意 `provider/model`；ZCode 已列出 `provider_config.json` 的 30 个
-enabled 模型并标记当前模型（当前模型可翻译；非当前模型可通过官方 app-server 手动
-测试，切换翻译仍需在 ZCode 内做）。WorkBuddy
+enabled 模型并标记当前模型，全部可勾选/翻译：当前模型走 CLI，非当前模型走官方
+app-server 的 `workspace/generateText`（不建 session、不改当前模型，已真实跑通
+`hy3` 翻译）。WorkBuddy
 桌面版的 auth 解密、`/v3/config`/`/v2/enterprises/personal/models` 目录与
 `/v2/chat/completions` SSE 翻译已接入（只在没有独立 `codebuddy`/`cbc` CLI 时启用），
 卡片显示桌面版登录状态与 credits，不再只提示安装 CLI。HTTP 默认直连（避开失效的

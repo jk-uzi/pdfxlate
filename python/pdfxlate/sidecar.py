@@ -427,7 +427,7 @@ def _zcode_test_selection(params: dict, model: str) -> tuple[str, str] | None:
         # A hand-configured id that is no longer listed; only attempt the
         # app-server when we know its provider.
         return (provider, bare) if provider else None
-    if row.get("selectable") is not False:
+    if row.get("current"):
         return None
     if not provider:
         provider = str(row.get("provider") or "").strip()

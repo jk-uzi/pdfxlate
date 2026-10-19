@@ -3606,24 +3606,25 @@ async function testAgentModel(
       ...(row.provider ? { provider: row.provider } : {}),
     });
     if (result.ok) {
-      if (row.selectable) {
+      if (result.via === "app_server") {
+        // A non-current ZCode row was checked through the temporary
+        // app-server. Translation of that row also uses the app-server, so it
+        // is usable; but the card's 可用 state is reserved for the current
+        // CLI test and must not be claimed by this probe.
+        setAgentMessage(agent.id, "agents.testOkConnectivity", {
+          ms: String(result.latency_ms),
+          model: row.label,
+        });
+      } else {
         testedAgents.add(agent.id);
         setAgentMessage(agent.id, "agents.testOk", {
           ms: String(result.latency_ms),
           model: row.label,
           sample: truncateSample(result.sample ?? ""),
         });
-      } else {
-        // A non-current ZCode row was checked through the temporary
-        // app-server session. It must not claim the card is usable for
-        // translation: the CLI still runs the current model.
-        setAgentMessage(agent.id, "agents.testOkConnectivity", {
-          ms: String(result.latency_ms),
-          model: row.label,
-        });
       }
     } else {
-      if (row.selectable) testedAgents.delete(agent.id);
+      if (row.current) testedAgents.delete(agent.id);
       setAgentMessage(
         agent.id,
         "agents.testFailed",
@@ -3632,7 +3633,7 @@ async function testAgentModel(
       );
     }
   } catch (err) {
-    if (row.selectable) testedAgents.delete(agent.id);
+    if (row.current) testedAgents.delete(agent.id);
     setAgentMessage(agent.id, "agents.testFailed", { error: cleanError(err) }, true);
   } finally {
     renderAgents();
@@ -3985,9 +3986,9 @@ function agentModelsSection(
     section.append(list);
   }
 
-  // ZCode only runs the model it already points at. Say so once, right under
-  // the list, instead of repeating a reason on every disabled row.
-  if (agent.id === "zcode" && rows.some((row) => !row.selectable)) {
+  // Explain how ZCode translation differs by row: current -> CLI, other ->
+  // temporary app-server generation. Shown once under the list.
+  if (agent.id === "zcode" && rows.length) {
     const note = document.createElement("p");
     note.className = "hint agent-models__note";
     note.textContent = t("agents.zcode.currentOnly");
@@ -4000,8 +4001,8 @@ function agentModelsSection(
     warning.textContent = t("agents.conflict", { provider: agent.id });
     section.append(warning);
   } else if (agent.id !== "zcode") {
-    // ZCode cannot switch models, so a custom id added here could not be used
-    // either. The current model (and any stale configured row) is enough.
+    // ZCode model ids come from its own provider config; a hand-added id has
+    // no resolvable provider for the app-server route.
     section.append(agentModelAdd(agent));
   }
 

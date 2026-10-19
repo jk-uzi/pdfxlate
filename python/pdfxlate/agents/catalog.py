@@ -632,9 +632,10 @@ def provider_for_model(
 #     ~/.zcode/v2/provider_config.json   enabled providers and models
 #     ~/.zcode/cli/db/db.sqlite          the model of the latest session
 #
-# Only the current model is usable.  The UI marks every other row as
-# non-selectable, and the runtime refuses to run a configured mismatch rather
-# than silently letting the CLI pick its own model.
+# The CLI itself can only run the current model, so the runtime refuses a CLI
+# model mismatch.  Translation of a non-current model goes through the official
+# app-server's ``workspace/generateText`` instead (no session, no current-model
+# change); the catalog therefore marks every enabled model selectable.
 
 
 def zcode_home() -> Path:
@@ -763,9 +764,11 @@ def parse_zcode_provider_config(
                     "label": f"{model_id} ({providers[provider_id]})",
                     "provider": provider_id,
                     "current": is_current,
-                    # ZCode cannot switch models from the CLI: only the model
-                    # it already points at may be selected.
-                    "selectable": is_current,
+                    # Non-current ZCode models are translatable through the
+                    # official app-server's one-off ``workspace/generateText``
+                    # (no session, no current-model change).  The current model
+                    # keeps using the CLI.
+                    "selectable": True,
                 }
             )
     return {"models": models, "current": current_pair, "providers": providers}

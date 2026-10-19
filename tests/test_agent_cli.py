@@ -934,3 +934,71 @@ def test_cli_list_models_names_the_agent(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "claude @ agent:claude:" in out
     assert "(no base_url)" not in out
+
+def _zcode_resolution(monkeypatch):
+    resolved = ResolvedAgent(
+        defn=get_agent_def("zcode"),
+        installed=True,
+        command=("fake-zcode",),
+        path="fake-zcode",
+        reason=None,
+    )
+    monkeypatch.setattr(agent_cli, "resolve_agent", lambda *a, **k: resolved)
+    monkeypatch.setattr(agent_cli, "configured_paths", lambda: {})
+    return resolved
+
+
+def test_zcode_non_current_model_uses_the_app_server(monkeypatch):
+    _zcode_resolution(monkeypatch)
+    monkeypatch.setattr(
+        agent_cli.catalog,
+        "zcode_current_model",
+        lambda: ("new-provider-2", "deepseek-v4.1-flash"),
+    )
+    calls: list = []
+
+    class FakeSession:
+        def __init__(self, provider, model, **kwargs):
+            calls.append(("init", provider, model))
+
+        def generate(self, messages, **kwargs):
+            calls.append(("generate", messages))
+            return '{"translations": ["你好"]}'
+
+        def close(self):
+            calls.append(("close",))
+
+    monkeypatch.setattr(agent_cli.zcode_app_server, "TranslationSession", FakeSession)
+    adapter = agent_cli.AgentCliAdapter(
+        _profile("zcode", "new-provider-2/hy3"), "en", "zh", ignore_cache=True
+    )
+    try:
+        assert adapter._backend == "zcode_app_server"
+        assert adapter.translate("hello") == "你好"
+        assert calls[0] == ("init", "new-provider-2", "hy3")
+        assert calls[1][0] == "generate"
+        assert calls[1][1][0]["role"] == "system"
+        assert "Translate every string" in calls[1][1][1]["content"]
+    finally:
+        adapter.close()
+    assert calls[-1] == ("close",)
+
+
+def test_zcode_current_model_keeps_the_cli_backend(monkeypatch):
+    _zcode_resolution(monkeypatch)
+    monkeypatch.setattr(
+        agent_cli.catalog,
+        "zcode_current_model",
+        lambda: ("new-provider-2", "deepseek-v4.1-flash"),
+    )
+    adapter = agent_cli.AgentCliAdapter(
+        _profile("zcode", "new-provider-2/deepseek-v4.1-flash"),
+        "en",
+        "zh",
+        ignore_cache=True,
+    )
+    try:
+        assert adapter._backend == "cli"
+        assert adapter._zcode_session is None
+    finally:
+        adapter.close()

@@ -830,7 +830,8 @@ def test_parse_zcode_provider_config_filters_and_orders(tmp_path):
         "label": "m1 (Relay One)",
         "provider": "p1",
         "current": False,
-        "selectable": False,
+        # Non-current models are translatable through the app-server now.
+        "selectable": True,
     }
     assert parsed["models"][1]["label"] == "m3 (Relay Two)"
     assert parsed["models"][1]["current"] is True
@@ -1040,7 +1041,9 @@ def test_list_models_zcode_uses_the_provider_config(tmp_path, monkeypatch):
     ]
     assert result["models"][1]["current"] is True
     assert result["models"][1]["selectable"] is True
-    assert result["models"][0]["selectable"] is False
+    # Non-current ZCode models are now selectable (translated via the
+    # official app-server one-off generation, not the CLI).
+    assert result["models"][0]["selectable"] is True
 
     # The cached answer survives a profile edit until an explicit refresh.
     path = home / "v2" / "provider_config.json"

@@ -3068,3 +3068,86 @@ DSH/ZCode 卡片显示「未验证」，但点模型旁「测试」实际能返�
   测试结束后杀掉（Windows `taskkill /F /T`）。
 - ZCode 桌面版同时运行时可能锁 DB；若测试报数据库锁，先关闭 ZCode 再测试；当前
   默认行为不强制关闭。当前模型的「测试」仍走 CLI，不经过 app-server。
+
+## 2026-10-19 ZCode app-server 翻译：不切换当前模型，直接用任意模型翻译
+
+**目标**
+
+上一轮只做到「非当前模型可测试」。用户接着问：能不能不切换 ZCode 当前模型，直接
+用 ZCode 里的任意模型翻译？按批准的计划先做 spike。
+
+**Spike 结论：Go（`workspace/generateText`）**
+
+- ZCode app-server 还有官方方法 `workspace/generateText`：参数
+  `{workspace, selection, prompt|messages, querySource, maxOutputTokens?, tools?,
+  operationId?}`；服务端为没有 session 的 workspace 创建一次性 app 实例，调用
+  `generateWorkspaceText`，返回 `{text, selection, finishReason, usage, toolCalls?}`。
+  **不创建 session**，不写 `session`/`session_event`。
+- `workspace/generateText` 的 selection 校验比测试接口严格：reasoning 模型必须带
+  `selection.options.reasoningLevel`。该值在 `provider_config.json` 的
+  `modelConfigRules` 的 `optionSpecs.reasoningLevel.values` 里；`hy3` 只支持
+  `low` / `high`，用 `low`。不带会报 `Reasoning level is required`。
+- 真实 spike（`hy3`，`new-provider-2`，两段英文 + JSON translations 提示）：
+  返回可解析的中文 JSON，`finishReason: "stop"`，`toolCalls: null`，推理 token
+  数正常；同一 app-server 连续两次请求都成功。
+- 测试前后 ZCode 当前模型仍是 `new-provider-2/deepseek-v4.1-flash`；
+  `provider_config.json` / `credentials.json` / `db.sqlite` hash 全部不变；
+  无 session、无配置/DB 写入、不复制 token。
+
+**实现**
+
+- `python/pdfxlate/agents/zcode_app_server.py`：
+  - `reasoning_level_for()`：从个人/内置 provider config 的
+    `optionSpecs.reasoningLevel.values` 选 low（缺省 high/max/…），无该配置的模型
+    不加 options；
+  - `TranslationSession`：懒启动一个 app-server，复用同一个临时 workspace 跑多个
+    批次；`generate(messages)` 调 `workspace/generateText`，返回文本；`close()` 杀
+    进程树；`cancel_event` 可中断正在等待的请求（杀 app-server）；
+  - 保留 `test_model()` 的 `provider/testModelConnectivity` 测试路径。
+- `python/pdfxlate/models/agent_cli.py`：
+  - `AgentCliAdapter` 构造时比较所选 ZCode 模型与 `catalog.zcode_current_model()`；
+    非当前模型设 `_backend = "zcode_app_server"`；
+  - `_run_zcode_batch()` 用与 CLI 相同的 `build_batch_prompt` / `parse_translations`
+    / 单段重试，通过 `TranslationSession.generate()` 翻译；批解析失败时逐段重试；
+  - 当前 ZCode 模型仍走原 CLI；`close()` 同时关闭 app-server。
+- `python/pdfxlate/agents/catalog.py`：ZCode 所有 enabled 模型 `selectable = True`
+  （当前徽标保留；当前模型 CLI，非当前模型 app-server）。
+- `src/renderer/app.ts` / `i18n.ts`：
+  - 非当前行恢复复选框（可翻译）+「测试」按钮；当前行行为不变；
+  - 卡片底部固定说明“所有模型都可勾选/翻译；当前模型走 CLI，其他模型走临时
+    app-server，不改变当前模型/config/DB”；
+  - 非当前行「测试」成功后不把卡片标成「可用」（卡片“可用”仍只表示当前模型的 CLI
+    测试通过）；
+  - 非当前测试仍走 `provider/testModelConnectivity`。
+- `agents/snapshot.py`：`SNAPSHOT_VERSION` 1 → 2，旧快照里 ZCode 的
+  `selectable: false` 不会继续生效；首次升级会重新 live 检测一次。
+
+**验证**
+
+- 真实 `AgentCliAdapter`（profile `zcode` / `new-provider-2/hy3`、`ignore_cache=True`）：
+  `translate("The quick brown fox jumps over the lazy dog.")` 返回中文；
+  `_backend == "zcode_app_server"`；当前模型和三个 hash 测试前后完全一致。
+- `pytest tests/ -q` → **567 passed**；`npm run typecheck`、`npm run check:i18n`
+  （274 keys）、`npm run build` 通过。
+- 真实构建 + fake bridge：`hy3` 行有可用的复选框、「测试」按钮；点击测试显示
+  “连接成功 — 2827 ms（hy3 (w国外反代)）；ZCode 当前模型未改变。”；卡片仍
+  「已安装」；当前行仍有复选框；底部说明正确。截图
+  `%TEMP%\pdfxlate-agent-e2e\zcode-translate-ui.png`。
+- 以上 spike 和适配器测试都只真实调用 `hy3` 的少量文本（用户已授权做这次 spike），
+  没有自动测试、没有切换当前模型。
+
+**限制 / 边界**
+
+- 非当前模型首次翻译要启动 app-server，约 4–6 秒（含读 provider registry/DB），
+  之后同一任务复用它；这是手动开始的翻译，不是自动探针。
+- reasoning level 由配置自动选（优先 low）；没有给 UI 暴露“low/high”选择。若模型
+  的 `reasoningLevel.values` 缺失，app-server 可能报 required/not supported，错误可读。
+- 仍然只使用 ZCode 官方 app-server；若 ZCode 升级改变 `workspace/generateText` 的
+  协议/参数，功能会报错，不回退到伪造切换。
+- 不建 session、不写 config/credentials/DB、不复制 token；app-server 进程在翻译
+  任务结束或取消时杀掉。
+- app-server 的生成使用用户 ZCode 账号额度；只在用户点「开始翻译」后发生。
+- 当前模型走 CLI、非当前模型走 app-server 两条路径的 prompt/解析一致，但底层运行时
+  不同；如果 ZCode 桌面版同时运行并锁住 DB，先关闭 ZCode 再翻译。
+- 上一轮“非当前仅测试”的测试版本已被本轮取代；`agents.test` 的非当前分支仍是
+  连通性检查，翻译现在有了独立路径。

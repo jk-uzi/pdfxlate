@@ -25,7 +25,7 @@ from pdfxlate import paths
 logger = logging.getLogger(__name__)
 
 #: Bump when the payload shape changes; older files are ignored.
-SNAPSHOT_VERSION = 1
+SNAPSHOT_VERSION = 2
 SNAPSHOT_FILENAME = "agents-snapshot.json"
 
 

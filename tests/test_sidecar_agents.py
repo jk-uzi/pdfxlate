@@ -403,6 +403,7 @@ def test_zcode_current_keeps_the_cli_test(monkeypatch):
                 {
                     "id": "new-provider-2/deepseek-v4.1-flash",
                     "provider": "new-provider-2",
+                    "current": True,
                     "selectable": True,
                 }
             ]

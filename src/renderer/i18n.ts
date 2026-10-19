@@ -224,7 +224,7 @@ const EN: Table = {
   "agents.noModels": "This agent reported no models; add a model id below.",
   "agents.current": "Current",
   "agents.zcode.currentOnly":
-    "ZCode's non-current models can be tested here with a temporary app-server call; translation still uses the current model. To translate with another model, switch inside ZCode and click Rescan.",
+    "All of ZCode's models can be ticked and used for translation. The current model runs through the CLI; any other model runs through a temporary app-server generation, without changing ZCode's current model or writing its config/DB.",
   "agents.zcode.rowLocked": "test only, does not switch",
   "agents.customModel": "custom",
   "agents.customModelPlaceholder": "custom model id",
@@ -537,7 +537,7 @@ const ZH: Table = {
   "agents.noModels": "该 agent 没有返回模型；可在下面手动添加模型 ID。",
   "agents.current": "当前",
   "agents.zcode.currentOnly":
-    "ZCode 的非当前模型可以在这里测试（临时 app-server 调用，不改变当前模型）；翻译仍使用当前模型。要用别的模型翻译，请在 ZCode 内切换后点「重新检测」。",
+    "ZCode 所有模型都可以勾选并用于翻译：当前模型走 CLI，其他模型走临时 app-server 生成，不改变 ZCode 当前模型，也不写它的 config/DB。",
   "agents.zcode.rowLocked": "仅测试，不切换当前模型",
   "agents.customModel": "自定义",
   "agents.customModelPlaceholder": "自定义模型 ID",

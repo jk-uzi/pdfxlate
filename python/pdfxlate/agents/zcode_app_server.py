@@ -1,22 +1,24 @@
-"""Test a ZCode model through ZCode's own stdio app-server.
+"""Talk to ZCode's official stdio app-server for tests and translation.
 
 The ZCode CLI has no ``--model`` and the desktop app only runs its current
-session model.  The app-server, however, exposes the official
-``provider/testModelConnectivity`` method: it asks the runtime to make one tiny
-model call with an arbitrary provider/model selection, in a throwaway
-workspace, without creating a session.  That is exactly what the Agents panel's
-manual "Test" button needs.
+session model.  The app-server exposes two useful official methods:
 
-This module is intentionally test-only.  Translation still uses the CLI's
-current model; nothing here changes the ZCode current model,
-``provider_config.json``, credentials, or the session DB (verified against the
-real v0.16.9 app-server: current model, config, credentials and DB hashes were
-unchanged after a real ``hy3`` probe).
+* ``provider/testModelConnectivity`` — one tiny model call for the Agents
+  panel's manual "Test" button;
+* ``workspace/generateText`` — a one-off text generation with an arbitrary
+  provider/model selection, in a throwaway app instance, **without creating a
+  session**.  :class:`TranslationSession` uses it to translate with a
+  non-current ZCode model while the CLI keeps running the current one.
+
+Nothing here changes the ZCode current model, ``provider_config.json``,
+credentials, or the session DB (verified against the real v0.16.9 app-server:
+current model, config, credentials and DB hashes were unchanged after a real
+``hy3`` connectivity probe and a real ``hy3`` translation).
 
 The ZCode Protocol used over stdio is *JSON-RPC shaped but without the
 ``jsonrpc`` field*: requests/responses are one JSON object per line, e.g.
-``{"id": 2, "method": "provider/testModelConnectivity", "params": {...}}`` and
-``{"id": 2, "result": {"success": true}}``.  Notifications such as
+``{"id": 2, "method": "workspace/generateText", "params": {...}}`` and
+``{"id": 2, "result": {"text": "..."}}``.  Notifications such as
 ``startup/storageState`` arrive on the same stream and are ignored.
 """
 
@@ -31,6 +33,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -116,6 +119,75 @@ def resolve_paths(
     )
 
 
+_REASONING_CACHE: dict[tuple[str, str, str, str], str | None] = {}
+
+
+def _model_rules(path: Path) -> list[dict[str, Any]]:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    config = raw.get("config") if isinstance(raw, dict) else None
+    if not isinstance(config, dict):
+        config = raw if isinstance(raw, dict) else {}
+    rules = config.get("modelConfigRules") if isinstance(config, dict) else None
+    if not isinstance(rules, dict):
+        return []
+    found: list[dict[str, Any]] = []
+    for items in rules.values():
+        if isinstance(items, list):
+            found.extend(item for item in items if isinstance(item, dict))
+    return found
+
+
+def reasoning_level_for(
+    provider: str,
+    model: str,
+    *,
+    paths: Mapping[str, str] | None = None,
+    server_paths: ServerPaths | None = None,
+) -> str | None:
+    """Pick a reasoning level ZCode's registry accepts for this model.
+
+    ``workspace/generateText`` validates the selection strictly: reasoning
+    models such as ``hy3`` reject a request without ``options.reasoningLevel``.
+    The values live in the same provider config that ZCode reads (the personal
+    rules override the built-in ones).  Non-reasoning models return ``None`` so
+    the selection stays bare.
+    """
+    server = server_paths or resolve_paths(paths)
+    key = (
+        provider,
+        model,
+        str(server.builtin_config),
+        str(server.personal_config),
+    )
+    if key in _REASONING_CACHE:
+        return _REASONING_CACHE[key]
+    values: list[str] | None = None
+    for path in (server.personal_config, server.builtin_config):
+        for rule in _model_rules(path):
+            if rule.get("providerId") != provider or rule.get("modelId") != model:
+                continue
+            spec = rule.get("config", {}).get("optionSpecs", {}).get("reasoningLevel", {})
+            candidate = spec.get("values") if isinstance(spec, dict) else None
+            if isinstance(candidate, list) and candidate:
+                values = [str(value) for value in candidate]
+                break
+        if values:
+            break
+    chosen: str | None = None
+    if values:
+        for preferred in ("low", "medium", "high", "max", "minimal"):
+            if preferred in values:
+                chosen = preferred
+                break
+        else:
+            chosen = values[0]
+    _REASONING_CACHE[key] = chosen
+    return chosen
+
+
 class _StdioServer:
     """Minimal line-oriented client for the ZCode Protocol app-server."""
 
@@ -176,9 +248,17 @@ class _StdioServer:
                 f"could not write to the ZCode app-server: {exc}"
             ) from exc
 
-    def wait_for(self, request_id: int, timeout: float) -> dict[str, Any]:
+    def wait_for(
+        self,
+        request_id: int,
+        timeout: float,
+        cancel_event: Any = None,
+    ) -> dict[str, Any]:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
+            if cancel_event is not None and cancel_event.is_set():
+                self.stop()
+                raise ZCodeAppServerError("the ZCode request was cancelled")
             try:
                 message = self.messages.get(timeout=0.2)
             except queue.Empty:
@@ -236,6 +316,132 @@ class _StdioServer:
                     stream.close()
             except OSError:
                 pass
+
+
+class TranslationSession:
+    """A persistent app-server connection for translating with any ZCode model.
+
+    ``workspace/generateText`` is ZCode's official one-off text-generation
+    method: it takes the model selection and the prompt, runs one generation in
+    a throwaway app instance, and returns the text.  It does not create a
+    session, so the ZCode current model, config, credentials and DB stay
+    untouched (verified with the real v0.16.9 app-server).
+
+    The app-server is started lazily on the first batch (translation runs on a
+    background thread) and reused for the rest of the document.
+    """
+
+    def __init__(
+        self,
+        provider: str,
+        model: str,
+        *,
+        paths: Mapping[str, str] | None = None,
+        server_paths: ServerPaths | None = None,
+        timeout: float = 120.0,
+        max_output_tokens: int = 8192,
+        query_source: str = "translation",
+    ) -> None:
+        self.provider = provider.strip()
+        self.model = model.strip()
+        if not self.provider or not self.model:
+            raise ZCodeAppServerError("a ZCode model needs both a provider and a model id")
+        self._paths = paths
+        self._server_paths = server_paths
+        self._timeout = timeout
+        self._max_output_tokens = max_output_tokens
+        self._query_source = query_source
+        self._client: _StdioServer | None = None
+        self._tmp: tempfile.TemporaryDirectory[str] | None = None
+        self._workspace: Path | None = None
+        self._request_id = 1
+        self._reasoning: str | None = None
+
+    def _ensure_started(self) -> None:
+        if self._client is not None:
+            return
+        server = self._server_paths or resolve_paths(self._paths)
+        self._reasoning = reasoning_level_for(
+            self.provider, self.model, paths=self._paths, server_paths=server
+        )
+        self._tmp = tempfile.TemporaryDirectory(prefix="pdfxlate-zcode-translate-")
+        self._workspace = Path(self._tmp.name) / "workspace"
+        self._workspace.mkdir()
+        env = dict(os.environ)
+        env["ZCODE_DATA_BASE_DIR"] = str(server.data_base)
+        env["ZCODE_BUILTIN_PROVIDER_CONFIG_FILE"] = str(server.builtin_config)
+        env["ZCODE_PERSONAL_PROVIDER_CONFIG_FILE"] = str(server.personal_config)
+        client = _StdioServer(
+            [*server.command, "app-server", "--stdio"], env, self._tmp.name
+        )
+        try:
+            client.send({"id": 1, "method": "runtime/capabilities", "params": {}})
+            client.wait_for(1, STARTUP_TIMEOUT)
+        except Exception:
+            client.stop()
+            self._cleanup_temp()
+            raise
+        self._client = client
+
+    def generate(
+        self,
+        messages: Sequence[Mapping[str, str]],
+        *,
+        timeout: float | None = None,
+        cancel_event: Any = None,
+    ) -> str:
+        """Run one text generation and return the model's text."""
+        self._ensure_started()
+        assert self._client is not None and self._workspace is not None
+        self._request_id += 1
+        request_id = self._request_id
+        selection: dict[str, Any] = {
+            "providerId": self.provider,
+            "modelId": self.model,
+        }
+        if self._reasoning:
+            selection["options"] = {"reasoningLevel": self._reasoning}
+        params = {
+            "workspace": {
+                "workspacePath": str(self._workspace),
+                "workspaceKey": "pdfxlate-agent-translate",
+            },
+            "selection": selection,
+            "messages": list(messages),
+            "querySource": self._query_source,
+            "maxOutputTokens": self._max_output_tokens,
+            "operationId": f"pdfxlate-{uuid.uuid4().hex}",
+        }
+        self._client.send(
+            {
+                "id": request_id,
+                "method": "workspace/generateText",
+                "params": params,
+            }
+        )
+        reply = self._client.wait_for(
+            request_id,
+            timeout if timeout is not None else self._timeout,
+            cancel_event,
+        )
+        text = reply.get("text")
+        if not isinstance(text, str):
+            raise ZCodeAppServerError(
+                "the ZCode app-server returned no text for this batch"
+            )
+        return text
+
+    def _cleanup_temp(self) -> None:
+        if self._tmp is not None:
+            self._tmp.cleanup()
+            self._tmp = None
+        self._workspace = None
+
+    def close(self) -> None:
+        client, self._client = self._client, None
+        if client is not None:
+            client.stop()
+        self._cleanup_temp()
 
 
 def test_model(
