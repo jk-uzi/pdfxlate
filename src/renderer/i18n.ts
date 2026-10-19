@@ -193,8 +193,6 @@ const EN: Table = {
   "agents.reason.unknown": "The agent reported an unrecognised problem.",
   "agents.authHint":
     "Sign in by running the CLI itself; this app never reads or stores its credentials.",
-  "agents.authUnknownHint":
-    "Sign-in state could not be verified. Run Test on a model to confirm.",
   "agents.configuredUnavailable":
     "Configured earlier, but the CLI is not installed now. Its models stay listed in Options until you untick them below.",
   "agents.workbuddyDesktopSignedIn": "Desktop app · signed in",
@@ -226,7 +224,8 @@ const EN: Table = {
   "agents.noModels": "This agent reported no models; add a model id below.",
   "agents.current": "Current",
   "agents.zcode.currentOnly":
-    "ZCode CLI can only use its current model. Switch models inside ZCode first.",
+    "ZCode only runs the model it already points at. To use another model, switch inside ZCode (send a message there so it remembers the choice), then click Rescan. This app never switches it for you.",
+  "agents.zcode.rowLocked": "switch in ZCode, then Rescan",
   "agents.customModel": "custom",
   "agents.customModelPlaceholder": "custom model id",
   "agents.addModel": "Add",
@@ -507,7 +506,6 @@ const ZH: Table = {
   "agents.reason.invalid_path": "配置的 CLI 路径不是可执行文件。",
   "agents.reason.unknown": "该 agent 报告了无法识别的问题。",
   "agents.authHint": "请先在命令行里完成该 CLI 的登录；本应用不会读取或保存它的凭据。",
-  "agents.authUnknownHint": "无法验证登录状态；点任一模型的「测试」确认。",
   "agents.configuredUnavailable":
     "之前配置过，但现在没有检测到该 CLI。在下面取消勾选之前，它的模型仍会出现在「选项」里。",
   "agents.workbuddyDesktopSignedIn": "桌面版 · 已登录",
@@ -537,7 +535,8 @@ const ZH: Table = {
   "agents.noModels": "该 agent 没有返回模型；可在下面手动添加模型 ID。",
   "agents.current": "当前",
   "agents.zcode.currentOnly":
-    "ZCode CLI 只能使用它当前的模型；请先在 ZCode 内切换模型。",
+    "ZCode 只运行它当前指向的模型。要换模型，请在 ZCode 里切换（在 ZCode 发一条消息让它记住），然后回这里点「重新检测」。本应用不会替你切换。",
+  "agents.zcode.rowLocked": "在 ZCode 内切换后重新检测",
   "agents.customModel": "自定义",
   "agents.customModelPlaceholder": "自定义模型 ID",
   "agents.addModel": "添加",

@@ -362,7 +362,7 @@ def method_agents_list(params: dict) -> dict:
 
 def method_agents_models(params: dict) -> dict:
     """Refresh one agent's model list (bounded, never a fatal error)."""
-    from pdfxlate.agents import catalog
+    from pdfxlate.agents import catalog, detect, snapshot
 
     defn = _require_agent(params)
     result: dict[str, Any] = {}
@@ -388,6 +388,9 @@ def method_agents_models(params: dict) -> dict:
         return catalog.fallback_models(
             defn.id, "the agent CLI returned no model list"
         )
+    # The manual refresh is also what updates the persisted snapshot, so the
+    # next launch shows the new list without probing again.
+    snapshot.update_agent(defn.id, result, detect.configured_paths())
     return result
 
 

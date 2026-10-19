@@ -224,21 +224,28 @@ DeepSeek Harness 五个 CLI。
    0.2 秒触发一次，一次进程翻一批。CLI 被要求返回
    `{"translations": [...]}`；解析失败先严格重试，再拆单段，最后才报错。用户自定义
    prompt 时批大小固定为 1，保证自定义语义不变。
-4. **检测只回状态，不回原始输出**。`claude auth status`、`codex login status` 的输出
-   可能带掩码密钥；sidecar 只回 `ok/missing/unknown`，错误里的 stderr 截断到 300
-   字符。可执行文件按「`agents.paths` 覆盖 → 环境变量 → PATH → 平台标准目录 /
+4. **检测不自动探测登录，也不自动测试模型**。`detect_agent()` 只做路径解析 +
+   版本探测；DSH/ZCode 的登录态不再自动探测，安装即显示「已安装」。「测试」按钮
+   是唯一的真实模型调用，完全由用户手点；成功后才显示「可用」，失败回到「已安装」。
+   可执行文件按「`agents.paths` 覆盖 → 环境变量 → PATH → 平台标准目录 /
    Windows 卸载注册表」解析；`agents.paths` 让用户能指向非标准安装位置。
+5. **快照优先，不每次启动重检**。`agents.list` 的成功结果写入配置目录的
+   `agents-snapshot.json`（安装/模型元数据，不含凭据，带 `paths` 签名）；启动/打开
+   面板优先读它，不 spawn CLI、不请求 WorkBuddy 网关。只有首次无快照、用户点
+   「重新检测」或「刷新模型」时才 live 并更新快照。首次升级后的第一次仍会 live 一次。
 
 v1 的限制（写进 UI 提示与文档）：
 
 - **WorkBuddy** 独立 `codebuddy`/`cbc` 存在时走 CLI；只有桌面版时走桌面版
   auth/catalog/HTTP（`/v3/config` + `/v2/chat/completions` SSE）。HTTP 默认直连，
   绕开系统里可能失效的代理；需要代理时显式设 `WORKBUDDY_PROXY`。token 只在引擎
-  内存，不写 WorkBuddy 的 auth 文件；卡片显示「桌面版 · 已登录/未登录」，不再只
-  提示安装 CLI。
+  内存，不写 WorkBuddy 的 auth 文件；卡片显示「桌面版 · 已登录/未登录」，登录态
+  只在快照/手动刷新时读取，不再每次启动读 key。
 - **ZCode** 的 CLI 没有 `--model`：目录读取 `~/.zcode/v2/provider_config.json`，
-  当前模型读取 session DB；面板列出 enabled 模型，但只有当前模型可选，非当前行
-  置灰并提示在 ZCode 内切换；不在 pdfxlate 里伪造切换。
+  当前模型读取 session DB；面板列出 enabled 模型，只有当前模型可勾选/测试。非当前
+  行显示为只读文本 +「在 ZCode 内切换后重新检测」说明，不再渲染灰色禁用复选框；
+  用户需在 ZCode 内切换（并建议发一条消息让 session DB 记录）后回面板「重新检测」。
+  不在 pdfxlate 里伪造切换，也不接 app-server 写 ZCode 的 config/DB。
 - **DSH** 使用 `headless` profile；模型目录来自桌面 profile
   `~/.dsh/profiles/desktop/cordis.patch.yml`（复合 `provider/model`），非默认模型
   通过临时 `--patch` 覆盖 `llm-pi-ai` + `agent-default-model`，不修改用户的 profile；
@@ -247,9 +254,9 @@ v1 的限制（写进 UI 提示与文档）：
   决定；这些供应商的「推理强度」控件在界面上禁用。
 - agent CLI 视为本地可信程序；翻译文本会发给它背后的模型，额度与条款由该 CLI 承担。
 
-实现落在 `python/pdfxlate/agents/`（定义 / 检测 / 模型列表 / 进程运行时 / 批队列）、
-`models/agent_cli.py`（适配器）与 `src/renderer/` 的 Agents 面板；sidecar 新增
-`agents.list` / `agents.models` / `agents.test`。参考实现是本地安装的 Open Design
+实现落在 `python/pdfxlate/agents/`（定义 / 检测 / 模型列表 / 快照 / 进程运行时 /
+批队列）、`models/agent_cli.py`（适配器）与 `src/renderer/` 的 Agents 面板；sidecar
+新增 `agents.list` / `agents.models` / `agents.test`。参考实现是本地安装的 Open Design
 0.25.0（其 `AGENT_DEFS` / `agentId` / `agentModels` 结构），但代码全部自研，不 import
 它的运行时。
 
@@ -259,8 +266,9 @@ enabled 模型并标记当前模型（非当前模型不可选，切换仍需在
 桌面版的 auth 解密、`/v3/config`/`/v2/enterprises/personal/models` 目录与
 `/v2/chat/completions` SSE 翻译已接入（只在没有独立 `codebuddy`/`cbc` CLI 时启用），
 卡片显示桌面版登录状态与 credits，不再只提示安装 CLI。HTTP 默认直连（避开失效的
-系统代理，`WORKBUDDY_PROXY` 可显式覆盖）；DSH/ZCode 的「测试」成功后卡片 pill 由
-「未验证」变「可用」，避免出现“测试能用但状态未验证”的矛盾。
+系统代理，`WORKBUDDY_PROXY` 可显式覆盖）。DSH/ZCode 不再自动探测登录状态，安装即
+显示「已安装」；「测试」成功后 pill 变「可用」，失败回到「已安装」，不再出现
+「未验证」。`agents.list` 优先读本地快照，启动不再每次重新检测。
 
 ## 六、Electron 外壳
 

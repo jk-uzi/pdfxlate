@@ -2922,3 +2922,67 @@ DSH/ZCode 卡片显示「未验证」，但点模型旁「测试」实际能返�
   `latency_ms`；本次不改超时/并发，避免误杀慢模型。
 - 旧配置里的 WorkBuddy `default` 回退模型不会自动删除；目录恢复后 19 个真实模型
   会出现，用户可手动取消 `default`。不自动改用户配置。
+
+## 2026-10-19 外部 Agent：快照优先、不再自动探测登录；ZCode 改为手动切换说明
+
+**用户反馈**
+
+- ZCode 的非当前模型是灰色不可选中，用户无法验证；外部 Agent 不应该每次打开软件
+  都重新测试一遍，正式使用只需要软件能直接使用；测试模型能不能用是用户自己的工作，
+  用户自己手点即可。
+
+**根因**
+
+- `agents.list` 每次启动都重新 `detect_agent()`（版本 + 登录探测）并枚举模型；
+  `detect.py` 的缓存只在内存 30 秒，App 重启就失效。
+- DSH/ZCode 的登录探测只能回 `unknown`，UI 把它显示成「未验证」；虽然 App 没有自动
+  调用模型，但启动探测 + 「未验证」看起来像自动测试，且测试成功后还要靠会话级状态
+  才能变「可用」。
+- ZCode CLI 没有 `--model`，只能运行当前 session 的模型；UI 用灰色禁用复选框/测试
+  表达这个限制，用户既无法验证，也误以为 App 可以帮他选。
+
+**改动**
+
+- 新增 `python/pdfxlate/agents/snapshot.py`：`agents-snapshot.json`（配置目录）保存
+  `agents.list` 的安装/模型元数据；版本 + `paths` 签名 + 原子写；只保存安全字段，
+  不含 token/apiKey/凭据；`update_agent()` 供手动「刷新模型」更新单个 agent。
+- `agents/__init__.py`：`list_agents(refresh=False)` 先读有效快照，命中时不解析、
+  不探测、不枚举；无快照或 `refresh=True` 才 live，成功后覆盖快照。
+- `agents/detect.py`：`detect_agent()` 只做路径解析 + 版本探测，**不再调用
+  `check_auth()`**；`check_auth()` 保留给显式调用/旧测试，但启动和面板打开不会执行。
+- `sidecar.py`：`agents.models` 成功刷新后更新快照中该 agent 的模型块；`agents.list`
+  仍由 `list_agents()` 统一处理快照。
+- `src/renderer/app.ts`：非 desktop 的已安装 agent 直接 `installed`（「已安装」），
+  不再走 auth missing/unknown；手动测试成功才 `tested`（「可用」），失败回到
+  「已安装」；移除通用 `authUnknownHint` 分支。ZCode 非当前行改为
+  `zcodeLockedRow()`：只读文本 + 「在 ZCode 内切换后重新检测」说明，不渲染灰色
+  复选框/测试；已配置的旧行保留可取消的复选框；ZCode 不显示「添加自定义模型」。
+- `i18n.ts` / `style.css`：更新 `agents.zcode.currentOnly` 手动流程，新增
+  `agents.zcode.rowLocked`，移除 `agents.authUnknownHint`；新增只读行与行内说明样式。
+- 测试：新增 `tests/test_agents_snapshot.py`（快照往返/路径签名/损坏/无凭据/
+  更新/缓存命中/live 写快照/`agents.models` 更新/不探测登录）；WorkBuddy 测试的
+  `_clean` 阻止写真实快照。
+
+**验证**
+
+- 真实快照：首次 live 1.27s，第二次 0.014s；`agents-snapshot.json` 17 KB，
+  断言不含 access_token/refresh_token/apiKey/sk-；五个 agent 列表一致。
+- 真实构建 + fake preload bridge（Chrome）：DSH 初始「已安装」→ 点「测试」→
+  「可用」，消息 `正常 — 437 ms，default 返回「ok」`；ZCode 当前行有复选框/测试，
+  两个非当前行 `agent-model-row--readonly`、无复选框/无测试按钮、行内说明
+  「在 ZCode 内切换后重新检测」，卡片下显示完整手动流程；ZCode 无添加输入；无
+  渲染错误。截图 `%TEMP%\pdfxlate-agent-e2e\zcode-manual-and-installed-status.png`。
+- `pytest tests/ -q` → **554 passed**；`npm run typecheck`、`npm run check:i18n`
+  （273 keys）、`npm run build` 通过。
+
+**限制 / 待办**
+
+- 升级/首次安装后的第一次仍会 live 一次来生成快照，之后启动直接读缓存；用户可随时
+  「重新检测」或「刷新模型」更新。
+- ZCode 仍只能在 ZCode 内切换模型：切换后建议在 ZCode 发一条消息让其 session DB
+  记录，再回面板「重新检测」；旧 current-model 缓存会在 refresh 时绕过。本次不接
+  app-server、不写 ZCode config/DB，也不替用户切换/测试。
+- 「测试」仍然只由用户手点；App 启动/打开面板不调用 `agents.test`，也不自动请求
+  WorkBuddy 网关或 spawn 登录探测。测试成功状态仍只在会话内，重启后回到「已安装」。
+- 快照不持久化登录凭据；WorkBuddy desktop auth 只来自快照/手动刷新，token 仍只在
+  引擎内存。首次升级后的旧运行实例需要重启才能加载新 sidecar/renderer。

@@ -20,7 +20,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, wait
 from typing import Any, Mapping
 
-from pdfxlate.agents import catalog, detect
+from pdfxlate.agents import catalog, detect, snapshot
 from pdfxlate.agents.batch import BatchQueue, BatchQueueClosedError
 from pdfxlate.agents.defs import AGENT_DEFS, AGENT_DEFS_BY_ID, AgentDef, get_agent_def
 from pdfxlate.agents.runtime import (
@@ -44,12 +44,18 @@ def list_agents(
 ) -> list[dict[str, Any]]:
     """Return the full ``agents.list`` payload (detection + model lists).
 
-    Detection and model enumeration run concurrently, and the whole thing is
-    bounded by ``budget`` so the settings panel never waits on a wedged CLI.
-    Anything unfinished falls back to a cached value or to the built-in model
-    list with a readable error.
+    A persisted snapshot is returned when it is present and still matches the
+    configured CLI paths, so opening the app does not spawn every CLI again.
+    ``refresh=True`` (the panel's Rescan button) always runs a live detection
+    and replaces the snapshot.  A missing/corrupt/stale snapshot falls back to
+    the live path, which is bounded by ``budget``.
     """
     configured = detect.configured_paths() if paths is None else paths
+    if not refresh:
+        cached = snapshot.load(configured)
+        if cached is not None:
+            return cached
+
     deadline = time.monotonic() + budget
     pool = ThreadPoolExecutor(
         max_workers=len(AGENT_DEFS) * 2, thread_name_prefix="agent-list"
@@ -107,6 +113,7 @@ def list_agents(
         agents.append(entry)
 
     pool.shutdown(wait=False, cancel_futures=True)
+    snapshot.save(agents, configured)
     return agents
 
 

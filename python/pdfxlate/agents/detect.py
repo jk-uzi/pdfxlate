@@ -700,7 +700,14 @@ def detect_agent(
     paths: Mapping[str, str] | None = None,
     refresh: bool = False,
 ) -> AgentDetection:
-    """Resolve, version-probe and login-probe one agent (cached)."""
+    """Resolve and version-probe one agent (cached).
+
+    Login probing is deliberately *not* part of detection.  The settings panel
+    shows installed agents and the user verifies a model manually with the
+    Test button; probing every CLI's login state on launch made opening the
+    panel look like an automatic test and left DSH/ZCode stuck on
+    "unverified".  ``check_auth()`` stays available for explicit callers.
+    """
     key = _cache_key(defn, paths)
     now = time.monotonic()
     if not refresh:
@@ -731,7 +738,7 @@ def detect_agent(
             installed=True,
             path=resolved.path,
             version=_probe_version(resolved.command or ()),
-            auth=check_auth(defn, resolved.command),
+            auth="unknown",
             reason=None,
             install_url=defn.install_url,
             docs_url=defn.docs_url,

@@ -2283,6 +2283,20 @@ body.overlays-pinned .viewer-saveas {
   color: var(--muted);
 }
 
+/*
+ * A ZCode model that is not current is not a disabled checkbox; it is a
+ * read-only explanation with a manual "switch inside ZCode" action.
+ */
+.agent-model-row--readonly {
+  opacity: 0.85;
+}
+
+.agent-model-row__note {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .agent-models__note {
   margin: 6px 0 0;
 }

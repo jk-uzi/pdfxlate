@@ -3310,16 +3310,17 @@ function agentState(agent: AgentStatus): AgentState {
   const desktop = agentUsesDesktop(agent) ? agentDesktop(agent) : null;
   if (desktop) {
     if (desktop.auth === "missing") return "auth";
-    if (desktop.auth === "ok") return "installed";
     if (testedAgents.has(agent.id)) return "tested";
-    return "unknown";
+    // An unreadable desktop login is a detail in the meta line, not a reason
+    // to make the card look unusable; the user verifies with Test.
+    return "installed";
   }
   if (agent.supported === false) return "unavailable";
   if (!agent.installed) return agentConfigured(agent.id) ? "unavailable" : "missing";
-  if (agent.auth === "missing") return "auth";
-  if (agent.auth === "ok") return "installed";
+  // The engine no longer probes CLI login state.  Installed is enough to use
+  // the agent; a successful manual Test upgrades the pill to "Available".
   if (testedAgents.has(agent.id)) return "tested";
-  return "unknown";
+  return "installed";
 }
 
 function agentStatusLabel(state: AgentState): string {
@@ -3413,9 +3414,10 @@ function setAgentMessage(
 /**
  * Reload the agent list from the engine.
  *
- * `force` is `agents.list`'s own refresh flag: detection is cached for 30s in
- * the engine, and the Rescan button is the user saying they just installed
- * something.
+ * `force` is `agents.list`'s own refresh flag: without it the engine returns
+ * the persisted snapshot; with it a live detection runs and replaces the
+ * snapshot. The Rescan button is the user saying something changed (installed
+ * a CLI, switched the ZCode model, …).
  */
 async function refreshAgents(force: boolean): Promise<void> {
   if (engineState !== "ok") {
@@ -3753,6 +3755,12 @@ function agentModelRow(
   row: AgentModelRow,
   conflict: boolean,
 ): HTMLElement {
+  // ZCode cannot switch models. Do not dress the other rows up as disabled
+  // checkboxes: show what they are and how to make one current instead.
+  if (agent.id === "zcode" && !row.selectable) {
+    return zcodeLockedRow(agent, row, conflict);
+  }
+
   const element = document.createElement("div");
   element.className = row.selectable
     ? "agent-model-row"
@@ -3819,6 +3827,71 @@ function agentModelRow(
   test.addEventListener("click", () => void testAgentModel(agent, row, test));
   element.append(test);
 
+  return element;
+}
+
+/**
+ * A ZCode model that is not the CLI's current one.
+ *
+ * It cannot be ticked or tested from here: the CLI has no `--model`, so a
+ * request for this row would silently run the current model instead.  A stale
+ * configured row keeps a checkbox so it can be unchecked; everything else is
+ * plain text plus the manual "switch in ZCode, then Rescan" instruction.
+ */
+function zcodeLockedRow(
+  agent: AgentStatus,
+  row: AgentModelRow,
+  conflict: boolean,
+): HTMLElement {
+  const element = document.createElement("div");
+  element.className = "agent-model-row agent-model-row--readonly";
+
+  if (row.configured) {
+    const check = document.createElement("label");
+    check.className = "check agent-model-row__check";
+    const tick = document.createElement("input");
+    tick.type = "checkbox";
+    tick.checked = true;
+    tick.disabled = conflict;
+    tick.setAttribute("aria-label", row.label);
+    tick.addEventListener("change", () =>
+      void setAgentModel(agent, row.id, tick.checked),
+    );
+    const label = document.createElement("span");
+    label.className = "agent-model-row__label";
+    label.textContent = row.label;
+    label.title = row.id;
+    check.append(tick, label);
+    element.append(check);
+  } else {
+    const label = document.createElement("span");
+    label.className = "agent-model-row__label";
+    label.textContent = row.label;
+    label.title = row.id;
+    element.append(label);
+  }
+
+  if (row.custom) {
+    const badge = document.createElement("span");
+    badge.className = "agent-model-row__custom";
+    badge.textContent = t("agents.customModel");
+    element.append(badge);
+  }
+  if (row.credit && !row.label.includes(row.credit)) {
+    const badge = document.createElement("span");
+    badge.className = "agent-model-row__credit";
+    badge.textContent = row.credit;
+    element.append(badge);
+  }
+
+  const spacer = document.createElement("span");
+  spacer.className = "agent-model-row__spacer";
+  element.append(spacer);
+
+  const note = document.createElement("span");
+  note.className = "agent-model-row__note";
+  note.textContent = t("agents.zcode.rowLocked");
+  element.append(note);
   return element;
 }
 
@@ -3901,7 +3974,9 @@ function agentModelsSection(
     warning.className = "msg msg--error";
     warning.textContent = t("agents.conflict", { provider: agent.id });
     section.append(warning);
-  } else {
+  } else if (agent.id !== "zcode") {
+    // ZCode cannot switch models, so a custom id added here could not be used
+    // either. The current model (and any stale configured row) is enough.
     section.append(agentModelAdd(agent));
   }
 
@@ -4020,11 +4095,6 @@ function agentCard(agent: AgentStatus): HTMLElement {
     const hint = document.createElement("p");
     hint.className = "hint agent-card__reason";
     hint.textContent = t("agents.workbuddyDesktopHint");
-    card.append(hint);
-  } else if (!desktop && state === "unknown") {
-    const hint = document.createElement("p");
-    hint.className = "hint agent-card__reason";
-    hint.textContent = t("agents.authUnknownHint");
     card.append(hint);
   }
 

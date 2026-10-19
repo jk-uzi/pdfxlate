@@ -89,6 +89,9 @@ def _clean(monkeypatch):
     detect._RESOLVE_CACHE.clear()
     detect._DETECT_CACHE.clear()
     catalog._MODELS_CACHE.clear()
+    # These tests must not write a real agents-snapshot.json into the user's
+    # config directory; the snapshot module has its own dedicated tests.
+    monkeypatch.setattr(agents_pkg.snapshot, "save", lambda *_args, **_kwargs: None)
 
 
 class _FakeSession:
