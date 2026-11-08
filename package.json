@@ -31,9 +31,8 @@
     "@types/node": "^22.10.0",
     "electron": "^33.2.0",
     "electron-builder": "^26.0.0",
+    "pdfjs-dist": "^4.10.38",
     "typescript": "^5.7.2"
   },
-  "dependencies": {
-    "pdfjs-dist": "^4.10.38"
-  }
+  "dependencies": {}
 }
