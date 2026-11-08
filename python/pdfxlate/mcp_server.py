@@ -44,7 +44,8 @@ from typing import Any, Optional
 
 import anyio
 
-from pdfxlate import __version__, config as config_mod, paths
+from pdfxlate import __version__, paths
+from pdfxlate import config as config_mod
 from pdfxlate.models.base import strip_reasoning
 from pdfxlate.pdf import two_phase
 

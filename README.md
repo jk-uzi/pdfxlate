@@ -330,8 +330,7 @@ Electron（TypeScript）              Python sidecar
   原文在不同模型下分别缓存。任务结束会同时报告本地命中数和供应商侧的 prompt cache
   用量（如果服务端返回）。
 
-目录结构与「改某个功能该动哪个文件」见 [docs/project-structure.md](docs/project-structure.md)，
-架构与移植决策见 [docs/development-plan.md](docs/development-plan.md)。
+目录结构与「改某个功能该动哪个文件」见 [docs/project-structure.md](docs/project-structure.md)。
 
 ## 构建安装包
 
@@ -340,8 +339,9 @@ npm install
 bash scripts/build.sh          # Windows 上用 Git Bash
 ```
 
-脚本依次做四件事：把中文字体放进 sidecar 包、用 PyInstaller 构建 Python 引擎、编译
-TypeScript、用 electron-builder 打包。产物在 `dist/`：
+脚本依次做五件事：有 `uv` 时按 `uv.lock` 还原 Python 环境、把中文字体放进 sidecar 包、
+用 PyInstaller 构建 Python 引擎、编译 TypeScript、用 electron-builder 打包。产物在
+`dist/`：
 
 - `dist/win-unpacked/` —— 可直接运行的目录，适合快速验证
 - `dist/pdfxlate Setup <版本>.exe` —— Windows NSIS 安装包
@@ -359,17 +359,30 @@ PyInstaller 的产物与平台绑定，每个目标平台都要在对应系统�
 
 ## 测试
 
-```bash
-cd python && .venv/bin/python -m pytest ../tests -q
-# Windows: .venv\Scripts\python -m pytest ..\tests -q
+测试与静态检查需要 dev 依赖（含 pytest、ruff、PyInstaller）：
 
-npm run typecheck     # main/preload 与 renderer 两套 tsconfig
-npm run check:i18n    # 中英文案表必须键、占位符、取值一一对应
+```bash
+cd python
+.venv/bin/pip install -e '.[dev]'      # Windows: .venv\Scripts\pip install -e ".[dev]"
+.venv/bin/python -m pytest ../tests -q # Windows: .venv\Scripts\python -m pytest ..\tests -q
+.venv/bin/ruff check ..                # Windows: .venv\Scripts\ruff check ..
+cd ..
+```
+
+需要锁定的依赖版本时，也可以在 `python/` 下用 `uv sync --extra dev`（`uv.lock` 已提交，
+与上面的 pip 流程等价）。
+
+```bash
+npm run typecheck       # main/preload、renderer 与前端测试的 tsconfig
+npm run test:frontend   # Vitest + jsdom：纯函数、i18n 表与消息插槽
+npm run check:i18n      # 中英文案表必须键、占位符、取值一一对应
 ```
 
 Python 侧的测试覆盖适配器（对着本地真实 HTTP 服务，含 SSE）、配置与迁移、缓存与占位符、
-版面与排版、sidecar 协议与取消、MCP 两段式流程等。前端没有 DOM 自动化测试，界面改动
-靠手工与 DevTools 验证。
+版面与排版、sidecar 协议与取消、MCP 两段式流程等。渲染进程的单元测试用 Vitest + jsdom，
+覆盖纯函数（含侧栏宽度夹取）、i18n 表与消息插槽；界面仍没有端到端自动化，交互改动靠手工
+与 DevTools 验证。CI（`.github/workflows/ci.yml`）在 Ubuntu 与 Windows 上跑 Ruff 和
+pytest，在 Ubuntu 上跑 TypeScript 检查、前端测试与构建。
 
 ## 已知限制与排错
 
@@ -392,7 +405,6 @@ Python 侧的测试覆盖适配器（对着本地真实 HTTP 服务，含 SSE）
 - 误报请改 `.gitleaks.toml` 的白名单，不要用 `--no-verify` 绕过。
 - 改动界面文案后跑 `npm run check:i18n`；新增文案要同时补中英文。
 - `references/` 是上游项目的只读副本，不参与构建，也不要从中 import。
-- 开发记录（每次任务的进展、踩过的坑、待办）写在 `requirements/development-log.md`。
 
 ## 许可证与致谢
 

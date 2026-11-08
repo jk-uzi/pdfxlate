@@ -12,7 +12,8 @@ import logging
 import sys
 from pathlib import Path
 
-from pdfxlate import __version__, config as config_mod, paths
+from pdfxlate import __version__, paths
+from pdfxlate import config as config_mod
 from pdfxlate.api import translate
 
 

@@ -370,9 +370,7 @@ External agent (MCP client)      Python MCP server
   prompt-cache token counts.
 
 The file-by-file map ("which file do I change for feature X") is in
-[docs/project-structure.md](docs/project-structure.md); architecture and porting
-decisions are in [docs/development-plan.md](docs/development-plan.md) (both in
-Chinese).
+[docs/project-structure.md](docs/project-structure.md) (in Chinese).
 
 ## Building installers
 
@@ -381,7 +379,8 @@ npm install
 bash scripts/build.sh          # Git Bash on Windows
 ```
 
-The script stages the Chinese font into the sidecar bundle, builds the Python
+The script restores the Python environment from `uv.lock` when `uv` is
+available, stages the Chinese font into the sidecar bundle, builds the Python
 engine with PyInstaller, compiles the TypeScript, and packages with
 electron-builder. Output lands in `dist/`:
 
@@ -403,19 +402,32 @@ Gatekeeper on macOS.
 
 ## Tests
 
-```bash
-cd python && .venv/bin/python -m pytest ../tests -q
-# Windows: .venv\Scripts\python -m pytest ..\tests -q
+Tests and static checks need the dev extras (pytest, ruff, PyInstaller):
 
-npm run typecheck     # main/preload and renderer
+```bash
+cd python
+.venv/bin/pip install -e '.[dev]'      # Windows: .venv\Scripts\pip install -e ".[dev]"
+.venv/bin/python -m pytest ../tests -q # Windows: .venv\Scripts\python -m pytest ..\tests -q
+.venv/bin/ruff check ..                # Windows: .venv\Scripts\ruff check ..
+cd ..
+```
+
+For a locked dependency set, `cd python && uv sync --extra dev` uses the committed
+`uv.lock` and is equivalent to the pip flow above.
+
+```bash
+npm run typecheck     # main/preload, renderer and the frontend tests
+npm run test:frontend # Vitest + jsdom: helpers, i18n tables and message slots
 npm run check:i18n    # English and Chinese string tables stay in sync
 ```
 
 The Python suite covers adapters against a real local HTTP server (including
 SSE), configuration and migration, cache and placeholders, layout and
 typesetting, the sidecar protocol and cancellation, and the two-phase MCP flow.
-The frontend has no automated DOM tests; UI changes are verified by hand and
-with DevTools.
+Renderer logic is unit-tested with Vitest + jsdom: helpers (including sidebar
+clamping), the i18n tables and the message slots. There is still no end-to-end
+UI automation, so interaction changes are verified by hand and with DevTools. CI (`.github/workflows/ci.yml`) runs Ruff and pytest on Ubuntu and
+Windows, and the TypeScript checks, frontend tests and build on Ubuntu.
 
 ## Limitations and troubleshooting
 
@@ -445,8 +457,6 @@ with DevTools.
 - Run `npm run check:i18n` after touching UI strings, and add both languages.
 - `references/` is a read-only clone of the upstream project used for comparison.
   It is not part of the build and must not be imported.
-- Development notes (progress, pitfalls, open items) go in
-  `requirements/development-log.md`.
 
 ## License and credits
 

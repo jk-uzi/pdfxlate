@@ -267,7 +267,7 @@ class _StdioServer:
                     raise ZCodeAppServerError(
                         "the ZCode app-server exited before answering"
                         + (f": {tail}" if tail else "")
-                    )
+                    ) from None
                 continue
             if message.get("id") != request_id:
                 continue

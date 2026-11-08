@@ -5,8 +5,8 @@ import time
 import unicodedata
 from asyncio import CancelledError
 from collections import namedtuple
-from time import perf_counter
 from enum import Enum
+from time import perf_counter
 
 import numpy as np
 from pdfminer.converter import PDFConverter
@@ -267,7 +267,7 @@ class TranslateConverter(PDFConverterEx):
         vfont: str = None,
         vchar: str = None,
         thread: int = 0,
-        layout={},
+        layout: dict | None = None,
         noto_name: str = "",
         noto: Font = None,
         cancellation_event=None,
@@ -276,7 +276,7 @@ class TranslateConverter(PDFConverterEx):
         self.vfont = vfont
         self.vchar = vchar
         self.thread = thread
-        self.layout = layout
+        self.layout = {} if layout is None else layout
         self.noto_name = noto_name
         self.noto = noto
         self.perf = None
@@ -460,9 +460,9 @@ class TranslateConverter(PDFConverterEx):
             varf.append(vfix)
         log.debug("\n==========[VSTACK]==========\n")
         for id, v in enumerate(var):  # 计算公式宽度
-            l = max([vch.x1 for vch in v]) - v[0].x0
-            log.debug(f'< {l:.1f} {v[0].x0:.1f} {v[0].y0:.1f} {v[0].cid} {v[0].fontname} {len(varl[id])} > v{id} = {"".join([ch.get_text() for ch in v])}')
-            vlen.append(l)
+            length = max([vch.x1 for vch in v]) - v[0].x0
+            log.debug(f'< {length:.1f} {v[0].x0:.1f} {v[0].y0:.1f} {v[0].cid} {v[0].fontname} {len(varl[id])} > v{id} = {"".join([ch.get_text() for ch in v])}')
+            vlen.append(length)
 
         ############################################################
         # B. 段落翻译
@@ -561,8 +561,8 @@ class TranslateConverter(PDFConverterEx):
                     try:
                         vid = int(vy_regex.group(1).replace(" ", ""))
                         adv = vlen[vid]
-                    except Exception:
-                        continue  # 翻译器可能会自动补个越界的公式标记
+                    except Exception:  # noqa: BLE001 - 翻译器可能会自动补个越界的公式标记
+                        continue
                     if var[vid][-1].get_text() and unicodedata.category(var[vid][-1].get_text()[0]) in ["Lm", "Mn", "Sk"]:  # 文字修饰符
                         mod = var[vid][-1].width
                     units.append(Unit(0.0, adv, mod))  # 公式宽度不随字号缩放
@@ -572,11 +572,11 @@ class TranslateConverter(PDFConverterEx):
                     try:
                         if fcur_ is None and self.fontmap["tiro"].to_unichr(ord(ch)) == ch:
                             fcur_ = "tiro"  # 默认拉丁字体
-                    except Exception:
+                    except Exception:  # noqa: BLE001 - a character outside the Latin font is expected
                         pass
                     if fcur_ is None:
                         fcur_ = self.noto_name  # 默认非拉丁字体
-                    if fcur_ == self.noto_name: # FIXME: change to CONST
+                    if fcur_ == self.noto_name:
                         adv = self.noto.char_lengths(ch, size)[0]
                     else:
                         adv = self.fontmap[fcur_].char_width(ord(ch)) * size
@@ -619,15 +619,15 @@ class TranslateConverter(PDFConverterEx):
                         if log.isEnabledFor(logging.DEBUG):
                             lstk.append(LTLine(0.1, (_x, _y), (x + vch.x0 - var[vid][0].x0, fix + y + vch.y0 - var[vid][0].y0)))
                             _x, _y = x + vch.x0 - var[vid][0].x0, fix + y + vch.y0 - var[vid][0].y0
-                    for l in varl[vid]:  # 排版公式线条
-                        if l.linewidth < 5:  # hack 有的文档会用粗线条当图片背景
+                    for line in varl[vid]:  # 排版公式线条
+                        if line.linewidth < 5:  # hack 有的文档会用粗线条当图片背景
                             ops_vals.append({
                                 "type": OpType.LINE,
-                                "x": l.pts[0][0] + x - var[vid][0].x0,
-                                "dy": l.pts[0][1] + fix - var[vid][0].y0,
-                                "linewidth": l.linewidth,
-                                "xlen": l.pts[1][0] - l.pts[0][0],
-                                "ylen": l.pts[1][1] - l.pts[0][1],
+                                "x": line.pts[0][0] + x - var[vid][0].x0,
+                                "dy": line.pts[0][1] + fix - var[vid][0].y0,
+                                "linewidth": line.linewidth,
+                                "xlen": line.pts[1][0] - line.pts[0][0],
+                                "ylen": line.pts[1][1] - line.pts[0][1],
                                 "lidx": lidx
                             })
                 else:  # 插入文字缓冲区
@@ -684,9 +684,9 @@ class TranslateConverter(PDFConverterEx):
                 elif vals["type"] == OpType.LINE:
                     ops_list.append(gen_op_line(vals["x"], vals["dy"] + pstk[id].y - vals["lidx"] * fit_size * line_height, vals["xlen"], vals["ylen"], vals["linewidth"]))
 
-        for l in lstk:  # 排版全局线条
-            if l.linewidth < 5:  # hack 有的文档会用粗线条当图片背景
-                ops_list.append(gen_op_line(l.pts[0][0], l.pts[0][1], l.pts[1][0] - l.pts[0][0], l.pts[1][1] - l.pts[0][1], l.linewidth))
+        for line in lstk:  # 排版全局线条
+            if line.linewidth < 5:  # hack 有的文档会用粗线条当图片背景
+                ops_list.append(gen_op_line(line.pts[0][0], line.pts[0][1], line.pts[1][0] - line.pts[0][0], line.pts[1][1] - line.pts[0][1], line.linewidth))
 
         ops = f"BT {''.join(ops_list)}ET "
         if self.perf:

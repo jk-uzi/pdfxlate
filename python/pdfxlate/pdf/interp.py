@@ -1,21 +1,21 @@
 import logging
 from typing import Any, Dict, Optional, Sequence, Tuple, cast
-import numpy as np
 
+import numpy as np
 from pdfminer import settings
 from pdfminer.pdfcolor import PREDEFINED_COLORSPACE, PDFColorSpace
 from pdfminer.pdfdevice import PDFDevice
+from pdfminer.pdffont import PDFFont
 from pdfminer.pdfinterp import (
-    PDFPageInterpreter,
-    PDFResourceManager,
-    PDFContentParser,
-    PDFInterpreterError,
-    Color,
-    PDFStackT,
     LITERAL_FORM,
     LITERAL_IMAGE,
+    Color,
+    PDFContentParser,
+    PDFInterpreterError,
+    PDFPageInterpreter,
+    PDFResourceManager,
+    PDFStackT,
 )
-from pdfminer.pdffont import PDFFont
 from pdfminer.pdfpage import PDFPage
 from pdfminer.pdftypes import (
     PDFObjRef,
@@ -34,8 +34,8 @@ from pdfminer.utils import (
     MATRIX_IDENTITY,
     Matrix,
     Rect,
-    mult_matrix,
     apply_matrix_pt,
+    mult_matrix,
 )
 
 log = logging.getLogger(__name__)
@@ -127,7 +127,6 @@ class PDFPageInterpreterEx(PDFPageInterpreter):
             == apply_matrix_pt(self.ctm, self.curpath[1][-2:])[1]
             and is_black(self.graphicstate.scolor)
         ):  # 独立直线，水平，黑色
-            # print(apply_matrix_pt(self.ctm,self.curpath[0][-2:]),apply_matrix_pt(self.ctm,self.curpath[1][-2:]),self.graphicstate.scolor)
             self.device.paint_path(self.graphicstate, True, False, False, self.curpath)
             self.curpath = []
             return "n"
@@ -199,9 +198,9 @@ class PDFPageInterpreterEx(PDFPageInterpreter):
         xobjid = literal_name(xobjid_arg)
         try:
             xobj = stream_value(self.xobjmap[xobjid])
-        except KeyError:
+        except KeyError as exc:
             if settings.STRICT:
-                raise PDFInterpreterError("Undefined xobject id: %r" % xobjid)
+                raise PDFInterpreterError("Undefined xobject id: %r" % xobjid) from exc
             return
         # log.debug("Processing xobj: %r", xobj)
         subtype = xobj.get("Subtype")
@@ -241,7 +240,7 @@ class PDFPageInterpreterEx(PDFPageInterpreter):
                 self.obj_patch[self.xobjmap[xobjid].objid] = (
                     f"q {ops_base}Q {a} {b} {c} {d} {e} {f} cm {ops_new}"
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001 - an unsupported XObject must not abort the page
                 pass
         elif subtype is LITERAL_IMAGE and "Width" in xobj and "Height" in xobj:
             self.device.begin_figure(xobjid, (0, 0, 1, 1), MATRIX_IDENTITY)
@@ -254,8 +253,6 @@ class PDFPageInterpreterEx(PDFPageInterpreter):
     def process_page(self, page: PDFPage) -> None:
         # 重载设置 page 的 obj_patch
         # log.debug("Processing page: %r", page)
-        # print(page.mediabox,page.cropbox)
-        # (x0, y0, x1, y1) = page.mediabox
         x0, y0, x1, y1 = page.cropbox
         if page.rotate == 90:
             ctm = (0, -1, 1, 0, -y0, x1)
@@ -362,5 +359,4 @@ class PDFPageInterpreterEx(PDFPageInterpreter):
                     raise PDFInterpreterError(error_msg)
             else:
                 self.push(obj)
-        # print('REV DATA',ops)
         return ops

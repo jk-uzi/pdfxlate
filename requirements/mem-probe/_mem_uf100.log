@@ -1,8 +1,0 @@
-start               19.0 MB
-after import        94.1 MB
-after adapter       94.8 MB
-after read          96.1 MB  (1.25 MB file)
-after pipeline     170.9 MB  (peak 343.3)
-outputs         mono=9.13 MB dual=10.27 MB
-after release      117.1 MB
-PEAK               343.3 MB

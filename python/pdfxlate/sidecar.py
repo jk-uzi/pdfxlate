@@ -56,7 +56,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from pdfxlate import __version__, config as config_mod, paths
+from pdfxlate import __version__, paths
+from pdfxlate import config as config_mod
 
 logger = logging.getLogger(__name__)
 
@@ -547,7 +548,6 @@ def method_assets_download(params: dict) -> dict:
     """Download the model and/or fonts, reporting progress as events."""
     from pdfxlate import assets
 
-    req_id = params.get("_id")
     targets = params.get("targets") or ["layout_model", "fonts"]
     languages = params.get("languages") or ["zh"]
 

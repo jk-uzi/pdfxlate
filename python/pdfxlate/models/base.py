@@ -22,7 +22,7 @@ import logging
 import re
 import threading
 from string import Template
-from typing import Any, Callable, ClassVar
+from typing import Any, ClassVar
 
 from pdfxlate.cache import TranslationCache
 
@@ -246,7 +246,7 @@ class ModelAdapter(abc.ABC):
     def do_translate(self, text: str) -> str:
         """Perform one API call.  Implementations must not touch the cache."""
 
-    def close(self) -> None:
+    def close(self) -> None:  # noqa: B027 - an optional hook, not an abstract requirement
         """Release background resources.  HTTP adapters have nothing to do.
 
         The agent CLI adapter owns a worker thread and a child process; the API
@@ -388,7 +388,7 @@ def build_adapter(
 
 
 # Import adapters so their @register decorators run.
-from pdfxlate.models import anthropic_messages as _anthropic_messages  # noqa: E402,F401
 from pdfxlate.models import agent_cli as _agent_cli  # noqa: E402,F401
+from pdfxlate.models import anthropic_messages as _anthropic_messages  # noqa: E402,F401
 from pdfxlate.models import openai_compat as _openai_compat  # noqa: E402,F401
 from pdfxlate.models import openai_responses as _openai_responses  # noqa: E402,F401

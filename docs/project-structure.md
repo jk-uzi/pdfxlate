@@ -3,13 +3,9 @@
 本文件是**代码索引**：先读这里，快速定位「改某个功能该动哪个文件」。
 与项目实际结构一一对应，改动代码后请同步更新。
 
-- 长期方向与架构决策 → [development-plan.md](development-plan.md)
-- 短期开发记录 → [../requirements/development-log.md](../requirements/development-log.md)
-
 **分工**：本文件是结构信息的唯一来源（文件树、模块职责、符号、数据位置）。
-`development-plan.md` 只讲架构决策、移植对照与阶段划分，不重复维护结构。
 
-规模：约 6000 行（不含 `python/.venv`、`references/`、`node_modules`）。
+规模：约 3.5 万行（不含 `python/.venv`、`references/`、`node_modules`）。
 Python 3.12，venv 在 `python/.venv`，包以 editable 方式安装，改源码即时生效。
 前端为 TypeScript + Electron（无前端框架），`npm run dev` 启动。
 
@@ -62,7 +58,7 @@ Python 3.12，venv 在 `python/.venv`，包以 editable 方式安装，改源码
 | 改输出位置 | Python → `pdf/pipeline.py` 的 `OUTPUT_SUBDIR`（空 `output` 时按源文件目录解析）；列译文 → `src/main/main.ts` 的 `TRANSLATED_SUBDIR`，两处必须一致 |
 | 改「另存为」存哪一份 | `src/renderer/app.ts` 的 `saveAsSource()`；对话框与拷贝在 `src/main/main.ts` 的 `dialog:saveAs` |
 | 改选项面板（模型/推理/语言，只影响本次） | `src/renderer/app.ts` 的 `optionValues` / `selectedModel()`；引擎侧覆盖在 `api.py` 的 `translate()` |
-| 改侧栏宽度 | `src/renderer/app.ts` 的 `applySidebarWidth()` / `clampSidebarWidth()` + `style.css` 的 `--sidebar-width`、`.sidebar__resizer` |
+| 改侧栏宽度 | `src/renderer/app.ts` 的 `applySidebarWidth()` / `src/renderer/util.ts` 的 `clampSidebarWidth()` + `style.css` 的 `--sidebar-width`、`.sidebar__resizer` |
 | 改侧栏底部（进度条 / 状态 / 设置入口） | `index.html` 的 `.sidebar__status`（进度条）与 `.sidebar__foot`（状态文字 + `#btn-open-settings`），样式见 `style.css` 的 `.btn.btn--settings` |
 | 改浮层显隐时机 / 常驻图钉 | `src/renderer/app.ts` 的 `flashViewerOverlay()` + `VIEWER_OVERLAYS`；图钉逻辑在同文件的 `paintOverlaysPinned()` / `setOverlaysPinned()`，标记在 `index.html` 的 `#viewer-saveas` 内 |
 | 改右侧 PDF 预览（标签/翻页/缩放） | `src/renderer/app.ts` 的 `renderPreview()` / `viewerUrl()` / `activateTab()` |
@@ -73,9 +69,9 @@ Python 3.12，venv 在 `python/.venv`，包以 editable 方式安装，改源码
 | 改供应商/模型的界面编辑 | `src/renderer/app.ts` 的 `renderProviderList()` / `renderModelList()` / `toggleModelEditor()` / `setModelEnabled()`；后端字段在 `config.py` 的 `ModelEntry`（含 `enabled`）。**agent 供应商不在这里编辑**：`modelPanelProviderNames()` 把它们过滤掉，改由设置 › Agents 面板（`renderAgents()` / `setAgentModel()`）管理 |
 | 改界面文案 / 加一门语言 | `src/renderer/i18n.ts`（`en`/`zh` 两张表），静态文案用 `data-i18n*` 属性标注 |
 | 改原生对话框文案 | `src/main/main.ts` 的 `DIALOG_STRINGS`（主进程另有一份小表，原因见该处注释） |
-| 改前端构建配置 | `package.json`、`tsconfig.node.json`、`tsconfig.renderer.json` |
+| 改前端构建配置 | `package.json`、`tsconfig.node.json`、`tsconfig.renderer.json`；测试另用 `tsconfig.test.json` + `vitest.config.ts` |
 | 改打包配置 | Electron → `electron-builder.yml`；Python → `python/pdfxlate.spec` |
-| 加测试 | `tests/` |
+| 加测试 | Python：`tests/`；前端：`tests/frontend/`（Vitest + jsdom） |
 | 改依赖 | Python → `python/pyproject.toml`；Node → `package.json` |
 
 ## 二、完整文件树
@@ -93,24 +89,23 @@ pdfxlate/
 ├── LICENSE                          AGPL-3.0 全文（安装包与 asar 都会带上）
 ├── tsconfig.node.json               主进程 / preload 的 TS 配置
 ├── tsconfig.renderer.json           渲染进程的 TS 配置
+├── tsconfig.test.json               前端测试的 TS 配置（复用 renderer）
+├── vitest.config.ts                 前端测试运行器（jsdom）
 ├── docs/
-│   ├── development-plan.md          长期方案（架构、移植对照表、阶段、风险）
 │   └── project-structure.md         ← 本文件
-├── requirements/
-│   └── development-log.md           短期开发记录
 ├── python/
 │   ├── pyproject.toml               依赖、入口点、extras（ultrafast / cuda / mcp / dev）
 │   ├── pdfxlate.spec                PyInstaller 打包配置（onedir）
 │   └── pdfxlate/
 │       ├── __init__.py              惰性暴露 translate / translate_stream
 │       ├── paths.py          93 行  跨平台 config / cache / assets 路径
-│       ├── config.py        695 行  pydantic 配置模型（供应商→模型 + agent 路径覆盖）+ YAML 读写
+│       ├── config.py        701 行  pydantic 配置模型（供应商→模型 + agent 路径覆盖）+ YAML 读写
 │       ├── assets.py        405 行  模型 / 字体 / OCR 数据下载与校验；内置字体优先
 │       ├── cache.py         179 行  sqlite3 翻译缓存 + 命中统计
-│       ├── api.py           274 行  公开 Python API（含取消透传与 adapter 关闭）
-│       ├── cli.py           244 行  命令行入口
-│       ├── sidecar.py       915 行  stdio JSON 行协议（Electron 调用，含缓存统计）；--mcp 转交 MCP 服务
-│       ├── mcp_server.py    509 行  MCP 服务（外部 agent 调用，stdio）
+│       ├── api.py           317 行  公开 Python API（含取消透传与 adapter 关闭）
+│       ├── cli.py           245 行  命令行入口
+│       ├── sidecar.py       885 行  stdio JSON 行协议（Electron 调用，含缓存统计）；--mcp 转交 MCP 服务
+│       ├── mcp_server.py    510 行  MCP 服务（外部 agent 调用，stdio）
 │       ├── mcp_config.py    246 行  把 MCP 条目写进各 agent 配置（备份/合并/校验）
 │       ├── agents/
 │       │   ├── __init__.py    135 行  公开入口：list_agents()（快照优先），并导出检测 / 模型列表 / 运行时的符号
@@ -118,12 +113,12 @@ pdfxlate/
 │       │   ├── detect.py      823 行  可执行文件解析（PATH / 注册表 / 路径覆盖）、版本探测；不再自动探测登录
 │       │   ├── catalog.py    1155 行  模型列表（codex / codebuddy / WorkBuddy 桌面版 / DSH 桌面 profile / ZCode provider_config）
 │       │   ├── runtime.py     990 行  拼命令、spawn、输出解析、超时/取消、杀进程树、DSH --patch、Claude 启动裁剪
-│       │   ├── workbuddy_desktop.py 1588 行  WorkBuddy 桌面版：auth 解密 / 模型目录 / HTTP SSE 翻译 / chat keep-alive
+│       │   ├── workbuddy_desktop.py 1610 行  WorkBuddy 桌面版：auth 解密 / 模型目录 / HTTP SSE 翻译 / chat keep-alive
 │       │   ├── zcode_app_server.py 559 行  ZCode 官方 app-server 客户端：provider/testModelConnectivity 测试 + workspace/generateText 翻译 + 预热；临时 workspace、无 session
 │       │   ├── snapshot.py    110 行  agents.list 的本地快照：缓存优先、路径签名、原子写；不含凭据
 │       │   └── batch.py       208 行  批队列（8 段 / 12000 字符 / 0.2s；argv agent 8000）
 │       ├── models/
-│       │   ├── __init__.py     23 行  导出翻译层公开符号
+│       │   ├── __init__.py     29 行  导出翻译层公开符号
 │       │   ├── base.py       394 行  ModelAdapter 基类 + 注册表 + 永久错误分类 + 服务端缓存统计
 │       │   ├── agent_cli.py  299 行  AgentCliAdapter：把批队列接进 ModelAdapter；WorkBuddy 桌面版 HTTP 后端；ZCode 所有模型走 app-server（当前模型失败回退 CLI）
 │       │   ├── openai_compat.py 186 行  OpenAI Chat Completions 适配器（含 usage 缓存字段）
@@ -134,58 +129,64 @@ pdfxlate/
 │           ├── __init__.py      1 行
 │           ├── pipeline.py   901 行  管线编排：解析→版面→翻译→排版（掩膜、工作副本与成品直写盘）
 │           ├── converter.py  699 行  排版回填 + 字号适配 + 有界段落重试（移植上游 converter.py）
-│           ├── interp.py     366 行  内容流解释器（上游照搬）
+│           ├── interp.py     362 行  内容流解释器（上游照搬）
 │           ├── layout.py     211 行  DocLayout-YOLO ONNX 版面检测（含 arena 开关）
 │           ├── ocr.py        161 行  OCR 段落重建与排版
-│           ├── two_phase.py  489 行  两遍式段落收集/回填（MCP 用）
+│           ├── two_phase.py  496 行  两遍式段落收集/回填（MCP 用）
 │           ├── ultrafast.py  105 行  免模型快速路径
 │           └── text_spacing.py 44 行  中英混排间距（上游照搬）
 ├── src/
 │   ├── main/
-│   │   ├── main.ts          506 行  窗口 + 应用生命周期 + IPC（自建标题栏、另存为、目录列举（含 translated/）、拖入归档、openPath/openExternal）
-│   │   └── sidecar.ts       234 行  Python 子进程管理 + JSON 行协议
+│   │   ├── main.ts          529 行  窗口 + 应用生命周期 + IPC（自建标题栏、另存为、目录列举（含 translated/）、拖入归档、openPath/openExternal）
+│   │   └── sidecar.ts       239 行  Python 子进程管理 + JSON 行协议
 │   ├── preload/
-│   │   └── preload.ts       183 行  contextBridge，向渲染进程暴露 API（含 openExternal）
+│   │   └── preload.ts       181 行  contextBridge，向渲染进程暴露 API（含 openExternal）
 │   └── renderer/
-│       ├── index.html       816 行  界面结构（文案走 data-i18n* 属性；图标在构建时内联）
-│       ├── app.ts          5286 行  界面逻辑（任务/设置双模式、折叠、标签页、文件夹浏览/搜索/自动刷新、拖放、pdf.js 预览与双栏、缩放、进度、开始/取消合一、另存为、选项覆盖、侧栏拖拽、供应商/模型两栏编辑器、Agents 面板、底部 Toast）
+│       ├── index.html       836 行  界面结构（文案走 data-i18n* 属性；图标在构建时内联）
+│       ├── app.ts          5261 行  界面逻辑（任务/设置双模式、折叠、标签页、文件夹浏览/搜索/自动刷新、拖放、pdf.js 预览与双栏、缩放、进度、开始/取消合一、另存为、选项覆盖、侧栏拖拽、供应商/模型两栏编辑器、Agents 面板、底部 Toast）
+│       ├── util.ts          127 行  纯函数（侧栏宽度、页码解析、语言名、错误清洗等），可单测
+│       ├── messages.ts       57 行  内联消息插槽工厂（供应商 / 模型 / Agents 共用）
 │       ├── i18n.ts          834 行  中英文字符串表 + t()/applyStaticTranslations()
 │       ├── icon.svg          49 行  应用标记的**唯一来源**（标题栏内联 + 打包图标）
-│       └── style.css       2543 行  样式（含标题栏标签、查看器浮层与常驻图钉、折叠与侧栏状态行、文档组标题工具、侧栏拖拽手柄、模型页两栏布局与开关、Agents 卡片与可折叠模型区、底部 Toast）
+│       └── style.css       2562 行  样式（含标题栏标签、查看器浮层与常驻图钉、折叠与侧栏状态行、文档组标题工具、侧栏拖拽手柄、模型页两栏布局与开关、Agents 卡片与可折叠模型区、底部 Toast）
 ├── assets/
 │   ├── icon.png               512×512，由 make_icon.py 从 icon.svg 生成后提交
 │   └── icon.ico               16–256 多尺寸，同上（Windows 用）
 ├── tests/
+│   ├── frontend/
+│   │   ├── util.test.ts      145 行  纯函数：侧栏宽度、页码、错误清洗、语言名等
+│   │   ├── messages.test.ts   59 行  消息插槽的绘制、错误样式、清空与本地化重绘
+│   │   └── i18n.test.ts       47 行  双语键一致性、占位符、语言切换通知
 │   ├── test_translation.py   293 行  缓存、命中统计、提示词前缀、占位符、推理标签剥离、注册表、缓存开关、超窗口告警
 │   ├── test_openai_compat.py 209 行  适配器参数透传、校验、提示词渲染、usage 缓存字段
-│   ├── test_openai_responses.py 146 行  Responses 形状映射、流式增量、截断、空回复
+│   ├── test_openai_responses.py 147 行  Responses 形状映射、流式增量、截断、空回复
 │   ├── test_adapters_http.py 359 行  三个适配器打真实本地 HTTP 服务（含 SSE）
 │   ├── test_translate_segment.py 111 行  有界重试、取消、永久错误不重试
-│   ├── test_sidecar_provider_test.py 172 行  providers.test 探针
-│   ├── test_catalog.py      171 行  上游模型清单：URL、两种信封、翻页、错误
+│   ├── test_sidecar_provider_test.py 171 行  providers.test 探针
+│   ├── test_catalog.py      170 行  上游模型清单：URL、两种信封、翻页、错误
 │   ├── test_sidecar_catalog.py 113 行  providers.models 探针
 │   ├── test_config_env_refs.py 142 行  **改名前后的密钥不落明文**
 │   ├── test_anthropic_messages.py 227 行  Messages 端点拼接、请求体、SSE、错误分级
 │   ├── test_config_providers.py 468 行  供应商→模型 schema、resolve、迁移（含已移除字段）、env 引用、agent 字段
 │   ├── test_agent_cli.py   1146 行  agent 适配器：批队列、模型参数审计、提示词、解析、重试/拆单段、缓存键、关闭、ZCode 当前模型回退
-│   ├── test_agents_detect.py 472 行  路径解析、版本/登录探测、五个 agent 的模型列表解析
-│   ├── test_agents_snapshot.py 177 行  agents.list 快照往返/路径签名/损坏/无凭据/缓存优先/刷新写快照
-│   ├── test_zcode_app_server.py 274 行  ZCode app-server：fake stdio、selection、测试/翻译、预热、reasoning、错误、超时、取消
+│   ├── test_agents_detect.py 1079 行  路径解析、版本/登录探测、五个 agent 的模型列表解析
+│   ├── test_agents_snapshot.py 176 行  agents.list 快照往返/路径签名/损坏/无凭据/缓存优先/刷新写快照
+│   ├── test_zcode_app_server.py 273 行  ZCode app-server：fake stdio、selection、测试/翻译、预热、reasoning、错误、超时、取消
 │   ├── fake_zcode_app_server.py 87 行  ZCode app-server 测试替身（逐行 JSON，无 jsonrpc 字段）
-│   ├── test_sidecar_agents.py 417 行  agents.list / agents.models / agents.test、providers.list 的 agent 字段、providers.test 拒绝 agent_cli
+│   ├── test_sidecar_agents.py 425 行  agents.list / agents.models / agents.test、providers.list 的 agent 字段、providers.test 拒绝 agent_cli
 │   ├── test_typesetting.py   172 行  字号适配纯函数（放不下时的缩字逻辑）
-│   ├── test_cli_options.py   286 行  CLI 排版选项解析与三态覆盖语义
-│   ├── test_sidecar_providers.py 181 行  providers.list 形状、密钥不外传
-│   ├── test_sidecar_cancel.py   221 行  translate.start 不阻塞请求循环、取消语义、stdout 并发写、缓存统计
+│   ├── test_cli_options.py   279 行  CLI 排版选项解析与三态覆盖语义
+│   ├── test_sidecar_providers.py 205 行  providers.list 形状、密钥不外传
+│   ├── test_sidecar_cancel.py   243 行  translate.start 不阻塞请求循环、取消语义、stdout 并发写、缓存统计
 │   ├── test_output_dir.py       149 行  空 output 落到源文件旁 translated/、显式目录仍优先
-│   ├── test_output_mode.py      218 行  译文形式、页码裁剪、产物重名
-│   ├── test_mcp_server.py    600 行  MCP 工具、stdio 握手、两遍式端到端与确定性护栏
+│   ├── test_output_mode.py      217 行  译文形式、页码裁剪、产物重名
+│   ├── test_mcp_server.py    594 行  MCP 工具、stdio 握手、两遍式端到端与确定性护栏
 │   ├── test_mcp_config.py   239 行  写入 agent 配置：合并/幂等/备份/坏文件不动
 │   ├── test_sidecar_mcp_flag.py 159 行  --mcp 真的能起一个 MCP 握手
-│   ├── test_per_job_overrides.py 136 行  按次覆盖语言/推理；调用方配置对象不被改动
-│   ├── test_layout_memory.py 183 行  arena 开关、配置往返、任务结束释放模型
+│   ├── test_per_job_overrides.py 134 行  按次覆盖语言/推理；调用方配置对象不被改动
+│   ├── test_layout_memory.py 184 行  arena 开关、配置往返、任务结束释放模型
 │   ├── test_pipeline_memory.py 251 行  掩膜 dtype、工作副本落盘、成品直写与失败清理
-│   └── test_assets_fonts.py  175 行  语言→字体映射、status() 兼容性、内置字体回退、下载完整性
+│   └── test_assets_fonts.py  177 行  语言→字体映射、status() 兼容性、内置字体回退、下载完整性
 └── scripts/
     ├── copy-static.mjs       157 行  拷贝 CSS 与 pdf.js 运行时分发（含 cmaps/ 与 standard_fonts/）、**把 icon.svg 内联进 index.html**、校验 CSS 注释配对
     ├── make-icon.mjs          33 行  用 venv 解释器调用 make_icon.py（npm run make:icon）
@@ -759,7 +760,8 @@ Chromium 内置扩展的**独立 `remote` WebContents**，OS 把滚轮路由给�
 只装一份文档，没有歧义可言。对话框在渲染进程之外，拷贝用 `copyFile` 在主进程完成
 （渲染进程是沙箱，没有文件系统）。
 
-**`src/renderer/app.ts`** — 界面逻辑，无前端框架，直接操作 DOM。
+**`src/renderer/app.ts`** — 界面逻辑，无前端框架，直接操作 DOM。不依赖应用状态的纯
+函数在 `util.ts`，内联消息的绘制在 `messages.ts`；两者都能被 Vitest 直接导入测试。
 两栏工作区，且**有任务 / 设置两种模式**（`appMode`）：
 
 - **任务模式**（默认）：左侧栏是**可折叠分组**（文档 / 选项），
@@ -1222,9 +1224,10 @@ key 名与渲染进程的 `dialog.*` 保持一致，便于人工对照。
 
 ```bash
 # Windows 的 venv 是 .venv/Scripts/python.exe，macOS/Linux 是 .venv/bin/python
-python/.venv/bin/python -m pytest tests/ -q          # Python，当前 578 passed
+python/.venv/bin/python -m pytest tests/ -q          # Python，当前 584 passed
 python/.venv/bin/python -m pytest tests/ -q -k cache # 单个方向
-npm run typecheck                                    # 前端类型检查
+npm run typecheck                                    # 前端与测试的类型检查
+npm run test:frontend                                # Vitest + jsdom，28 个用例
 npm run check:i18n                                   # 中英文字符串表一致性
 ```
 
@@ -1321,7 +1324,7 @@ gitleaks detect                            # 扫 git 历史
 
 ## 七、验证状态
 
-阶段 1–7 均已实机验证，见 [../requirements/development-log.md](../requirements/development-log.md)。
+阶段 1–7 均已实机验证。
 
 - **字体渲染已确认**：中文以真实字形渲染，非空白方块（曾是最担心的风险点）。
 - **端到端已跑通**：上游样例 `translate.cli.plain.text.pdf` 与真实 arXiv 文献
@@ -1344,9 +1347,9 @@ gitleaks detect                            # 扫 git 历史
   依赖）、`--babeldoc`/`--mode precise`（需另一 submodule + 独立 venv）、
   `gui.py`/`backend.py`/`translator.py`（非 PDF 排版）。
   上游的 `mcp_server.py` 当时一并列为「不移植」，**后来改成了自己做**
-  （`mcp_server.py` + `pdf/two_phase.py`）——理由与做法见 development-plan.md，
-  关键差别是上游用 v1 的 `FastMCP` 且只做「用配置里的模型翻」这一条路，本项目
-  还支持用**连接方自己的模型**（MCP sampling）。
+  （`mcp_server.py` + `pdf/two_phase.py`），关键差别是上游用 v1 的 `FastMCP`
+  且只做「用配置里的模型翻」这一条路，本项目还支持用**连接方自己的模型**
+  （MCP sampling）。
 
 ### 移植过程中修掉的问题
 

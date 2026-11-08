@@ -18,6 +18,18 @@ import {
   LOCALES,
   LOCALE_LABELS,
 } from "./i18n.js";
+import { messageSlot } from "./messages.js";
+import {
+  baseName,
+  clampSidebarWidth,
+  cleanError,
+  cssEscape,
+  formatContextBadge,
+  languageLabel,
+  parsePages,
+  spreadPages,
+  truncateSample,
+} from "./util.js";
 
 // One model under a provider, as summarised by `providers.list`.
 interface ProviderModelSummary {
@@ -284,29 +296,6 @@ let lastProgress: {
   total: number;
   message: ProgressMessage;
 } | null = null;
-let lastProfileMessage: {
-  key: string;
-  params?: Record<string, string>;
-  error: boolean;
-} | null = null;
-/**
- * Messages for the two inline add rows.
- *
- * Separate from `lastProfileMessage`: that one is painted at the bottom of the
- * provider detail, which does not exist until a provider does. Validation for
- * the add-provider row would then be written into a hidden element.
- */
-let lastProviderAddMessage: {
-  key: string;
-  params?: Record<string, string>;
-  error: boolean;
-} | null = null;
-let lastModelAddMessage: {
-  key: string;
-  params?: Record<string, string>;
-  error: boolean;
-} | null = null;
-
 // Last `providers.list` summary and the full `config.get` document the model
 // editor works against. The summary drives the two selectors and the API-key
 // masking (`has_api_key`); the config document carries the model detail fields
@@ -424,12 +413,6 @@ let engineConfigDir: string | null = null;
 let cachedAgents: AgentStatus[] = [];
 let agentsLoaded = false;
 let agentsLoading = false;
-/** Global message on `#agents-msg`, repainted on a locale switch. */
-let lastAgentsMessage: {
-  key: string;
-  params?: Record<string, string>;
-  error: boolean;
-} | null = null;
 /**
  * Agents whose Test button has produced a real answer in this session.
  *
@@ -537,21 +520,6 @@ paintOverlaysPinned();
  * and there is exactly one value to remember.
  */
 const WIDTH_STORAGE_KEY = "pdfxlate.sidebarWidth";
-const MIN_SIDEBAR = 240;
-const MAX_SIDEBAR = 600;
-
-/**
- * Clamp a width to something that leaves the document usable.
- *
- * The upper bound is also a share of the window, since 600px is comfortable at
- * 1280 but would leave almost nothing for the page on a narrow window. The
- * window's minimum width is 1000, so half of it still leaves the preview half.
- */
-function clampSidebarWidth(width: number): number {
-  const byWindow = Math.max(MIN_SIDEBAR, Math.floor(window.innerWidth / 2));
-  return Math.round(Math.min(Math.max(width, MIN_SIDEBAR), Math.min(MAX_SIDEBAR, byWindow)));
-}
-
 function applySidebarWidth(width: number, persist = true): void {
   const clamped = clampSidebarWidth(width);
   document.documentElement.style.setProperty("--sidebar-width", `${clamped}px`);
@@ -695,9 +663,9 @@ onLocaleChange(() => {
   paintApiKeyPlaceholder();
   renderDownloadButton();
   paintProgress();
-  paintProfileMessage();
-  paintProviderAddMessage();
-  paintModelAddMessage();
+  profileMessage.paint();
+  providerAddMessage.paint();
+  modelAddMessage.paint();
   renderProviderList();
   renderModelList();
   renderOptionModels();
@@ -1014,11 +982,6 @@ $("btn-download-assets").addEventListener("click", async () => {
 });
 
 // --- folder browsing -------------------------------------------------------
-
-/** Base name of a path, for display. */
-function baseName(file: string): string {
-  return file.split(/[\\/]/).pop() ?? file;
-}
 
 /** Stable fingerprint of a scan: path plus translated flag, in folder order. */
 function folderSignature(found: PdfEntry[]): string {
@@ -2204,19 +2167,6 @@ function releaseLoadedPreview(): void {
 }
 
 /**
- * The pages a spread shows, in order.
- *
- * Two adjacent pages, except at the end of an odd-length document where there
- * is only one left. Pages are 1-based, matching `state.page`.
- */
-function spreadPages(state: { page: number; pages: number }): number[] {
-  const first = state.page;
-  const second = first + 1;
-  if (state.pages > 0 && second > state.pages) return [first];
-  return [first, second];
-}
-
-/**
  * Repaint the preview for the active tab, page and zoom.
  *
  * The loaded pdf.js document is kept across repaints: changing page or zoom
@@ -2815,16 +2765,6 @@ function selectProvider(name: string): void {
   applyModelFields();
 }
 
-/** Format a context window as a short badge value: 128K, 1M. */
-function formatContextBadge(tokens: number): string {
-  if (tokens >= 1_000_000) {
-    const millions = tokens / 1_000_000;
-    return `${Number.isInteger(millions) ? millions : millions.toFixed(1)}M`;
-  }
-  if (tokens >= 1000) return `${Math.round(tokens / 1000)}K`;
-  return String(tokens);
-}
-
 /**
  * The single inline model editor.
  *
@@ -2968,11 +2908,6 @@ function renderModelList(): void {
     editor.classList.add("hidden");
     list.append(editor);
   }
-}
-
-/** Minimal attribute-selector escape: aliases are user text. */
-function cssEscape(value: string): string {
-  return value.replace(/["\\]/g, "\\$&");
 }
 
 /** A borderless icon button with a tooltip and an accessible name. */
@@ -3285,71 +3220,30 @@ async function saveConfig(successKey: string): Promise<void> {
   // `config.get` can never be "fixed" by writing an empty config over the real
   // one.
   if (!configLoaded || !cachedConfig) {
-    setProfileMessage("model.configUnavailable", undefined, true);
+    profileMessage.set("model.configUnavailable", undefined, true);
     return;
   }
   try {
     await api.request("config.save", { config: cachedConfig });
-    setProfileMessage(successKey);
+    profileMessage.set(successKey);
     await refreshProviders();
   } catch (err) {
-    setProfileMessage("model.saveFailed", { error: String(err) }, true);
+    profileMessage.set("model.saveFailed", { error: String(err) }, true);
   }
 }
 
-function paintProfileMessage(): void {
-  const msg = $("model-msg");
-  if (!lastProfileMessage) {
-    msg.textContent = "";
-    msg.className = "msg";
-    return;
-  }
-  msg.textContent = t(lastProfileMessage.key, lastProfileMessage.params);
-  msg.className = lastProfileMessage.error ? "msg msg--error" : "msg";
-}
-
-function setProfileMessage(
-  key: string,
-  params?: Record<string, string>,
-  error = false,
-): void {
-  lastProfileMessage = { key, params, error };
-  paintProfileMessage();
-}
-
-function paintProviderAddMessage(): void {
-  const msg = $("provider-add-msg");
-  msg.textContent = lastProviderAddMessage
-    ? t(lastProviderAddMessage.key, lastProviderAddMessage.params)
-    : "";
-  msg.className = lastProviderAddMessage?.error ? "msg msg--error" : "msg";
-}
-
-function setProviderAddMessage(
-  key: string,
-  params?: Record<string, string>,
-  error = false,
-): void {
-  lastProviderAddMessage = key ? { key, params, error } : null;
-  paintProviderAddMessage();
-}
-
-function paintModelAddMessage(): void {
-  const msg = $("model-add-msg");
-  msg.textContent = lastModelAddMessage
-    ? t(lastModelAddMessage.key, lastModelAddMessage.params)
-    : "";
-  msg.className = lastModelAddMessage?.error ? "msg msg--error" : "msg";
-}
-
-function setModelAddMessage(
-  key: string,
-  params?: Record<string, string>,
-  error = false,
-): void {
-  lastModelAddMessage = key ? { key, params, error } : null;
-  paintModelAddMessage();
-}
+/**
+ * Inline messages.
+ *
+ * The provider detail, the two add rows and the agents panel each own their
+ * element because they sit in different columns: validation for the
+ * add-provider row must not be written into the detail's message, which does
+ * not exist until a provider does. The behaviour is shared; only the element
+ * and the remembered state differ.
+ */
+const profileMessage = messageSlot("model-msg", t);
+const providerAddMessage = messageSlot("provider-add-msg", t);
+const modelAddMessage = messageSlot("model-add-msg", t);
 
 /**
  * Show or hide the inline provider form.
@@ -3364,7 +3258,7 @@ function setProviderAddOpen(open: boolean): void {
   $("provider-add").classList.toggle("hidden", !open);
   $("btn-add-provider-empty").classList.toggle("hidden", open);
   $("btn-add-provider").setAttribute("aria-expanded", String(open));
-  setProviderAddMessage("");
+  providerAddMessage.set("");
   if (!open) return;
   const input = $<HTMLInputElement>("new-provider-name");
   input.focus();
@@ -3383,13 +3277,13 @@ $("btn-add-provider-confirm").addEventListener("click", () => {
   const input = $<HTMLInputElement>("new-provider-name");
   const name = input.value.trim();
   if (!name) {
-    setProviderAddMessage("model.nameRequired", undefined, true);
+    providerAddMessage.set("model.nameRequired", undefined, true);
     input.focus();
     return;
   }
   const providers = draftProviders();
   if (providers[name]) {
-    setProviderAddMessage("model.providerExists", { name }, true);
+    providerAddMessage.set("model.providerExists", { name }, true);
     input.focus();
     input.select();
     return;
@@ -3417,7 +3311,7 @@ $("btn-add-provider-confirm").addEventListener("click", () => {
   void saveConfig("model.saved");
 });
 
-$("new-provider-name").addEventListener("input", () => setProviderAddMessage(""));
+$("new-provider-name").addEventListener("input", () => providerAddMessage.set(""));
 
 $("new-provider-name").addEventListener("keydown", (event) => {
   const key = (event as KeyboardEvent).key;
@@ -3478,20 +3372,6 @@ async function testProvider(button: HTMLButtonElement): Promise<void> {
     button.disabled = false;
     button.textContent = t("model.test");
   }
-}
-
-/**
- * Trim Electron's transport wrapping off an error message.
- *
- * An `ipcRenderer.invoke` rejection arrives as
- * `Error: Error invoking remote method 'sidecar:request': Error: ValueError: …`.
- * Only the last, concrete part is useful to a person looking at a settings
- * panel, and the repeats read like a stack trace.
- */
-function cleanError(err: unknown): string {
-  const raw = String(err);
-  const marker = raw.lastIndexOf("Error: ");
-  return marker >= 0 ? raw.slice(marker + "Error: ".length) : raw;
 }
 
 /**
@@ -3562,14 +3442,14 @@ $("btn-test-provider").addEventListener("click", (event) => {
 async function renameProvider(oldName: string, rawName: string): Promise<boolean> {
   const newName = rawName.trim();
   if (!newName) {
-    setProfileMessage("model.nameRequired", undefined, true);
+    profileMessage.set("model.nameRequired", undefined, true);
     return false;
   }
   if (newName === oldName) return true;
 
   const providers = draftProviders();
   if (providers[newName]) {
-    setProfileMessage("model.providerExists", { name: newName }, true);
+    profileMessage.set("model.providerExists", { name: newName }, true);
     return false;
   }
   if (!providers[oldName]) return false;
@@ -3695,7 +3575,7 @@ $("field-provider-enabled").addEventListener("change", (event) => {
 $("btn-remove-provider").addEventListener("click", () => {
   const name = editingProvider;
   if (!name) {
-    setProfileMessage("model.noProvider", undefined, true);
+    profileMessage.set("model.noProvider", undefined, true);
     return;
   }
   if (!confirm(t("model.removeProviderConfirm", { name }))) return;
@@ -3719,7 +3599,7 @@ $("btn-remove-provider").addEventListener("click", () => {
 function setModelAddOpen(open: boolean): void {
   $("model-add").classList.toggle("hidden", !open);
   $("btn-add-model").setAttribute("aria-expanded", String(open));
-  setModelAddMessage("");
+  modelAddMessage.set("");
   if (!open) return;
   const input = $<HTMLInputElement>("new-model-name");
   input.focus();
@@ -3856,7 +3736,7 @@ $("models-selectall").addEventListener("change", (event) => {
 async function openModelsDialog(button: HTMLButtonElement): Promise<void> {
   const provider = editingProvider;
   if (!provider) {
-    setProfileMessage("model.noProvider", undefined, true);
+    profileMessage.set("model.noProvider", undefined, true);
     return;
   }
   commitProviderFields(provider);
@@ -3957,17 +3837,17 @@ $("btn-add-model-confirm").addEventListener("click", () => {
   const input = $<HTMLInputElement>("new-model-name");
   const name = input.value.trim();
   if (!name) {
-    setModelAddMessage("model.nameRequired", undefined, true);
+    modelAddMessage.set("model.nameRequired", undefined, true);
     input.focus();
     return;
   }
   const provider = editingProvider;
   if (!provider) {
-    setProfileMessage("model.noProvider", undefined, true);
+    profileMessage.set("model.noProvider", undefined, true);
     return;
   }
   if (draftProviders()[provider]?.models?.[name]) {
-    setModelAddMessage("model.modelExists", { name }, true);
+    modelAddMessage.set("model.modelExists", { name }, true);
     input.focus();
     input.select();
     return;
@@ -3992,7 +3872,7 @@ $("btn-add-model-confirm").addEventListener("click", () => {
   void saveConfig("model.saved");
 });
 
-$("new-model-name").addEventListener("input", () => setModelAddMessage(""));
+$("new-model-name").addEventListener("input", () => modelAddMessage.set(""));
 
 $("new-model-name").addEventListener("keydown", (event) => {
   const key = (event as KeyboardEvent).key;
@@ -4013,11 +3893,11 @@ $("btn-editor-close").addEventListener("click", () => {
 $("btn-editor-save").addEventListener("click", async () => {
   const provider = editingProvider;
   if (!provider) {
-    setProfileMessage("model.noProvider", undefined, true);
+    profileMessage.set("model.noProvider", undefined, true);
     return;
   }
   if (readExtraBody() === undefined) {
-    setProfileMessage("model.extraBodyInvalid", undefined, true);
+    profileMessage.set("model.extraBodyInvalid", undefined, true);
     return;
   }
   commitProviderFields(provider);
@@ -4028,13 +3908,13 @@ $("btn-editor-save").addEventListener("click", async () => {
 $("btn-save-model").addEventListener("click", async () => {
   const provider = editingProvider;
   if (!provider) {
-    setProfileMessage("model.noProvider", undefined, true);
+    profileMessage.set("model.noProvider", undefined, true);
     return;
   }
   // Validate the extra body before writing anything, so a bad value cannot
   // leave a half-committed draft.
   if (readExtraBody() === undefined) {
-    setProfileMessage("model.extraBodyInvalid", undefined, true);
+    profileMessage.set("model.extraBodyInvalid", undefined, true);
     return;
   }
   commitProviderFields(provider);
@@ -4257,25 +4137,8 @@ function agentReasonLabel(code: string | null): string | null {
   }
 }
 
-function paintAgentsMessage(): void {
-  const msg = $("agents-msg");
-  if (!lastAgentsMessage) {
-    msg.textContent = "";
-    msg.className = "msg";
-    return;
-  }
-  msg.textContent = t(lastAgentsMessage.key, lastAgentsMessage.params);
-  msg.className = lastAgentsMessage.error ? "msg msg--error" : "msg";
-}
-
-function setAgentsMessage(
-  key: string | null,
-  params?: Record<string, string>,
-  error = false,
-): void {
-  lastAgentsMessage = key ? { key, params, error } : null;
-  paintAgentsMessage();
-}
+/** Global message on `#agents-msg`, repainted on a locale switch. */
+const agentsMessage = messageSlot("agents-msg", t);
 
 /** Repaint one card's status pill after a test, without rebuilding the card. */
 function paintAgentStatus(agent: AgentStatus): void {
@@ -4302,13 +4165,13 @@ async function refreshAgents(force: boolean): Promise<void> {
     // Detection runs in the engine, so there is nothing to ask yet. The flag
     // stays false so the panel retries once it is ready.
     agentsLoaded = false;
-    setAgentsMessage("agents.configUnavailable", undefined, true);
+    agentsMessage.set("agents.configUnavailable", undefined, true);
     return;
   }
   if (agentsLoading) return;
   agentsLoading = true;
   $<HTMLButtonElement>("btn-rescan-agents").disabled = true;
-  setAgentsMessage("agents.detecting");
+  agentsMessage.set("agents.detecting");
   try {
     const result = await api.request<{ agents: AgentStatus[] }>("agents.list", {
       refresh: force,
@@ -4319,10 +4182,10 @@ async function refreshAgents(force: boolean): Promise<void> {
       models: normalizeAgentModels(agent.models),
     }));
     agentsLoaded = true;
-    setAgentsMessage(null);
+    agentsMessage.set(null);
   } catch (err) {
     agentsLoaded = false;
-    setAgentsMessage("agents.failed", { error: cleanError(err) }, true);
+    agentsMessage.set("agents.failed", { error: cleanError(err) }, true);
     appendLog(t("log.agentsFailed", { error: cleanError(err) }));
   } finally {
     agentsLoading = false;
@@ -4345,7 +4208,7 @@ async function persistAgentConfig(): Promise<boolean> {
   // Refuse to write a document that was never loaded: a failed `config.get`
   // must not be "fixed" by saving an empty config over the real one.
   if (!configLoaded || !cachedConfig) {
-    setAgentsMessage("agents.configUnavailable", undefined, true);
+    agentsMessage.set("agents.configUnavailable", undefined, true);
     return false;
   }
   try {
@@ -4353,7 +4216,7 @@ async function persistAgentConfig(): Promise<boolean> {
     await refreshProviders();
     return true;
   } catch (err) {
-    setAgentsMessage("agents.saveFailed", { error: cleanError(err) }, true);
+    agentsMessage.set("agents.saveFailed", { error: cleanError(err) }, true);
     return false;
   }
 }
@@ -4365,7 +4228,7 @@ async function setAgentModel(
   enabled: boolean,
 ): Promise<void> {
   if (agentConflict(agent.id)) {
-    setAgentsMessage("agents.conflict", { provider: agent.id }, true);
+    agentsMessage.set("agents.conflict", { provider: agent.id }, true);
     renderAgents();
     return;
   }
@@ -4392,7 +4255,7 @@ async function setAgentModel(
   } else if (provider?.models) {
     delete provider.models[modelId];
   }
-  if (await persistAgentConfig()) setAgentsMessage("agents.saved");
+  if (await persistAgentConfig()) agentsMessage.set("agents.saved");
   renderAgents();
 }
 
@@ -4427,12 +4290,6 @@ async function refreshAgentModels(
   }
 }
 
-/** Trim a model's answer to something that fits in a card. */
-function truncateSample(sample: string): string {
-  const text = (sample ?? "").replace(/\s+/g, " ").trim();
-  return text.length > 80 ? `${text.slice(0, 80)}…` : text;
-}
-
 /** Send one "Hello." through the CLI and report latency plus a sample. */
 async function testAgentModel(
   agent: AgentStatus,
@@ -4457,8 +4314,8 @@ async function testAgentModel(
       if (result.via === "app_server") {
         // A non-current ZCode row was checked through the temporary
         // app-server. Translation of that row also uses the app-server, so it
-        // is usable; but the card's 可用 state is reserved for the current
-        // CLI test and must not be claimed by this probe.
+        // is usable; but the card's Available state is reserved for the
+        // current CLI test and must not be claimed by this probe.
         showToast(
           t("agents.testOkConnectivity", {
             ms: String(result.latency_ms),
@@ -4509,7 +4366,7 @@ async function saveAgentPath(
   } else {
     const value = input.value.trim();
     if (!value) {
-      setAgentsMessage("agents.path.required", undefined, true);
+      agentsMessage.set("agents.path.required", undefined, true);
       return;
     }
     draftAgents().paths[agent.id] = value;
@@ -4523,7 +4380,7 @@ async function saveAgentPath(
   // Only claim success when the rescan worked: a failed detection has its own
   // message, and overwriting it would hide the fact that the new path did not
   // resolve.
-  if (agentsLoaded) setAgentsMessage(clear ? "agents.path.cleared" : "agents.path.saved");
+  if (agentsLoaded) agentsMessage.set(clear ? "agents.path.cleared" : "agents.path.saved");
 }
 
 /** One row in a card's model list. */
@@ -4580,7 +4437,7 @@ function agentLink(url: string, key: string): HTMLAnchorElement {
   link.addEventListener("click", (event) => {
     event.preventDefault();
     void api.openExternal(url).catch((err) => {
-      setAgentsMessage("agents.linkFailed", { error: cleanError(err) }, true);
+      agentsMessage.set("agents.linkFailed", { error: cleanError(err) }, true);
     });
   });
   return link;
@@ -4913,7 +4770,7 @@ function agentCard(agent: AgentStatus): HTMLElement {
 function renderAgents(): void {
   const list = $("agent-cards");
   list.innerHTML = "";
-  paintAgentsMessage();
+  agentsMessage.paint();
 
   for (const agent of cachedAgents) {
     list.append(agentCard(agent));
@@ -5004,25 +4861,6 @@ const LANGUAGES = [
   "en", "zh", "zh-tw", "ja", "ko", "fr", "de", "es", "pt", "it", "ru",
   "ar", "hi", "th", "vi", "id", "tr", "nl", "pl", "uk",
 ] as const;
-
-/**
- * A language's name in the interface language.
- *
- * `Intl.DisplayNames` is used rather than twenty hand-written labels per
- * locale: it is built into the runtime and already knows these names in every
- * UI language, so there is nothing to keep in step. The code is shown as a
- * fallback if it is unavailable or does not recognise one.
- */
-function languageLabel(code: string): string {
-  try {
-    const names = new Intl.DisplayNames([getLocale() === "zh" ? "zh-CN" : "en"], {
-      type: "language",
-    });
-    return names.of(code) ?? code;
-  } catch {
-    return code;
-  }
-}
 
 function fillLanguageSelect(select: HTMLSelectElement, name: OptionName): void {
   select.innerHTML = "";
@@ -5173,23 +5011,6 @@ $("opt-lang-out").addEventListener("change", (e) =>
 );
 
 // --- translate -------------------------------------------------------------
-
-function parsePages(spec: string): number[] | undefined {
-  const trimmed = spec.trim();
-  if (!trimmed) return undefined;
-  const pages: number[] = [];
-  for (const part of trimmed.split(",")) {
-    const p = part.trim();
-    if (!p) continue;
-    if (p.includes("-")) {
-      const [a, b] = p.split("-").map((n) => parseInt(n, 10));
-      for (let i = a; i <= b; i++) pages.push(i - 1);
-    } else {
-      pages.push(parseInt(p, 10) - 1);
-    }
-  }
-  return pages.length ? pages : undefined;
-}
 
 /**
  * Paint the one button that both starts and stops a job.

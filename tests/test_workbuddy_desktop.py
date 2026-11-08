@@ -26,7 +26,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pdfxlate.agents as agents_pkg  # noqa: E402
 from pdfxlate import sidecar  # noqa: E402
-from pdfxlate.agents import catalog, detect, runtime, workbuddy_desktop as wd  # noqa: E402
+from pdfxlate.agents import catalog, detect, runtime  # noqa: E402
+from pdfxlate.agents import workbuddy_desktop as wd  # noqa: E402
 from pdfxlate.agents.defs import get_agent_def  # noqa: E402
 from pdfxlate.agents.detect import ResolvedAgent  # noqa: E402
 from pdfxlate.models import agent_cli  # noqa: E402

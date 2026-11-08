@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 import pdfxlate.agents as agents_pkg
+import pytest
 from pdfxlate import paths, sidecar
 from pdfxlate.agents import detect, snapshot
 from pdfxlate.agents.defs import get_agent_def

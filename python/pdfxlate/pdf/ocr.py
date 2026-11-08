@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from html import escape
 from statistics import median
 
-from pymupdf import Archive, Document, Rect, TEXTFLAGS_DICT, TEXT_PRESERVE_IMAGES
+from pymupdf import TEXT_PRESERVE_IMAGES, TEXTFLAGS_DICT, Archive, Document, Rect
 from tenacity import retry, wait_fixed
 
 
@@ -125,13 +125,13 @@ def translate_ocr_page(
     archive = Archive((font.buffer, "ocr.ttf"))
     with Document() as overlay:
         target = overlay.new_page(width=page.rect.width, height=page.rect.height)
-        for (_, _, _, words), text in zip(paragraphs, translations):
+        for (_, _, _, words), text in zip(paragraphs, translations, strict=True):
             if text.strip():
                 for rect in words:
                     target.draw_rect(
                         rect + (-0.5, -0.5, 0.5, 0.5), color=None, fill=(1, 1, 1)
                     )
-        for (bounds, _, size, _), text in zip(paragraphs, translations):
+        for (bounds, _, size, _), text in zip(paragraphs, translations, strict=True):
             if not text.strip():
                 continue
             centered = any(

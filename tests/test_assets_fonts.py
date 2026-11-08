@@ -13,8 +13,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pdfxlate import assets  # noqa: E402
-from pdfxlate import paths  # noqa: E402
+from pdfxlate import (
+    assets,  # noqa: E402
+    paths,  # noqa: E402
+)
 
 GO_NOTO = "GoNotoKurrent-Regular.ttf"
 

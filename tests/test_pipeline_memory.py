@@ -22,7 +22,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pdfxlate import assets  # noqa: E402
 from pdfxlate.pdf import pipeline, ultrafast  # noqa: E402
 
-
 # --- mask width ------------------------------------------------------------
 
 

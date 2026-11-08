@@ -37,7 +37,7 @@ def stage(lang: str, *, required: bool) -> None:
                 "A release must not ship without it: on networks where GitHub "
                 "release assets are blocked, the app cannot translate to that "
                 "language at all."
-            )
+            ) from exc
         print(
             f"warning: {lang!r} font not bundled (it will be downloaded on "
             f"first use if the network allows): {exc}"

@@ -190,7 +190,7 @@ class BatchQueue:
                     self._condition.notify_all()
             else:
                 with self._condition:
-                    for item, value in zip(batch, results):
+                    for item, value in zip(batch, results, strict=True):
                         if not item.done:
                             item.result = value
                             item.done = True

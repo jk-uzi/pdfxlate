@@ -1,7 +1,7 @@
 """Spacing for mixed CJK and Latin text before PDF typesetting."""
 
-from functools import lru_cache
 import unicodedata
+from functools import lru_cache
 
 
 @lru_cache(maxsize=4096)

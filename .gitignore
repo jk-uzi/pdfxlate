@@ -85,6 +85,11 @@ service-account*.json
 .ssh/
 *.kdbx
 
+# --- Local Claude Code state ---------------------------------------------
+# Per-session worktrees are machine-specific and must never be committed.
+.claude/worktrees/
+.claude/settings.local.json
+
 # --- OS / editor ---------------------------------------------------------
 .DS_Store
 Thumbs.db

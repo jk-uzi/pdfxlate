@@ -1,0 +1,14 @@
+# Normalise line endings in the index; checkouts follow the platform.
+* text=auto
+
+# Shell entry points must stay LF even on Windows. A CRLF shebang makes the
+# pre-commit hook fail with "bad interpreter".
+*.sh text eol=lf
+.githooks/* text eol=lf
+
+# Binary assets must never be line-ending converted.
+*.png binary
+*.ico binary
+*.onnx binary
+*.pdf binary
+*.db binary
