@@ -1,16 +1,16 @@
 /**
- * Copies non-TypeScript renderer assets (HTML, CSS) into the build output.
- * TypeScript is compiled by tsc; these files are passed through verbatim,
- * except that index.html has the app mark inlined into it.
+ * Copies non-TypeScript renderer assets into the build output: HTML and CSS
+ * verbatim (except that index.html has the app mark inlined into it), and the
+ * pdf.js runtime — its module, worker, CMaps and standard fonts — from
+ * `node_modules/pdfjs-dist`.
  *
  * The mark is inlined rather than referenced with `<img src="icon.svg">`: the
  * page loads from a `file://` URL, where the origin is opaque, so CSP's
- * `'self'` does not match a relative path and the image is refused outright
- * (the same reason `frame-src file:` is needed for the PDF preview). Inlining
- * is not a subresource fetch, so no CSP directive has to be widened.
+ * `'self'` does not match a relative path and the image is refused outright.
+ * Inlining is not a subresource fetch, so no CSP directive has to be widened.
  */
 
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -95,6 +95,42 @@ for (const file of files) {
   if (file.endsWith(".css")) assertCommentsBalanced(content.toString("utf8"), file);
   await writeFile(path.join(dest, file), content);
   console.log(`copied ${file} -> out/renderer/${file}`);
+}
+
+/**
+ * pdf.js ships as ES modules, not as a bundle this build can import from
+ * `node_modules`: a native ES module loaded from `file://` cannot resolve a
+ * bare specifier. The runtime is therefore copied next to the compiled
+ * renderer under `pdfjs/`, and app.ts imports it by URL relative to
+ * `import.meta.url`.
+ *
+ * `cmaps/` and `standard_fonts/` are loaded on demand by pdf.js (fetched from
+ * this same folder), so they have to travel with the app; without them,
+ * documents using CJK CMaps or non-embedded standard fonts render incorrectly.
+ */
+const pdfjsSrc = path.join(root, "node_modules", "pdfjs-dist");
+const pdfjsDest = path.join(dest, "pdfjs");
+
+try {
+  // Rebuild the folder from scratch: an older pdf.js version would otherwise
+  // leave stale modules and CMap tables behind, and out/ is not cleaned
+  // between builds in every workflow.
+  await rm(pdfjsDest, { recursive: true, force: true });
+  await mkdir(pdfjsDest, { recursive: true });
+
+  for (const file of ["build/pdf.min.mjs", "build/pdf.worker.min.mjs", "LICENSE"]) {
+    const name = path.basename(file);
+    await cp(path.join(pdfjsSrc, file), path.join(pdfjsDest, name));
+    console.log(`copied pdfjs-dist/${file} -> out/renderer/pdfjs/${name}`);
+  }
+  for (const dir of ["cmaps", "standard_fonts"]) {
+    await cp(path.join(pdfjsSrc, dir), path.join(pdfjsDest, dir), { recursive: true });
+    console.log(`copied pdfjs-dist/${dir}/ -> out/renderer/pdfjs/${dir}/`);
+  }
+} catch (err) {
+  throw new Error(
+    `could not copy pdfjs-dist assets — run "npm install" first (${err})`,
+  );
 }
 
 const svg = inlineSvg(await readFile(path.join(src, "icon.svg"), "utf8"));
