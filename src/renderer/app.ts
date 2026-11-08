@@ -1598,6 +1598,8 @@ interface PdfPage {
 interface PdfDocument {
   numPages: number;
   getPage(page: number): Promise<PdfPage>;
+  /** Drop every page proxy the measurement pass created. */
+  cleanup(): Promise<void>;
   destroy(): Promise<void>;
 }
 
@@ -2273,6 +2275,10 @@ async function measurePages(doc: PdfDocument): Promise<PageSize[]> {
     }
   };
   await Promise.all(Array.from({ length: Math.min(8, doc.numPages) }, () => worker()));
+  // pdf.js keeps every page proxy it has handed out for the document's whole
+  // life. Measurement only needed the viewport, so drop them here rather than
+  // carrying a paragraph of PDF state per page until the tab is closed.
+  await doc.cleanup();
   return sizes;
 }
 
