@@ -1,0 +1,11 @@
+open doc              rss    90.4 MB
+tobytes() in memory   rss   137.4 MB  (+46.9)  46.5 MB
+after del bytes       rss    90.8 MB
+Traceback (most recent call last):
+  File "<stdin>", line 16, in <module>
+  File "D:\projects\pdfxlate\.claude\worktrees\project-overview-30a466\python\.venv\Lib\site-packages\pymupdf\__init__.py", line 5597, in save
+    mupdf.pdf_save_document(pdf, filename, opts)
+  File "D:\projects\pdfxlate\.claude\worktrees\project-overview-30a466\python\.venv\Lib\site-packages\pymupdf\mupdf.py", line 53106, in pdf_save_document
+    return _mupdf.pdf_save_document(doc, filename, opts)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+pymupdf.mupdf.FzErrorSystem: code=2: cannot remove file 'C:\Users\20812\AppData\Local\Temp\tmp4uj2vmq6.pdf': Permission denied

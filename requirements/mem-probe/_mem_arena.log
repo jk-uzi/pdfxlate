@@ -1,0 +1,4 @@
+arena=ON  threads=default              base   75.4 | load +  90.5 | 3x infer + 234.6 | peak  400.6 | after del   87.1
+arena=OFF threads=default              base   87.1 | load +  80.7 | 3x infer +   6.2 | peak  174.0 | after del   86.9
+arena=OFF threads=1                    base   86.9 | load +  79.9 | 3x infer +   6.7 | peak  173.5 | after del   86.2
+arena=ON  threads=1                    base   86.2 | load +  80.0 | 3x infer + 233.0 | peak  399.2 | after del   87.3

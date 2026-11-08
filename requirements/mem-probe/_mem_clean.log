@@ -1,0 +1,4 @@
+--- 同一进程内连续跑，观察是否互相影响 ---
+arena=True  base=  75.4 load=+ 89.8 after2inf= 399.8 afterdel=  85.3
+arena=False base=  85.3 load=+ 82.9 after2inf= 176.5 afterdel=  85.6
+arena=True  base=  85.6 load=+ 82.7 after2inf= 402.4 afterdel=  86.2
