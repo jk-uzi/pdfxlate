@@ -159,7 +159,7 @@ pydantic 校验，启动即报错而非跑到一半失败。`AppConfig.resolve(p
 **请求** `{id, method, params}`，实际实现的方法（见 `sidecar.py` 的 `METHODS`）：
 `ping` / `config.get` / `config.save` / `providers.list` / `providers.test` /
 `providers.models` / `agents.list` / `agents.models` / `agents.test` /
-`assets.status` / `assets.download` / `pdf.info` / `pdf.spread` /
+`assets.status` / `assets.download` / `pdf.info` /
 `translate.start` / `translate.cancel` / `mcp.snippet` / `mcp.installConfig`
 
 > 打开输出目录、文件对话框这类操作由 Electron 主进程直接处理（`shell:reveal`、

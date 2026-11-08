@@ -26,8 +26,9 @@ or the error, so a wrong API format is discovered before a long job starts; it
 never reads or writes the cache.  Agent CLI providers are rejected there and
 tested through ``agents.test`` instead, which spawns the CLI once.  There is no
 stored default model — which one a job uses is passed to ``translate.start``.  ``pdf.info`` is a read-only metadata
-probe (page count) used by the preview toolbar; it never renders or modifies the
-document.  ``mcp.snippet`` / ``mcp.installConfig`` help
+probe (page count) kept for external callers; the in-app preview now reads page
+sizes from pdf.js itself and no longer uses it.  It never renders or modifies
+the document.  ``mcp.snippet`` / ``mcp.installConfig`` help
 point an AI agent at this
 install: the first returns config text to paste, the second adds our entry to one
 agent's own config file (backing it up first, and touching nothing else in it).

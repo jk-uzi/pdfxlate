@@ -132,14 +132,13 @@ pdfxlate/
 │       │   └── catalog.py   146 行  上游模型清单（GET .../models）
 │       └── pdf/
 │           ├── __init__.py      1 行
-│           ├── pipeline.py   580 行  管线编排：解析→版面→翻译→排版
+│           ├── pipeline.py   901 行  管线编排：解析→版面→翻译→排版（掩膜、工作副本与成品直写盘）
 │           ├── converter.py  699 行  排版回填 + 字号适配 + 有界段落重试（移植上游 converter.py）
 │           ├── interp.py     366 行  内容流解释器（上游照搬）
-│           ├── layout.py     187 行  DocLayout-YOLO ONNX 版面检测
+│           ├── layout.py     211 行  DocLayout-YOLO ONNX 版面检测（含 arena 开关）
 │           ├── ocr.py        161 行  OCR 段落重建与排版
 │           ├── two_phase.py  489 行  两遍式段落收集/回填（MCP 用）
-│           ├── spread.py     160 行  双栏：把页对合成一个派生 PDF（矢量，不栅格化）
-│           ├── ultrafast.py  101 行  免模型快速路径
+│           ├── ultrafast.py  105 行  免模型快速路径
 │           └── text_spacing.py 44 行  中英混排间距（上游照搬）
 ├── src/
 │   ├── main/
@@ -148,11 +147,11 @@ pdfxlate/
 │   ├── preload/
 │   │   └── preload.ts       183 行  contextBridge，向渲染进程暴露 API（含 openExternal）
 │   └── renderer/
-│       ├── index.html       803 行  界面结构（文案走 data-i18n* 属性；图标在构建时内联）
-│       ├── app.ts          4764 行  界面逻辑（任务/设置双模式、折叠、标签页、文件夹浏览/搜索/自动刷新、拖放、缩放、进度、开始/取消合一、另存为、选项覆盖、侧栏拖拽、供应商/模型两栏编辑器、Agents 面板、底部 Toast）
+│       ├── index.html       816 行  界面结构（文案走 data-i18n* 属性；图标在构建时内联）
+│       ├── app.ts          5286 行  界面逻辑（任务/设置双模式、折叠、标签页、文件夹浏览/搜索/自动刷新、拖放、pdf.js 预览与双栏、缩放、进度、开始/取消合一、另存为、选项覆盖、侧栏拖拽、供应商/模型两栏编辑器、Agents 面板、底部 Toast）
 │       ├── i18n.ts          834 行  中英文字符串表 + t()/applyStaticTranslations()
 │       ├── icon.svg          49 行  应用标记的**唯一来源**（标题栏内联 + 打包图标）
-│       └── style.css       2505 行  样式（含标题栏标签、查看器浮层与常驻图钉、折叠与侧栏状态行、文档组标题工具、侧栏拖拽手柄、模型页两栏布局与开关、Agents 卡片与可折叠模型区、底部 Toast）
+│       └── style.css       2543 行  样式（含标题栏标签、查看器浮层与常驻图钉、折叠与侧栏状态行、文档组标题工具、侧栏拖拽手柄、模型页两栏布局与开关、Agents 卡片与可折叠模型区、底部 Toast）
 ├── assets/
 │   ├── icon.png               512×512，由 make_icon.py 从 icon.svg 生成后提交
 │   └── icon.ico               16–256 多尺寸，同上（Windows 用）
@@ -183,11 +182,12 @@ pdfxlate/
 │   ├── test_mcp_server.py    600 行  MCP 工具、stdio 握手、两遍式端到端与确定性护栏
 │   ├── test_mcp_config.py   239 行  写入 agent 配置：合并/幂等/备份/坏文件不动
 │   ├── test_sidecar_mcp_flag.py 159 行  --mcp 真的能起一个 MCP 握手
-│   ├── test_pdf_spread.py    152 行  双栏派生文档：页对、宽度、缓存、坏文件
 │   ├── test_per_job_overrides.py 136 行  按次覆盖语言/推理；调用方配置对象不被改动
+│   ├── test_layout_memory.py 183 行  arena 开关、配置往返、任务结束释放模型
+│   ├── test_pipeline_memory.py 251 行  掩膜 dtype、工作副本落盘、成品直写与失败清理
 │   └── test_assets_fonts.py  175 行  语言→字体映射、status() 兼容性、内置字体回退、下载完整性
 └── scripts/
-    ├── copy-static.mjs       110 行  拷贝 CSS、**把 icon.svg 内联进 index.html**、校验 CSS 注释配对
+    ├── copy-static.mjs       157 行  拷贝 CSS 与 pdf.js 运行时分发（含 cmaps/ 与 standard_fonts/）、**把 icon.svg 内联进 index.html**、校验 CSS 注释配对
     ├── make-icon.mjs          33 行  用 venv 解释器调用 make_icon.py（npm run make:icon）
     ├── make_icon.py          186 行  从 icon.svg 生成 assets/icon.png 与 .ico（PyMuPDF）
     ├── check-i18n.mjs        154 行  校验字符串表一致 + **引用的 key 确实存在**（npm run check:i18n）
@@ -691,8 +691,8 @@ models: {别名: {model, reasoning_effort, temperature}}}}}`。
 
 **`src/main/main.ts`** — 窗口创建、应用生命周期、IPC 注册。
 `--dev` 参数区分开发/打包模式；退出时调 `sidecar.stop()` 确保不留下孤儿进程。
-`webPreferences.plugins = true` **是 PDF 预览的前提**：Chromium 的内置查看器是个
-plugin，不开这一项时 iframe 会加载成空白页。窗口默认 1280×820、最小 1000×640——
+预览改用 pdf.js 后不再需要 `webPreferences.plugins`（那是 Chromium 内置查看器
+作为 plugin 运行的开关）。窗口默认 1280×820、最小 1000×640——
 侧栏固定 340px，窗口再窄预览区就放不下完整页宽。
 
 **自建标题栏**：`titleBarStyle: "hidden"` 去掉系统标题栏与菜单条，界面自己画一条
@@ -721,11 +721,14 @@ overlay 的位置由 OS 按这个值摆放，不一致时系统三键会在栏�
 `request()`（转发到 sidecar）、`onEvent()` / `onLog()`（订阅事件）、
 `saveAs()`（见下）、`pickPdf(locale?)`（原生对话框，语言由渲染进程传入）、
 `listPdfs(dir)`、`reveal()` / `openPath()`（打开输出）、
-`fileUrl(path)`（绝对路径 → `file://` URL）。
+`readPdf(path)`（读出 PDF 字节给 pdf.js）。
 
-`fileUrl()` 是**纯函数、不走 IPC**：渲染进程在 `contextIsolation` 下没有 Node，
-拿不到 `pathToFileURL`，而 Windows 的盘符、反斜杠、空格与非 ASCII 文件名都必须
-由它处理（已实测中文名 + 空格的文件能正常打开）。
+`readPdf()` 走主进程 IPC（`app:readPdf`），因为渲染进程加载自 `file://`，
+**来源不透明**：`fetch('file://…')` 会被 CORS 拒绝，CSP 也把它当跨源。主进程
+只读、只接受存在的 `.pdf` 普通文件，返回精确切片的 `ArrayBuffer`（Node 的
+`Buffer` 可能落在共享的池化 `ArrayBuffer` 上，直接传会把别的字节一起交出去）。
+这条读取权限不比旧的 `fileUrl()` 宽：以前渲染进程本就能让 iframe 加载任意本地
+PDF 路径。
 
 **输出目录不再可选**。产物写进**每个源文件所在目录下的 `translated/`**：
 `papers/paper-a.pdf` → `papers/translated/paper-a-mono.pdf`。这个默认值在
@@ -980,14 +983,13 @@ config.yaml**——与同面板的页码、线程数、模式一致。存进 loc
 范围夹在 **240 – min(600, 窗口宽度一半)**，窗口缩放时重新夹紧，启动时也重新夹紧（存下来的
 值可能来自更宽的窗口，或被手改过）。
 
-**拖动监听挂在 `window` 上，不是手柄上。** 手柄只有 5px，一拖就离开它；再往右就是预览区的
-`<iframe>`——另一个文档，它的事件不会到达本页。曾经想用 `setPointerCapture`，但**实测在此
-环境下不生效**（移动事件到了 `window`，手柄却收不到），所以改用一个普通标志位，既简单又
-确实可用。
+**拖动监听挂在 `window` 上，不是手柄上。** 手柄只有 5px，一拖就离开它。曾经想用
+`setPointerCapture`，但**实测在此环境下不生效**（移动事件到了 `window`，手柄却收不到），
+所以改用一个普通标志位，既简单又确实可用。
 
-**仅挂 `window` 还不够——`body.is-resizing .preview__frame { pointer-events: none }` 是必需的。**
-指针一越过侧栏边界就落在那个 `<iframe>` 上，它的移动事件**根本不会冒泡给父文档**，于是宽度
-停在原地，等指针移回来才跳一下——这就是拖动时"一卡一卡"的成因，而且恰好在拖动的主方向上。
+预览改成 pdf.js 之后，旧的 `body.is-resizing .preview__frame { pointer-events: none }`
+**可以去掉**：那一条是给 `<iframe>` 打的补丁——iframe 是另一个文档，指针一越界它就把
+移动事件吃掉、不冒泡给父文档。现在预览是同一文档里的 canvas，事件正常冒泡。
 
 **移动事件按动画帧合并**（`requestAnimationFrame`，只记最新 `clientX`）。每次写
 `--sidebar-width` 都会让侧栏、预览与查看器各自重排；鼠标事件率远高于帧率，逐事件重排就是
@@ -1008,29 +1010,34 @@ config.yaml**——与同面板的页码、线程数、模式一致。存进 loc
 不会被计时器藏掉。无文档时由 `updatePreviewControls()` 整块
 `hidden`。**已知取舍**：自动隐藏意味着平时看不出当前是哪种适应模式。
 
-### 双栏（左右两页）
+### 预览：pdf.js + 双栏
 
-Chromium 内置查看器**没有**双页模式的 URL 参数（`spread` / `two-page` 都不认）。
-**也不能拼两个 iframe**：查看器是独立进程，每个 frame 有自己的滚动条，而父页面
-**读不到它的滚动位置**，两条滚动条永远无法同步——那就不是"一个文档的左右对照"，
-而是把同一份 PDF 开了两遍。
+预览由 **pdf.js**（`pdfjs-dist`）在渲染进程里画，不再用 Chromium 的内置查看器，
+也不再为双栏生成派生 PDF。
 
-所以做法是**把两页合成一个派生文档**，再用现有的单个查看器显示：一个文档、一条滚动条。
-
-- 引擎侧 `python/pdfxlate/pdf/spread.py` 的 `build_spread()`：每两页并排画到一张新页
-  （左 = 第 2k−1 页，右 = 第 2k 页）。用 `show_pdf_page()` 贴的是 **Form XObject**，
-  **不栅格化**——文字仍可选中、可搜索。
-- 输出在 `cache_dir()/spread/<sha1>.pdf`，键是「绝对路径 + 大小 + mtime」，所以改过的
-  文件不会命中旧缓存。7 天未用的自动清理。写入先落 `.part` 再 rename。
-- 边栏 `pdf.spread` 返回 `{path, pages, spreads}`。
-- 渲染侧 `renderPreview()` **永远只建一个 iframe**；双栏时 `src` 指向派生文件，页码用
-  `ceil(page / 2)`（源页 3 在第 2 张合成页上）。
-- `spreadFiles: Map<源路径, 派生路径>` 是会话缓存；`toggleSpread()` 是**异步**的——
-  首次需要生成，失败则保持原状并在日志里说明，绝不"切了但显示错的"。
-- `state.page` 始终是**左页**，所以关掉双栏停在屏幕上真实存在的那一页。
-- 翻页步长 2；页号显示 `3–4 / 20`；"下一页"边界按"左页 + 1"。
-- 末页奇数时右侧留白，**但宽度不变**：若把它做窄，查看器会把这一页放大到两倍宽，
-  翻到最后一页时会突然跳一下。
+- 运行时由 `scripts/copy-static.mjs` 从 `node_modules/pdfjs-dist` 拷到
+  `out/renderer/pdfjs/`：`pdf.min.mjs`、`pdf.worker.min.mjs`、`cmaps/`、
+  `standard_fonts/`。**cmaps 必须随包走**，否则中文文档的文字层会静默取不到
+  （`cMapUrl` 末尾少了斜杠也会，pdf.js 只会往控制台打一行）；`cMapUrl` /
+  `standardFontDataUrl` 都指向该目录，CSP 因此要放行 `connect-src 'self'`。
+- `worker-src 'self' blob:`：`file://` 文档的来源不透明，pdf.js 会把本地 worker
+  包进自己生成的 blob 模块；`'wasm-unsafe-eval'` 是它内嵌的 OpenJPEG 解码器编译
+  WASM 所需。
+- 页面用**固定尺寸占位**排版：打开时逐页 `getViewport({scale:1})` 量一次尺寸，
+  再 `doc.cleanup()` 丢掉这轮创建的 page proxy；每个占位按当前缩放算 CSS 尺寸，
+  滚动条因此从一开始就是最终长度，不会边滚边跳。
+- 只为**与视口相交**的页建 canvas。全局 LRU 上限 **3 页**（`PAGE_CACHE_LIMIT`），
+  逐出时 `task.cancel()`、canvas 宽高置 0、`page.cleanup()`——只把 DOM 节点摘掉
+  的话位图和操作符列表都还活着。
+- 渲染分辨率按 `min(devicePixelRatio, 2)` 放大；canvas 是 `alpha: false`，首次
+  绘制前先填白，否则解码期间是一块黑。
+- **双栏**：同一份 `PdfDocument` 上两个独立滚动容器，左右各一页。同步按
+  「页码 + 页内比例」而不是绝对像素——对开页高度不同时像素对不齐。滚动事件按
+  动画帧合并，`expectedScroll` 记住程序化滚动要落到的位置，把回声与用户输入区分开，
+  否则两栏会互相追着写。
+- `state.page` 始终是**左页**；页号显示 `3–4 / 20`，末页奇数时右栏补一张空白纸。
+- 切标签会销毁文档（`doc.destroy()`）并清空页缓存；同一标签内翻页/缩放只移动与
+  缩放现有 pane，不重读文件。
 
 **第四个条件：右上角 chip 里的图钉按钮**（`#btn-toggle-overlays`）可以把三个浮层
 **钉住常显**，给不想每次去"找"控件的人用。实现只有**一个类 + 一条 CSS**
@@ -1043,10 +1050,9 @@ Chromium 内置查看器**没有**双页模式的 URL 参数（`spread` / `two-p
 `.viewer-saveas .icon-btn.viewer-pin[aria-pressed="true"]`——**两个类加一个属性**，
 因为 `.viewer-saveas .icon-btn:hover` 与它同优先级，靠位置（写在后面）才赢得下来。
 
-**加新浮层时注意 `renderPreview()`**：它 `host.innerHTML = ""` 清空 `#preview-host`，
-浮层现在都住在里面，所以必须先把它们取出来再 `append` 回去（见 `VIEWER_OVERLAYS`），
-且新建的 frame 要按 `frameDroppable` 复原 `pointer-events`。漏掉会出问题——写这两轮时
-各踩过一次。
+**加新浮层时注意 `renderPreview()`**：它 `host.replaceChildren(...)` 重建 `#preview-host`
+的内容，浮层现在都住在里面，所以必须先把它们取出来、再把 viewer 与浮层按顺序
+`append` 回去（见 `VIEWER_OVERLAYS`）——viewer 在前，浮层才会画在上面且可点。
 
 ### 拖放：两个真实的坑（都实测过）
 
@@ -1057,13 +1063,10 @@ Chromium 内置查看器**没有**双页模式的 URL 参数（`spread` / `two-p
 **这个 bug 早该被发现**：以前的测试用 `Object.defineProperty(f, "path", …)` **自己造了
 path**，正好把真实失败掩盖掉。现在用 CDP 的真实 drag 事件（带真实文件）测。
 
-**② 打开文档后，iframe 会吃掉拖放。** 查看器是**另一个文档**，拖到它上面的文件由它接收，
-父页面**一个事件都收不到**（实测：`dragenter`/`drop` 全无）。所以：
-- `#preview-host` 留了 **6px 内边距**，这条边框属于父页面，拖进这里父页面能看见；
-  随后 `dragenter` 里把 frame 设成 `pointer-events: none`，就把**后续整个拖放**接管过来。
-- **仍然无法**从窗口右边缘/底边缘（即页面外侧）直接拖进来——那条路径无解，只能绕过边框。
-- 拖入的 PDF **复制进当前文件夹**（`app.importPdf`）：**同一路径不复制**、**同名自动改名
-  `C (2).pdf` 绝不覆盖**、**未选文件夹则不复制**只开标签。非 PDF 忽略并提示。
+**② 拖放现在发生在同一个文档里。** 预览不再是 iframe（pdf.js 用 canvas 画在本页），
+拖到页面上任意位置的事件都会正常冒泡，旧的 6px 内边距加 `pointer-events: none`
+那套补丁已经删掉。拖入的 PDF **复制进当前文件夹**（`app.importPdf`）：**同一路径不复制**、
+**同名自动改名 `C (2).pdf` 绝不覆盖**、**未选文件夹则不复制**只开标签。非 PDF 忽略并提示。
 
 **侧栏底部**：进度条与设置按钮**同一行**（进度条在左、设置只占一个方形图标位）。
 设置图标是**内联 SVG**（8 齿齿轮：一个粗描边圆得到齿盘与中心孔 + 8 个旋转小矩形当齿），
@@ -1107,11 +1110,16 @@ macOS 的交通灯在**左上**，改留 `padding-left`。同一份 CSS 靠类�
 
 **应用标记（`icon.svg`）在构建时被内联进 `index.html`，不能用 `<img src>`**。页面跑在
 `file://` 下，**origin 是不透明的，CSP 的 `'self'` 匹配不到相对路径**，`<img>` 会被
-直接拒绝（控制台报 `Refused to connect ... "default-src 'none'"`）——和 PDF 预览必须
-放行 `frame-src file:` 是同一个原因。`scripts/copy-static.mjs` 把 SVG 内联进去，内联
-**不是子资源请求**，因此不需要放宽任何 CSP 指令（`frame-src file:` 仍是有意为之的
-唯一放宽）。这也意味着 `icon.svg` 不再被单独拷到 `out/renderer/`，脚本里有 `retired`
-列表把它从旧构建里删掉，否则陈旧副本会一直留着。
+直接拒绝（控制台报 `Refused to connect ... "default-src 'none'"`）。`scripts/copy-static.mjs`
+把 SVG 内联进去，内联**不是子资源请求**，因此不需要放宽任何 CSP 指令。这也意味着
+`icon.svg` 不再被单独拷到 `out/renderer/`，脚本里有 `retired` 列表把它从旧构建里删掉，
+否则陈旧副本会一直留着。
+
+**预览的 CSP 放宽项**（`index.html`，每一项都是 pdf.js 真正需要的）：`script-src`
+加 `'wasm-unsafe-eval'`（worker 内嵌的 OpenJPEG WASM 编译）、`connect-src 'self'`
+（取 `cmaps/` 与 `standard_fonts/`，这两者走 `fetch()`）、`worker-src 'self' blob:`
+（pdf.js 给不透明来源的文档包一层 blob 模块 worker）。`frame-src file:` 已随内置
+查看器一起移除——预览不再加载 iframe。
 
 **应用图标与标题栏标记同源**：`scripts/make_icon.py` 从同一个 `icon.svg` 光栅化出
 `assets/icon.png`（512）与 `assets/icon.ico`（16–256），由 `electron-builder.yml` 引用。
@@ -1120,29 +1128,16 @@ macOS 的交通灯在**左上**，改留 `padding-left`。同一份 CSS 靠类�
 `assets/` 而非惯例的 `build/`，因为 `.gitignore` 把 `build/` 当打包产物忽略掉了，
 而图标是需要入库的源材料。
 
-**驱动内置查看器的方式（都是实测结论，别改）**：URL 片段
-`#toolbar=0&navpanes=0` 关掉查看器自带的深色工具栏与缩略图栏（这是能用自建
-控件的前提），`&page=N` 设定页码。**但改已加载 iframe 的 `src` 或片段不会导航**
-——所以 `renderPreview()` 每次都**重建 iframe 元素**，这是切页/缩放唯一可行的办法。
-（同样原因，早期探针只改片段、不重建元素，导致每个 zoom 值渲染结果都一样，白测了
-一轮。）
+**三种缩放现在都由自己算**（`PdfPreviewView.relayout()`）：`fit-width` 用
+`可用宽度 / 页面自然宽度`，`fit-height` 用高度比，显式百分比就是 `zoom / 100`；
+结果夹在 `0.05 – 8` 之间，避免零尺寸页面或折叠面板算出 `Infinity`。
+**没有 URL 片段参与**——旧查看器那套 `#zoom=` / `#view=FitV` 的差异（其中两个值
+被 Chromium 接受但忽略）随内置查看器一起消失了。默认取适应宽度：预览区比整页窄，
+固定 100% 会让每份文档一打开就带横向滚动条。
 
-**三种缩放，用两种不同的片段参数**（实测，别想当然地统一）：
-
-| 模式 | 片段 | 说明 |
-|---|---|---|
-| 适应宽度（默认） | `&zoom=page-width` | 查看器**认**这个 |
-| 适应高度 | `&view=FitV` | 查看器**不认** `zoom=page-height` / `zoom=page-fit` |
-| 显式百分比 | `&zoom=125` | |
-
-用真实窗口抓屏对比过两帧：适应宽度下整页宽度铺满、底部被裁；适应高度下**整页纵向
-完整**（页脚可见）。所以 `FitV` 确实生效，而两个 `zoom=*` 的 fit 值在本版 Chromium
-里被接受但忽略。默认取适应宽度：预览区比整页窄得多，固定 100% 会让每份文档一打开
-就带横向滚动条。
-
-**一个无法绕过的限制**：查看器跑在 `file://` 的 iframe 里，**父页面无法给它注入
-脚本**，也读不到查看器
-当前的页码——浮层显示的页码是界面自己的状态。别试图用脚本去同步。
+**页码是双向的**：翻页/缩放走 `view.configure()`，而用户滚动时
+`onPageChange` 把当前页写回 `state.page` 并刷新控件。这在 iframe 时代做不到——
+父页面读不到查看器的滚动位置，浮层页码只能是界面自己的状态。
 
 供应商与模型编辑以 **`config.get` 返回的文档为结构的唯一真相**（名字、别名、
 明细字段），`providers.list` 只提供 `has_api_key` 与下拉列表——所以界面需要首屏
