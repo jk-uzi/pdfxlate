@@ -148,7 +148,6 @@ def test_timeout_is_reported(tmp_path, monkeypatch):
     """A hanging endpoint must not hang the sidecar's stdin loop forever."""
     monkeypatch.setattr(sidecar, "_PROBE_TIMEOUT_SECONDS", 0.05)
 
-    import threading
     import time
 
     class HangingAdapter:

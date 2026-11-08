@@ -1,0 +1,28 @@
+# Python linting for the engine and its tests.
+#
+# The desktop app is TypeScript and is checked by `npm run typecheck`; Ruff only
+# looks at Python. Formatting is deliberately not enforced yet: the code is
+# hand-formatted, and running the formatter would rewrite most files in one
+# unrelated commit. `ruff format` can still be used locally.
+target-version = "py311"
+line-length = 100
+
+exclude = [
+    ".git",
+    ".venv",
+    "node_modules",
+    "out",
+    "references",
+    "python/bundle_assets",
+    "python/build",
+    "python/dist",
+]
+
+[lint]
+select = ["E4", "E7", "E9", "F", "I", "B", "BLE"]
+
+[lint.per-file-ignores]
+# The optional MCP dependency is imported after `logger` on purpose: the module
+# must fail loudly and early when the extra is not installed, not halfway
+# through a call. Moving these imports to the top would change that intent.
+"python/pdfxlate/mcp_server.py" = ["E402"]

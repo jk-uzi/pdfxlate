@@ -3,9 +3,11 @@
 # Build the distributable desktop app.
 #
 # Steps:
-#   1. Build the Python sidecar with PyInstaller (onedir).
-#   2. Compile the TypeScript (main, preload, renderer).
-#   3. Package with electron-builder for the current platform.
+#   1. Restore the Python environment from uv.lock when uv is available.
+#   2. Stage the bundled fonts.
+#   3. Build the Python sidecar with PyInstaller (onedir).
+#   4. Compile the TypeScript (main, preload, renderer).
+#   5. Package with electron-builder for the current platform.
 #
 # Cross-compiling is not supported by electron-builder for the sidecar: the
 # PyInstaller output is platform-specific, so each target must be built on its
@@ -15,6 +17,17 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PY_DIR="$ROOT/python"
+
+# Reproducible dependencies: when uv is available, restore exactly the versions
+# in python/uv.lock (creating the venv if it is missing). --frozen makes a
+# stale lock an error instead of silently resolving something else. Without
+# uv, an existing pip-managed venv is used as before.
+if command -v uv >/dev/null 2>&1; then
+  echo "==> [1/5] Syncing the Python environment from uv.lock"
+  (cd "$PY_DIR" && uv sync --frozen --extra dev)
+else
+  echo "==> [1/5] uv not found; keeping the existing Python environment"
+fi
 
 # The venv layout differs by platform: Scripts/python.exe on Windows,
 # bin/python elsewhere. Hard-coding bin/ made this script fail in Git Bash on
@@ -26,6 +39,8 @@ elif [[ -x "$PY_DIR/.venv/bin/python" ]]; then
 else
   echo "error: Python venv not found under $PY_DIR/.venv" >&2
   echo "create it with:" >&2
+  echo "  cd python && uv sync --extra dev" >&2
+  echo "or, without uv:" >&2
   echo "  cd python && python -m venv .venv" >&2
   echo "  .venv/Scripts/pip install -e '.[dev]'      # Windows" >&2
   echo "  .venv/bin/pip install -e '.[dev]'          # macOS / Linux" >&2
@@ -38,18 +53,18 @@ fi
 # with ELECTRON_BUILDER_BINARIES_MIRROR if you have another.
 export ELECTRON_BUILDER_BINARIES_MIRROR="${ELECTRON_BUILDER_BINARIES_MIRROR:-https://npmmirror.com/mirrors/electron-builder-binaries/}"
 
-echo "==> [1/4] Staging bundled assets"
+echo "==> [2/5] Staging bundled assets"
 "$VENV_PY" "$ROOT/scripts/stage_assets.py"
 
-echo "==> [2/4] Building Python sidecar"
+echo "==> [3/5] Building Python sidecar"
 cd "$PY_DIR"
 "$VENV_PY" -m PyInstaller --clean --noconfirm pdfxlate.spec
 
-echo "==> [3/4] Building TypeScript"
+echo "==> [4/5] Building TypeScript"
 cd "$ROOT"
 npm run build
 
-echo "==> [4/4] Packaging with electron-builder"
+echo "==> [5/5] Packaging with electron-builder"
 # --no-install: fail loudly if it is missing instead of silently downloading a
 # different version from the network mid-build.
 npx --no-install electron-builder --publish never

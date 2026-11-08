@@ -8,7 +8,6 @@ UI, or the CLI and MCP would keep using a model the user switched off.
 from __future__ import annotations
 
 import pytest
-
 from pdfxlate import config as config_mod
 
 

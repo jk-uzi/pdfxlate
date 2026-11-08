@@ -1,8 +1,8 @@
 """Native text layout for the existing translation mask; no rendering or OCR."""
 
-from collections import defaultdict
 import logging
 import math
+from collections import defaultdict
 from time import perf_counter
 
 import numpy as np

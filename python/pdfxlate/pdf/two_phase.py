@@ -44,7 +44,7 @@ from typing import Any, Callable, Optional
 
 from pdfxlate import config as config_mod
 from pdfxlate import paths
-from pdfxlate.models.base import ModelAdapter, _CACHE_ENABLED, placeholders
+from pdfxlate.models.base import _CACHE_ENABLED, ModelAdapter, placeholders
 from pdfxlate.pdf import pipeline
 
 logger = logging.getLogger(__name__)

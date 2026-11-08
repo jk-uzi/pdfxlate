@@ -5,6 +5,9 @@
   "main": "out/main/main.js",
   "author": "jk-uzi",
   "license": "AGPL-3.0-or-later",
+  "engines": {
+    "node": ">=18"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/jk-uzi/pdfxlate.git"
@@ -21,7 +24,9 @@
     "copy:static": "node scripts/copy-static.mjs",
     "start": "npm run build && electron .",
     "dev": "npm run build && electron . --dev",
-    "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
+    "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.renderer.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "test:frontend": "vitest run",
+    "test:frontend:watch": "vitest",
     "check:i18n": "node scripts/check-i18n.mjs",
     "make:icon": "node scripts/make-icon.mjs",
     "pack": "electron-builder --dir --publish never",
@@ -31,8 +36,9 @@
     "@types/node": "^22.10.0",
     "electron": "^33.2.0",
     "electron-builder": "^26.0.0",
+    "jsdom": "^26.1.0",
     "pdfjs-dist": "^4.10.38",
-    "typescript": "^5.7.2"
-  },
-  "dependencies": {}
+    "typescript": "^5.7.2",
+    "vitest": "^3.2.7"
+  }
 }

@@ -21,7 +21,7 @@ from __future__ import annotations
 import threading
 from typing import Any, Sequence
 
-from pdfxlate.agents import catalog, zcode_app_server, workbuddy_desktop
+from pdfxlate.agents import catalog, workbuddy_desktop, zcode_app_server
 from pdfxlate.agents.batch import BatchQueue
 from pdfxlate.agents.catalog import not_installed_message
 from pdfxlate.agents.defs import AgentDef, get_agent_def

@@ -7,7 +7,6 @@ import sys
 from pathlib import Path
 
 import pytest
-
 from pdfxlate.agents import zcode_app_server
 from pdfxlate.agents.zcode_app_server import ServerPaths, ZCodeAppServerError
 

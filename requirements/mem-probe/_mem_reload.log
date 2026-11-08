@@ -1,8 +1,0 @@
---- arena=True ---
-  load    722 ms | infer    575 ms | peak  293.1 MB | idle after unload   85.6 MB
-  load    649 ms | infer    580 ms | peak  296.0 MB | idle after unload   86.9 MB
-  load    665 ms | infer    616 ms | peak  296.2 MB | idle after unload   86.0 MB
---- arena=False ---
-  load    687 ms | infer   1095 ms | peak  175.8 MB | idle after unload   87.1 MB
-  load    659 ms | infer   1135 ms | peak  176.4 MB | idle after unload   86.9 MB
-  load    794 ms | infer   3706 ms | peak  175.8 MB | idle after unload   87.1 MB

@@ -18,6 +18,18 @@ import {
   LOCALES,
   LOCALE_LABELS,
 } from "./i18n.js";
+import { messageSlot } from "./messages.js";
+import {
+  baseName,
+  clampSidebarWidth,
+  cleanError,
+  cssEscape,
+  formatContextBadge,
+  languageLabel,
+  parsePages,
+  spreadPages,
+  truncateSample,
+} from "./util.js";
 
 // One model under a provider, as summarised by `providers.list`.
 interface ProviderModelSummary {
@@ -284,12 +296,6 @@ let lastProgress: {
   total: number;
   message: ProgressMessage;
 } | null = null;
-let lastProfileMessage: {
-  key: string;
-  params?: Record<string, string>;
-  error: boolean;
-} | null = null;
-
 // Last `providers.list` summary and the full `config.get` document the model
 // editor works against. The summary drives the two selectors and the API-key
 // masking (`has_api_key`); the config document carries the model detail fields
@@ -407,12 +413,6 @@ let engineConfigDir: string | null = null;
 let cachedAgents: AgentStatus[] = [];
 let agentsLoaded = false;
 let agentsLoading = false;
-/** Global message on `#agents-msg`, repainted on a locale switch. */
-let lastAgentsMessage: {
-  key: string;
-  params?: Record<string, string>;
-  error: boolean;
-} | null = null;
 /**
  * Agents whose Test button has produced a real answer in this session.
  *
@@ -520,21 +520,6 @@ paintOverlaysPinned();
  * and there is exactly one value to remember.
  */
 const WIDTH_STORAGE_KEY = "pdfxlate.sidebarWidth";
-const MIN_SIDEBAR = 240;
-const MAX_SIDEBAR = 600;
-
-/**
- * Clamp a width to something that leaves the document usable.
- *
- * The upper bound is also a share of the window, since 600px is comfortable at
- * 1280 but would leave almost nothing for the page on a narrow window. The
- * window's minimum width is 1000, so half of it still leaves the preview half.
- */
-function clampSidebarWidth(width: number): number {
-  const byWindow = Math.max(MIN_SIDEBAR, Math.floor(window.innerWidth / 2));
-  return Math.round(Math.min(Math.max(width, MIN_SIDEBAR), Math.min(MAX_SIDEBAR, byWindow)));
-}
-
 function applySidebarWidth(width: number, persist = true): void {
   const clamped = clampSidebarWidth(width);
   document.documentElement.style.setProperty("--sidebar-width", `${clamped}px`);
@@ -678,7 +663,9 @@ onLocaleChange(() => {
   paintApiKeyPlaceholder();
   renderDownloadButton();
   paintProgress();
-  paintProfileMessage();
+  profileMessage.paint();
+  providerAddMessage.paint();
+  modelAddMessage.paint();
   renderProviderList();
   renderModelList();
   renderOptionModels();
@@ -995,11 +982,6 @@ $("btn-download-assets").addEventListener("click", async () => {
 });
 
 // --- folder browsing -------------------------------------------------------
-
-/** Base name of a path, for display. */
-function baseName(file: string): string {
-  return file.split(/[\\/]/).pop() ?? file;
-}
 
 /** Stable fingerprint of a scan: path plus translated flag, in folder order. */
 function folderSignature(found: PdfEntry[]): string {
@@ -2185,19 +2167,6 @@ function releaseLoadedPreview(): void {
 }
 
 /**
- * The pages a spread shows, in order.
- *
- * Two adjacent pages, except at the end of an odd-length document where there
- * is only one left. Pages are 1-based, matching `state.page`.
- */
-function spreadPages(state: { page: number; pages: number }): number[] {
-  const first = state.page;
-  const second = first + 1;
-  if (state.pages > 0 && second > state.pages) return [first];
-  return [first, second];
-}
-
-/**
  * Repaint the preview for the active tab, page and zoom.
  *
  * The loaded pdf.js document is kept across repaints: changing page or zoom
@@ -2783,6 +2752,9 @@ function providerState(name: string): "ready" | "incomplete" | "empty" {
 function selectProvider(name: string): void {
   if (name === editingProvider) return;
   // Preserve whatever is in the editor before the provider changes under it.
+  // The provider-level fields are part of that: they are held in the DOM until
+  // a commit, and repainting them for the next provider would discard the edit.
+  if (editingProvider) commitProviderFields(editingProvider);
   commitOpenEditor();
   editingProvider = name;
   editingModel = pickModel(name);
@@ -2791,16 +2763,6 @@ function selectProvider(name: string): void {
   renderModelList();
   applyProviderFields();
   applyModelFields();
-}
-
-/** Format a context window as a short badge value: 128K, 1M. */
-function formatContextBadge(tokens: number): string {
-  if (tokens >= 1_000_000) {
-    const millions = tokens / 1_000_000;
-    return `${Number.isInteger(millions) ? millions : millions.toFixed(1)}M`;
-  }
-  if (tokens >= 1000) return `${Math.round(tokens / 1000)}K`;
-  return String(tokens);
 }
 
 /**
@@ -2948,11 +2910,6 @@ function renderModelList(): void {
   }
 }
 
-/** Minimal attribute-selector escape: aliases are user text. */
-function cssEscape(value: string): string {
-  return value.replace(/["\\]/g, "\\$&");
-}
-
 /** A borderless icon button with a tooltip and an accessible name. */
 function iconButton(key: string, pathData: string): HTMLButtonElement {
   const button = document.createElement("button");
@@ -2997,8 +2954,10 @@ function commitOpenEditor(): void {
 async function setModelEnabled(alias: string, enabled: boolean): Promise<void> {
   const provider = editingProvider;
   if (!provider) return;
-  // Commit first so a pending edit in the open editor is not overwritten by
-  // the reload that follows the save.
+  // Commit first so pending edits are not overwritten by the reload that
+  // follows the save. That includes the provider fields, which the switch
+  // itself does not touch but the reload does repaint.
+  commitProviderFields(provider);
   commitOpenEditor();
   const entry = draftProviders()[provider]?.models?.[alias];
   if (!entry) return;
@@ -3011,6 +2970,10 @@ async function removeModel(alias: string): Promise<void> {
   const provider = editingProvider;
   if (!provider) return;
   if (!confirm(t("model.removeModelConfirm", { name: alias }))) return;
+  // The reload after the save repaints both editors; keep whatever is open
+  // before mutating the draft.
+  commitProviderFields(provider);
+  commitOpenEditor();
   const prov = draftProviders()[provider];
   if (prov?.models) delete prov.models[alias];
   if (expandedModel === alias) expandedModel = null;
@@ -3257,70 +3220,87 @@ async function saveConfig(successKey: string): Promise<void> {
   // `config.get` can never be "fixed" by writing an empty config over the real
   // one.
   if (!configLoaded || !cachedConfig) {
-    setProfileMessage("model.configUnavailable", undefined, true);
+    profileMessage.set("model.configUnavailable", undefined, true);
     return;
   }
   try {
     await api.request("config.save", { config: cachedConfig });
-    setProfileMessage(successKey);
+    profileMessage.set(successKey);
     await refreshProviders();
   } catch (err) {
-    setProfileMessage("model.saveFailed", { error: String(err) }, true);
+    profileMessage.set("model.saveFailed", { error: String(err) }, true);
   }
 }
 
-function paintProfileMessage(): void {
-  const msg = $("model-msg");
-  if (!lastProfileMessage) {
-    msg.textContent = "";
-    msg.className = "msg";
-    return;
-  }
-  msg.textContent = t(lastProfileMessage.key, lastProfileMessage.params);
-  msg.className = lastProfileMessage.error ? "msg msg--error" : "msg";
-}
+/**
+ * Inline messages.
+ *
+ * The provider detail, the two add rows and the agents panel each own their
+ * element because they sit in different columns: validation for the
+ * add-provider row must not be written into the detail's message, which does
+ * not exist until a provider does. The behaviour is shared; only the element
+ * and the remembered state differ.
+ */
+const profileMessage = messageSlot("model-msg", t);
+const providerAddMessage = messageSlot("provider-add-msg", t);
+const modelAddMessage = messageSlot("model-add-msg", t);
 
-function setProfileMessage(
-  key: string,
-  params?: Record<string, string>,
-  error = false,
-): void {
-  lastProfileMessage = { key, params, error };
-  paintProfileMessage();
+/**
+ * Show or hide the inline provider form.
+ *
+ * The "+" in the list heading and the empty state's button are two entry
+ * points to this one form, which lives in the providers column. The empty
+ * state's button has to follow the form's state: leaving it visible while the
+ * form is open makes the click look like it did nothing, because the result is
+ * in the other column.
+ */
+function setProviderAddOpen(open: boolean): void {
+  $("provider-add").classList.toggle("hidden", !open);
+  $("btn-add-provider-empty").classList.toggle("hidden", open);
+  $("btn-add-provider").setAttribute("aria-expanded", String(open));
+  providerAddMessage.set("");
+  if (!open) return;
+  const input = $<HTMLInputElement>("new-provider-name");
+  input.focus();
+  input.select();
 }
 
 $("btn-add-provider").addEventListener("click", () => {
-  const box = $("provider-add");
-  box.classList.toggle("hidden");
-  if (!box.classList.contains("hidden")) {
-    $<HTMLInputElement>("new-provider-name").focus();
-  }
+  setProviderAddOpen($("provider-add").classList.contains("hidden"));
 });
 
 $("btn-add-provider-empty").addEventListener("click", () => {
-  $("provider-add").classList.remove("hidden");
-  $<HTMLInputElement>("new-provider-name").focus();
+  setProviderAddOpen(true);
 });
 
 $("btn-add-provider-confirm").addEventListener("click", () => {
   const input = $<HTMLInputElement>("new-provider-name");
   const name = input.value.trim();
   if (!name) {
-    setProfileMessage("model.nameRequired", undefined, true);
+    providerAddMessage.set("model.nameRequired", undefined, true);
+    input.focus();
     return;
   }
   const providers = draftProviders();
   if (providers[name]) {
-    setProfileMessage("model.providerExists", { name }, true);
+    providerAddMessage.set("model.providerExists", { name }, true);
+    input.focus();
+    input.select();
     return;
   }
+  // Adding saves the whole draft and then reloads it. The endpoint and key
+  // fields only live in the DOM until committed, so commit them (and the open
+  // model editor) first; otherwise the reload repaints the stale draft over
+  // what was just typed.
+  if (editingProvider) commitProviderFields(editingProvider);
+  commitOpenEditor();
   providers[name] = {
     kind: "openai_compat",
     base_url: null,
     models: {},
   };
   input.value = "";
-  $("provider-add").classList.add("hidden");
+  setProviderAddOpen(false);
   editingProvider = name;
   editingModel = null;
   expandedModel = null;
@@ -3331,8 +3311,16 @@ $("btn-add-provider-confirm").addEventListener("click", () => {
   void saveConfig("model.saved");
 });
 
+$("new-provider-name").addEventListener("input", () => providerAddMessage.set(""));
+
 $("new-provider-name").addEventListener("keydown", (event) => {
-  if ((event as KeyboardEvent).key === "Enter") $("btn-add-provider-confirm").click();
+  const key = (event as KeyboardEvent).key;
+  if (key === "Enter") {
+    $("btn-add-provider-confirm").click();
+  } else if (key === "Escape") {
+    event.preventDefault();
+    setProviderAddOpen(false);
+  }
 });
 
 /**
@@ -3384,20 +3372,6 @@ async function testProvider(button: HTMLButtonElement): Promise<void> {
     button.disabled = false;
     button.textContent = t("model.test");
   }
-}
-
-/**
- * Trim Electron's transport wrapping off an error message.
- *
- * An `ipcRenderer.invoke` rejection arrives as
- * `Error: Error invoking remote method 'sidecar:request': Error: ValueError: …`.
- * Only the last, concrete part is useful to a person looking at a settings
- * panel, and the repeats read like a stack trace.
- */
-function cleanError(err: unknown): string {
-  const raw = String(err);
-  const marker = raw.lastIndexOf("Error: ");
-  return marker >= 0 ? raw.slice(marker + "Error: ".length) : raw;
 }
 
 /**
@@ -3468,17 +3442,23 @@ $("btn-test-provider").addEventListener("click", (event) => {
 async function renameProvider(oldName: string, rawName: string): Promise<boolean> {
   const newName = rawName.trim();
   if (!newName) {
-    setProfileMessage("model.nameRequired", undefined, true);
+    profileMessage.set("model.nameRequired", undefined, true);
     return false;
   }
   if (newName === oldName) return true;
 
   const providers = draftProviders();
   if (providers[newName]) {
-    setProfileMessage("model.providerExists", { name: newName }, true);
+    profileMessage.set("model.providerExists", { name: newName }, true);
     return false;
   }
   if (!providers[oldName]) return false;
+
+  // The rename saves and reloads the draft, and the form still holds the old
+  // provider's values in the DOM. Commit them first, or the reload repaints
+  // the stored endpoint/key over what the user just typed.
+  commitProviderFields(oldName);
+  commitOpenEditor();
 
   const rebuilt: Record<string, ProviderDraft> = {};
   for (const [name, value] of Object.entries(providers)) {
@@ -3595,7 +3575,7 @@ $("field-provider-enabled").addEventListener("change", (event) => {
 $("btn-remove-provider").addEventListener("click", () => {
   const name = editingProvider;
   if (!name) {
-    setProfileMessage("model.noProvider", undefined, true);
+    profileMessage.set("model.noProvider", undefined, true);
     return;
   }
   if (!confirm(t("model.removeProviderConfirm", { name }))) return;
@@ -3615,12 +3595,19 @@ $("btn-remove-provider").addEventListener("click", () => {
   void saveConfig("model.saved");
 });
 
+/** Show or hide the inline model form, clearing a previous error either way. */
+function setModelAddOpen(open: boolean): void {
+  $("model-add").classList.toggle("hidden", !open);
+  $("btn-add-model").setAttribute("aria-expanded", String(open));
+  modelAddMessage.set("");
+  if (!open) return;
+  const input = $<HTMLInputElement>("new-model-name");
+  input.focus();
+  input.select();
+}
+
 $("btn-add-model").addEventListener("click", () => {
-  const box = $("model-add");
-  box.classList.toggle("hidden");
-  if (!box.classList.contains("hidden")) {
-    $<HTMLInputElement>("new-model-name").focus();
-  }
+  setModelAddOpen($("model-add").classList.contains("hidden"));
 });
 
 // --- importing models from the upstream catalogue --------------------------
@@ -3749,7 +3736,7 @@ $("models-selectall").addEventListener("change", (event) => {
 async function openModelsDialog(button: HTMLButtonElement): Promise<void> {
   const provider = editingProvider;
   if (!provider) {
-    setProfileMessage("model.noProvider", undefined, true);
+    profileMessage.set("model.noProvider", undefined, true);
     return;
   }
   commitProviderFields(provider);
@@ -3847,29 +3834,37 @@ $("btn-models-import").addEventListener("click", (event) => {
 });
 
 $("btn-add-model-confirm").addEventListener("click", () => {
-  const name = $<HTMLInputElement>("new-model-name").value.trim();
+  const input = $<HTMLInputElement>("new-model-name");
+  const name = input.value.trim();
   if (!name) {
-    setProfileMessage("model.nameRequired", undefined, true);
+    modelAddMessage.set("model.nameRequired", undefined, true);
+    input.focus();
     return;
   }
   const provider = editingProvider;
   if (!provider) {
-    setProfileMessage("model.noProvider", undefined, true);
+    profileMessage.set("model.noProvider", undefined, true);
     return;
   }
-  const providers = draftProviders();
-  const prov = providers[provider];
+  if (draftProviders()[provider]?.models?.[name]) {
+    modelAddMessage.set("model.modelExists", { name }, true);
+    input.focus();
+    input.select();
+    return;
+  }
+  // The save below writes the whole draft and then reloads it. Commit the
+  // provider fields and the open model editor first, or the reload would show
+  // the stored values again and the edits would be gone.
+  commitProviderFields(provider);
+  commitOpenEditor();
+  const prov = draftProviders()[provider];
   if (!prov) return;
   if (!prov.models) prov.models = {};
-  if (prov.models[name]) {
-    setProfileMessage("model.modelExists", { name }, true);
-    return;
-  }
   // A new model defaults to its alias as the API model id, matching the
   // backend's own fill-in behaviour.
   prov.models[name] = { model: name, temperature: 0 };
-  $<HTMLInputElement>("new-model-name").value = "";
-  $("model-add").classList.add("hidden");
+  input.value = "";
+  setModelAddOpen(false);
   editingModel = name;
   expandedModel = name;
   renderModelList();
@@ -3877,8 +3872,16 @@ $("btn-add-model-confirm").addEventListener("click", () => {
   void saveConfig("model.saved");
 });
 
+$("new-model-name").addEventListener("input", () => modelAddMessage.set(""));
+
 $("new-model-name").addEventListener("keydown", (event) => {
-  if ((event as KeyboardEvent).key === "Enter") $("btn-add-model-confirm").click();
+  const key = (event as KeyboardEvent).key;
+  if (key === "Enter") {
+    $("btn-add-model-confirm").click();
+  } else if (key === "Escape") {
+    event.preventDefault();
+    setModelAddOpen(false);
+  }
 });
 
 $("btn-editor-close").addEventListener("click", () => {
@@ -3890,11 +3893,11 @@ $("btn-editor-close").addEventListener("click", () => {
 $("btn-editor-save").addEventListener("click", async () => {
   const provider = editingProvider;
   if (!provider) {
-    setProfileMessage("model.noProvider", undefined, true);
+    profileMessage.set("model.noProvider", undefined, true);
     return;
   }
   if (readExtraBody() === undefined) {
-    setProfileMessage("model.extraBodyInvalid", undefined, true);
+    profileMessage.set("model.extraBodyInvalid", undefined, true);
     return;
   }
   commitProviderFields(provider);
@@ -3905,13 +3908,13 @@ $("btn-editor-save").addEventListener("click", async () => {
 $("btn-save-model").addEventListener("click", async () => {
   const provider = editingProvider;
   if (!provider) {
-    setProfileMessage("model.noProvider", undefined, true);
+    profileMessage.set("model.noProvider", undefined, true);
     return;
   }
   // Validate the extra body before writing anything, so a bad value cannot
   // leave a half-committed draft.
   if (readExtraBody() === undefined) {
-    setProfileMessage("model.extraBodyInvalid", undefined, true);
+    profileMessage.set("model.extraBodyInvalid", undefined, true);
     return;
   }
   commitProviderFields(provider);
@@ -4134,25 +4137,8 @@ function agentReasonLabel(code: string | null): string | null {
   }
 }
 
-function paintAgentsMessage(): void {
-  const msg = $("agents-msg");
-  if (!lastAgentsMessage) {
-    msg.textContent = "";
-    msg.className = "msg";
-    return;
-  }
-  msg.textContent = t(lastAgentsMessage.key, lastAgentsMessage.params);
-  msg.className = lastAgentsMessage.error ? "msg msg--error" : "msg";
-}
-
-function setAgentsMessage(
-  key: string | null,
-  params?: Record<string, string>,
-  error = false,
-): void {
-  lastAgentsMessage = key ? { key, params, error } : null;
-  paintAgentsMessage();
-}
+/** Global message on `#agents-msg`, repainted on a locale switch. */
+const agentsMessage = messageSlot("agents-msg", t);
 
 /** Repaint one card's status pill after a test, without rebuilding the card. */
 function paintAgentStatus(agent: AgentStatus): void {
@@ -4179,13 +4165,13 @@ async function refreshAgents(force: boolean): Promise<void> {
     // Detection runs in the engine, so there is nothing to ask yet. The flag
     // stays false so the panel retries once it is ready.
     agentsLoaded = false;
-    setAgentsMessage("agents.configUnavailable", undefined, true);
+    agentsMessage.set("agents.configUnavailable", undefined, true);
     return;
   }
   if (agentsLoading) return;
   agentsLoading = true;
   $<HTMLButtonElement>("btn-rescan-agents").disabled = true;
-  setAgentsMessage("agents.detecting");
+  agentsMessage.set("agents.detecting");
   try {
     const result = await api.request<{ agents: AgentStatus[] }>("agents.list", {
       refresh: force,
@@ -4196,10 +4182,10 @@ async function refreshAgents(force: boolean): Promise<void> {
       models: normalizeAgentModels(agent.models),
     }));
     agentsLoaded = true;
-    setAgentsMessage(null);
+    agentsMessage.set(null);
   } catch (err) {
     agentsLoaded = false;
-    setAgentsMessage("agents.failed", { error: cleanError(err) }, true);
+    agentsMessage.set("agents.failed", { error: cleanError(err) }, true);
     appendLog(t("log.agentsFailed", { error: cleanError(err) }));
   } finally {
     agentsLoading = false;
@@ -4222,7 +4208,7 @@ async function persistAgentConfig(): Promise<boolean> {
   // Refuse to write a document that was never loaded: a failed `config.get`
   // must not be "fixed" by saving an empty config over the real one.
   if (!configLoaded || !cachedConfig) {
-    setAgentsMessage("agents.configUnavailable", undefined, true);
+    agentsMessage.set("agents.configUnavailable", undefined, true);
     return false;
   }
   try {
@@ -4230,7 +4216,7 @@ async function persistAgentConfig(): Promise<boolean> {
     await refreshProviders();
     return true;
   } catch (err) {
-    setAgentsMessage("agents.saveFailed", { error: cleanError(err) }, true);
+    agentsMessage.set("agents.saveFailed", { error: cleanError(err) }, true);
     return false;
   }
 }
@@ -4242,7 +4228,7 @@ async function setAgentModel(
   enabled: boolean,
 ): Promise<void> {
   if (agentConflict(agent.id)) {
-    setAgentsMessage("agents.conflict", { provider: agent.id }, true);
+    agentsMessage.set("agents.conflict", { provider: agent.id }, true);
     renderAgents();
     return;
   }
@@ -4269,7 +4255,7 @@ async function setAgentModel(
   } else if (provider?.models) {
     delete provider.models[modelId];
   }
-  if (await persistAgentConfig()) setAgentsMessage("agents.saved");
+  if (await persistAgentConfig()) agentsMessage.set("agents.saved");
   renderAgents();
 }
 
@@ -4304,12 +4290,6 @@ async function refreshAgentModels(
   }
 }
 
-/** Trim a model's answer to something that fits in a card. */
-function truncateSample(sample: string): string {
-  const text = (sample ?? "").replace(/\s+/g, " ").trim();
-  return text.length > 80 ? `${text.slice(0, 80)}…` : text;
-}
-
 /** Send one "Hello." through the CLI and report latency plus a sample. */
 async function testAgentModel(
   agent: AgentStatus,
@@ -4334,8 +4314,8 @@ async function testAgentModel(
       if (result.via === "app_server") {
         // A non-current ZCode row was checked through the temporary
         // app-server. Translation of that row also uses the app-server, so it
-        // is usable; but the card's 可用 state is reserved for the current
-        // CLI test and must not be claimed by this probe.
+        // is usable; but the card's Available state is reserved for the
+        // current CLI test and must not be claimed by this probe.
         showToast(
           t("agents.testOkConnectivity", {
             ms: String(result.latency_ms),
@@ -4386,7 +4366,7 @@ async function saveAgentPath(
   } else {
     const value = input.value.trim();
     if (!value) {
-      setAgentsMessage("agents.path.required", undefined, true);
+      agentsMessage.set("agents.path.required", undefined, true);
       return;
     }
     draftAgents().paths[agent.id] = value;
@@ -4400,7 +4380,7 @@ async function saveAgentPath(
   // Only claim success when the rescan worked: a failed detection has its own
   // message, and overwriting it would hide the fact that the new path did not
   // resolve.
-  if (agentsLoaded) setAgentsMessage(clear ? "agents.path.cleared" : "agents.path.saved");
+  if (agentsLoaded) agentsMessage.set(clear ? "agents.path.cleared" : "agents.path.saved");
 }
 
 /** One row in a card's model list. */
@@ -4457,7 +4437,7 @@ function agentLink(url: string, key: string): HTMLAnchorElement {
   link.addEventListener("click", (event) => {
     event.preventDefault();
     void api.openExternal(url).catch((err) => {
-      setAgentsMessage("agents.linkFailed", { error: cleanError(err) }, true);
+      agentsMessage.set("agents.linkFailed", { error: cleanError(err) }, true);
     });
   });
   return link;
@@ -4790,7 +4770,7 @@ function agentCard(agent: AgentStatus): HTMLElement {
 function renderAgents(): void {
   const list = $("agent-cards");
   list.innerHTML = "";
-  paintAgentsMessage();
+  agentsMessage.paint();
 
   for (const agent of cachedAgents) {
     list.append(agentCard(agent));
@@ -4881,25 +4861,6 @@ const LANGUAGES = [
   "en", "zh", "zh-tw", "ja", "ko", "fr", "de", "es", "pt", "it", "ru",
   "ar", "hi", "th", "vi", "id", "tr", "nl", "pl", "uk",
 ] as const;
-
-/**
- * A language's name in the interface language.
- *
- * `Intl.DisplayNames` is used rather than twenty hand-written labels per
- * locale: it is built into the runtime and already knows these names in every
- * UI language, so there is nothing to keep in step. The code is shown as a
- * fallback if it is unavailable or does not recognise one.
- */
-function languageLabel(code: string): string {
-  try {
-    const names = new Intl.DisplayNames([getLocale() === "zh" ? "zh-CN" : "en"], {
-      type: "language",
-    });
-    return names.of(code) ?? code;
-  } catch {
-    return code;
-  }
-}
 
 function fillLanguageSelect(select: HTMLSelectElement, name: OptionName): void {
   select.innerHTML = "";
@@ -5050,23 +5011,6 @@ $("opt-lang-out").addEventListener("change", (e) =>
 );
 
 // --- translate -------------------------------------------------------------
-
-function parsePages(spec: string): number[] | undefined {
-  const trimmed = spec.trim();
-  if (!trimmed) return undefined;
-  const pages: number[] = [];
-  for (const part of trimmed.split(",")) {
-    const p = part.trim();
-    if (!p) continue;
-    if (p.includes("-")) {
-      const [a, b] = p.split("-").map((n) => parseInt(n, 10));
-      for (let i = a; i <= b; i++) pages.push(i - 1);
-    } else {
-      pages.push(parseInt(p, 10) - 1);
-    }
-  }
-  return pages.length ? pages : undefined;
-}
 
 /**
  * Paint the one button that both starts and stops a job.

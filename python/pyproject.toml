@@ -2,7 +2,7 @@
 name = "pdfxlate"
 version = "0.2.0"
 description = "Layout-preserving PDF translation with any OpenAI-compatible model"
-license = { text = "AGPL-3.0-or-later" }
+license = "AGPL-3.0-or-later"
 authors = [{ name = "jk-uzi", email = "2081217232@qq.com" }]
 requires-python = ">=3.11,<3.13"
 dependencies = [
@@ -50,7 +50,7 @@ mcp = ["mcp>=2.3.0"]
 # otherwise PyInstaller silently ships without them and the corresponding
 # feature fails on a user's machine.  Keeping them in `dev` makes
 # `pip install -e '.[dev]'` (the documented setup) produce a complete bundle.
-dev = ["pytest", "pyinstaller", "mcp>=2.3.0", "pdf-inspector>=1.25.2,<2"]
+dev = ["pytest", "pyinstaller", "ruff>=0.9", "mcp>=2.3.0", "pdf-inspector>=1.25.2,<2"]
 
 [project.scripts]
 pdfxlate = "pdfxlate.cli:main"

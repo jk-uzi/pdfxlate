@@ -219,7 +219,6 @@ def test_translate_start_reports_cache_stats(monkeypatch, capsys):
     """The reply and the `done` event both carry the counters the UI shows."""
     from pdfxlate import cache as cache_mod
     from pdfxlate.models.base import (
-        provider_cache_snapshot,
         record_provider_cache,
     )
 

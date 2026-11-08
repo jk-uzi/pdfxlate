@@ -18,7 +18,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pdfxlate.pdf import pipeline  # noqa: E402
 
-
 # --- page selection --------------------------------------------------------
 
 

@@ -311,7 +311,7 @@ def release_layout_model() -> None:
         if callable(close):
             try:
                 close()
-            except Exception:  # pragma: no cover - best-effort cleanup
+            except Exception:  # pragma: no cover  # noqa: BLE001 - best-effort cleanup
                 logger.debug("closing the layout model failed", exc_info=True)
             break
     del model

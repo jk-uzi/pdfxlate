@@ -395,7 +395,6 @@ class _FakeContext:
 
 def test_sampling_batches_multiple_paragraphs_into_one_call():
     import anyio
-
     from pdfxlate import mcp_server
 
     texts = [f"p{i}" for i in range(mcp_server.SAMPLING_BATCH_SIZE * 2 + 3)]
@@ -416,9 +415,8 @@ def test_sampling_batches_multiple_paragraphs_into_one_call():
 
 def test_sampling_falls_back_to_per_paragraph_on_bad_batch():
     import anyio
-
-    from pdfxlate import mcp_server
     from mcp.types import TextContent
+    from pdfxlate import mcp_server
 
     class _BadBatchSession(_FakeSession):
         async def create_message(self, messages, *, max_tokens, **kwargs):
@@ -453,8 +451,14 @@ def test_sampling_falls_back_to_per_paragraph_on_bad_batch():
 
 
 def _find_sample_pdf() -> Path | None:
-    # Relative to the test file, so the path resolves on any machine.
-    return _WORKTREE_ROOT / "references/PDFMathTranslate/test/file/translate.cli.plain.text.pdf"
+    # Relative to the test file, so the path resolves on any machine. The
+    # upstream checkout is gitignored, so a clone without it must skip these
+    # tests rather than fail reading a path that was never there.
+    path = (
+        _WORKTREE_ROOT
+        / "references/PDFMathTranslate/test/file/translate.cli.plain.text.pdf"
+    )
+    return path if path.is_file() else None
 
 
 def _asset_ready(cfg: config_mod.AppConfig) -> bool:

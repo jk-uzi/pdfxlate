@@ -23,9 +23,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pdfxlate import config as config_mod  # noqa: E402
 from pdfxlate.agents import runtime  # noqa: E402
 from pdfxlate.agents.batch import (  # noqa: E402
+    MAX_BATCH_ITEMS,
     BatchQueue,
     BatchQueueClosedError,
-    MAX_BATCH_ITEMS,
 )
 from pdfxlate.agents.defs import get_agent_def  # noqa: E402
 from pdfxlate.agents.detect import ResolvedAgent  # noqa: E402

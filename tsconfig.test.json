@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.renderer.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": true
+  },
+  "include": [
+    "src/renderer/**/*.ts",
+    "tests/frontend/**/*.test.ts",
+    "vitest.config.ts"
+  ]
+}

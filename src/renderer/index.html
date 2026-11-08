@@ -495,6 +495,8 @@
                     id="btn-add-provider"
                     class="icon-btn icon-btn--bare"
                     type="button"
+                    aria-expanded="false"
+                    aria-controls="provider-add"
                     data-i18n-title="model.addProvider"
                     data-i18n-aria-label="model.addProvider"
                   >
@@ -504,14 +506,22 @@
                   </button>
                 </div>
 
-                <!-- Inline rather than a modal: adding a provider is one field. -->
+                <!--
+                  Inline rather than a modal: adding a provider is one field.
+                  Its error line lives here, not on the detail panel's
+                  `model-msg`: that panel is hidden until a provider exists, so
+                  validation would report into an invisible element.
+                -->
                 <div id="provider-add" class="add-inline hidden">
-                  <input
-                    id="new-provider-name"
-                    type="text"
-                    data-i18n-placeholder="model.newProviderPlaceholder"
-                  />
-                  <button id="btn-add-provider-confirm" class="btn btn--small btn--primary" data-i18n="model.add"></button>
+                  <div class="add-inline__row">
+                    <input
+                      id="new-provider-name"
+                      type="text"
+                      data-i18n-placeholder="model.newProviderPlaceholder"
+                    />
+                    <button id="btn-add-provider-confirm" class="btn btn--small btn--primary" data-i18n="model.add"></button>
+                  </div>
+                  <span id="provider-add-msg" class="msg"></span>
                 </div>
 
                 <div id="provider-list" class="provider-list" role="listbox"></div>
@@ -608,17 +618,27 @@
                     <span data-i18n="model.modelListTitle"></span>
                     <span class="model-list__actions">
                       <button id="btn-fetch-models" class="btn btn--small btn--ghost" data-i18n="model.fetchModels"></button>
-                      <button id="btn-add-model" class="btn btn--small btn--ghost" data-i18n="model.addModel"></button>
+                      <button
+                        id="btn-add-model"
+                        class="btn btn--small btn--ghost"
+                        type="button"
+                        aria-expanded="false"
+                        aria-controls="model-add"
+                        data-i18n="model.addModel"
+                      ></button>
                     </span>
                   </div>
 
                   <div id="model-add" class="add-inline hidden">
-                    <input
-                      id="new-model-name"
-                      type="text"
-                      data-i18n-placeholder="model.newModelPlaceholder"
-                    />
-                    <button id="btn-add-model-confirm" class="btn btn--small btn--primary" data-i18n="model.add"></button>
+                    <div class="add-inline__row">
+                      <input
+                        id="new-model-name"
+                        type="text"
+                        data-i18n-placeholder="model.newModelPlaceholder"
+                      />
+                      <button id="btn-add-model-confirm" class="btn btn--small btn--primary" data-i18n="model.add"></button>
+                    </div>
+                    <span id="model-add-msg" class="msg"></span>
                   </div>
 
                   <!-- Rows and the inline editor are built by app.ts: the row

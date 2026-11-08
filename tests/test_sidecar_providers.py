@@ -18,7 +18,6 @@ from pdfxlate import api as api_mod  # noqa: E402
 from pdfxlate import config as config_mod  # noqa: E402
 from pdfxlate import sidecar  # noqa: E402
 
-
 NESTED = """\
 default_provider: deepseek
 default_model: chat

@@ -327,7 +327,7 @@ def translate_patch(
                             np.clip(int(h - y0 + 1), 0, h - 1),
                         )
                         box[y0:y1, x0:x1] = i + 2
-                for i, d in enumerate(page_layout.boxes):
+                for d in page_layout.boxes:
                     if page_layout.names[int(d.cls)] in vcls:
                         x0, y0, x1, y1 = d.xyxy.squeeze()
                         x0, y0, x1, y1 = (
@@ -648,7 +648,7 @@ def _translate_to_sinks(
                                 target_key,
                                 f"{font_id[font[0]]} 0 R",
                             )
-            except Exception:
+            except Exception:  # noqa: BLE001 - xref shapes vary; a non-font resource must not abort the page
                 pass
 
     if perf:
