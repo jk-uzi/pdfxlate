@@ -186,6 +186,11 @@ def translate(
         close = getattr(translator, "close", None)
         if callable(close):
             close()
+        # This batch is over (or failed, or was cancelled), so give the layout
+        # model's memory back to the OS.  Deliberately here rather than in the
+        # per-file loop: one loaded model serves every file in the batch.  The
+        # next job reloads it from disk (about 0.7 s).
+        release_layout_model()
 
 
 def translate_stream(
@@ -258,9 +263,15 @@ def load_layout_model(
 
 def _load_layout_model(cfg: config_mod.AppConfig, progress: ProgressFn):
     """Load (and if necessary download) the DocLayout ONNX model."""
-    from pdfxlate.pdf.layout import ModelInstance, OnnxModel, set_backend
+    from pdfxlate.pdf.layout import (
+        ModelInstance,
+        OnnxModel,
+        set_backend,
+        set_memory_arena,
+    )
 
     set_backend(cfg.layout.backend)
+    set_memory_arena(cfg.layout.cpu_mem_arena)
     if ModelInstance.value is not None:
         return ModelInstance.value
 
@@ -272,3 +283,35 @@ def _load_layout_model(cfg: config_mod.AppConfig, progress: ProgressFn):
         progress("assets", 0, 1, "preparing layout model")
     ModelInstance.value = OnnxModel.from_pretrained()
     return ModelInstance.value
+
+
+def release_layout_model() -> None:
+    """Drop the cached DocLayout model so its memory returns to the OS.
+
+    The model is cached process-wide so every file in one job shares a single
+    loaded copy.  Once that job is over the copy is dead weight: its weights
+    plus the ONNX Runtime allocations are roughly 170 MB resident.  Clearing
+    the cache here means a long-lived process (the sidecar, the MCP server)
+    does not keep paying for it between jobs; the next job reloads the model
+    from disk in about 0.7 s.
+
+    A no-op when nothing is loaded, so callers can release unconditionally.
+    """
+    from pdfxlate.pdf.layout import ModelInstance
+
+    model = ModelInstance.value
+    if model is None:
+        return
+    ModelInstance.value = None
+    # onnxruntime's InferenceSession has no public close() in every version,
+    # and OpenVINO/CoreML handles differ, so close whatever handle is
+    # actually there and otherwise rely on dropping the last reference.
+    for handle in (getattr(model, "model", None), model):
+        close = getattr(handle, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:  # pragma: no cover - best-effort cleanup
+                logger.debug("closing the layout model failed", exc_info=True)
+            break
+    del model
