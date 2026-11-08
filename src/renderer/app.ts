@@ -1707,6 +1707,14 @@ interface PageSlot {
   /** Right-hand tail sheet after an odd final page; never rendered. */
   blank: boolean;
   pending: boolean;
+  /**
+   * Identifies the render currently owning this slot.
+   *
+   * A relayout cancels work in flight, and the cancelled render may already
+   * have handed the slot to a new one; only the owner may clear `pending` or
+   * retry, or two renders would race for the same node.
+   */
+  renderSeq: number;
 }
 
 interface Pane {
@@ -1865,6 +1873,7 @@ class PdfPreviewView {
         scale: 1,
         blank,
         pending: false,
+        renderSeq: 0,
       };
       pane.slots.set(index, slot);
       pane.order.push(slot);
@@ -2014,11 +2023,11 @@ class PdfPreviewView {
     for (const slot of pane.order) {
       if (slot.top >= bottom) break;
       if (slot.top + slot.cssHeight <= top) continue;
-      this.requestPage(slot);
+      this.requestPage(pane, slot);
     }
   }
 
-  private requestPage(slot: PageSlot): void {
+  private requestPage(pane: Pane, slot: PageSlot): void {
     if (slot.blank) return;
     const cached = pageCache.get(slot.index);
     if (cached && Math.abs(cached.scale - slot.scale) < 0.001) {
@@ -2028,8 +2037,11 @@ class PdfPreviewView {
     }
     if (slot.pending) return;
     slot.pending = true;
-    void this.renderPage(slot).finally(() => {
-      slot.pending = false;
+    const seq = ++slot.renderSeq;
+    void this.renderPage(pane, slot, seq).finally(() => {
+      // A superseded render must not clear the flag of the one that replaced
+      // it; only the owner settles its own slot.
+      if (slot.renderSeq === seq) slot.pending = false;
     });
   }
 
@@ -2044,11 +2056,19 @@ class PdfPreviewView {
     canvas.style.height = `${height}px`;
   }
 
-  private async renderPage(slot: PageSlot): Promise<void> {
+  private async renderPage(pane: Pane, slot: PageSlot, seq: number): Promise<void> {
     const epoch = this.layoutEpoch;
     try {
       const page = await this.doc.getPage(slot.index);
-      if (this.destroyed || epoch !== this.layoutEpoch) return;
+      if (this.destroyed) return;
+      if (epoch !== this.layoutEpoch) {
+        // The zoom or pane size changed while this page was being fetched, so
+        // the work above is stale. Nothing else re-asks for this slot — its
+        // `pending` flag kept the relayout's own pass from starting one — so
+        // ask again here at the new scale.
+        this.retryAfterRelayout(pane, slot, seq);
+        return;
+      }
 
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       const viewport = page.getViewport({ scale: slot.scale * dpr });
@@ -2089,10 +2109,21 @@ class PdfPreviewView {
       entry.task = null;
       entry.stamp = ++pageCacheStamp;
     } catch (err) {
-      if (this.destroyed || epoch !== this.layoutEpoch) return;
+      if (this.destroyed) return;
+      if (epoch !== this.layoutEpoch) {
+        this.retryAfterRelayout(pane, slot, seq);
+        return;
+      }
       if (isRenderCancelled(err)) return;
       appendLog(t("log.pageRenderFailed", { page: slot.index, error: String(err) }));
     }
+  }
+
+  /** Ask for a slot again after a relayout invalidated its in-flight render. */
+  private retryAfterRelayout(pane: Pane, slot: PageSlot, seq: number): void {
+    if (slot.renderSeq !== seq) return; // a newer render already owns the slot
+    slot.pending = false;
+    this.renderVisible(pane);
   }
 
   private evictIfNeeded(keepIndex: number): void {
