@@ -7,11 +7,10 @@
 #   2. Stage the bundled fonts.
 #   3. Build the Python sidecar with PyInstaller (onedir).
 #   4. Compile the TypeScript (main, preload, renderer).
-#   5. Package with electron-builder for the current platform.
+#   5. Package with electron-builder for Windows.
 #
-# Cross-compiling is not supported by electron-builder for the sidecar: the
-# PyInstaller output is platform-specific, so each target must be built on its
-# own OS (or in CI with a matrix).
+# This project targets Windows. The PyInstaller output and the NSIS installer
+# are produced on Windows (Git Bash); there is no cross-compilation.
 
 set -euo pipefail
 
@@ -29,21 +28,15 @@ else
   echo "==> [1/5] uv not found; keeping the existing Python environment"
 fi
 
-# The venv layout differs by platform: Scripts/python.exe on Windows,
-# bin/python elsewhere. Hard-coding bin/ made this script fail in Git Bash on
-# Windows, which is the primary development platform.
 if [[ -x "$PY_DIR/.venv/Scripts/python.exe" ]]; then
   VENV_PY="$PY_DIR/.venv/Scripts/python.exe"
-elif [[ -x "$PY_DIR/.venv/bin/python" ]]; then
-  VENV_PY="$PY_DIR/.venv/bin/python"
 else
   echo "error: Python venv not found under $PY_DIR/.venv" >&2
   echo "create it with:" >&2
   echo "  cd python && uv sync --extra dev" >&2
   echo "or, without uv:" >&2
   echo "  cd python && python -m venv .venv" >&2
-  echo "  .venv/Scripts/pip install -e '.[dev]'      # Windows" >&2
-  echo "  .venv/bin/pip install -e '.[dev]'          # macOS / Linux" >&2
+  echo "  .venv/Scripts/pip install -e '.[dev]'" >&2
   exit 1
 fi
 

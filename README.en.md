@@ -8,7 +8,7 @@ they were. Point it at any OpenAI-compatible model endpoint.
 
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/jk-uzi/pdfxlate)](https://github.com/jk-uzi/pdfxlate/releases)
-[![Platform](https://img.shields.io/badge/platform-Windows%20x64%20%7C%20Linux-lightgrey)]()
+[![Platform](https://img.shields.io/badge/platform-Windows%20x64-lightgrey)]()
 
 ![The pdfxlate window: document list and options on the left, translated page on the right](docs/images/screenshot.png)
 
@@ -86,10 +86,6 @@ Get the latest Windows installer from
 - If startup fails with an ONNX Runtime DLL error, install the
   [Microsoft Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe).
 
-Packaging is configured for Linux and macOS as well, but only the Windows
-installer and a Linux AppImage have actually been built and smoke-tested. macOS
-bundles are unverified; build them yourself if you need one.
-
 ## Run from source
 
 Requires Node.js 18+ and Python 3.11–3.12.
@@ -98,8 +94,7 @@ Requires Node.js 18+ and Python 3.11–3.12.
 # 1. Python engine
 cd python
 python -m venv .venv
-.venv/bin/pip install -e .            # macOS / Linux
-# .venv\Scripts\pip install -e .      # Windows
+.venv/Scripts/pip install -e .
 cd ..
 
 # 2. Desktop shell
@@ -190,8 +185,7 @@ From a source checkout, install the optional extra first:
 
 ```bash
 cd python
-.venv/Scripts/pip install -e ".[mcp]"    # Windows
-.venv/bin/pip install -e ".[mcp]"        # macOS / Linux
+.venv/Scripts/pip install -e ".[mcp]"
 ```
 
 A hand-written config looks like this (on Windows, `.venv\Scripts\python.exe`):
@@ -238,16 +232,9 @@ pane.
 
 ## Configuration
 
-`config.yaml` lives in the platform config directory:
-
-| Platform | Location |
-|---|---|
-| Windows | `%APPDATA%\pdfxlate\config.yaml` |
-| macOS | `~/Library/Application Support/pdfxlate/config.yaml` |
-| Linux | `$XDG_CONFIG_HOME/pdfxlate/config.yaml` (default `~/.config/pdfxlate/`) |
-
-The desktop app uses Electron's `userData` directory, which resolves to the same
-place. A commented template is written on first run.
+`config.yaml` lives in `%APPDATA%\pdfxlate\config.yaml`. The desktop app uses
+Electron's `userData` directory, which resolves to the same place. A commented
+template is written on first run.
 
 ```yaml
 # This file describes what exists; it does not say which one to use. The model
@@ -396,9 +383,8 @@ points it at the npmmirror binary mirror by default because `github.com` release
 assets are unreachable from some networks; override with
 `ELECTRON_BUILDER_BINARIES_MIRROR` if you prefer another mirror.
 
-PyInstaller output is platform-specific, so each target must be built on its own
-OS. Signing is not configured: unsigned builds trigger SmartScreen on Windows and
-Gatekeeper on macOS.
+PyInstaller output is platform-specific, so build the installer on Windows.
+Signing is not configured: unsigned builds trigger SmartScreen.
 
 ## Tests
 
@@ -406,9 +392,9 @@ Tests and static checks need the dev extras (pytest, ruff, PyInstaller):
 
 ```bash
 cd python
-.venv/bin/pip install -e '.[dev]'      # Windows: .venv\Scripts\pip install -e ".[dev]"
-.venv/bin/python -m pytest ../tests -q # Windows: .venv\Scripts\python -m pytest ..\tests -q
-.venv/bin/ruff check ..                # Windows: .venv\Scripts\ruff check ..
+.venv/Scripts/pip install -e '.[dev]'
+.venv/Scripts/python -m pytest ../tests -q
+.venv/Scripts/ruff check ..
 cd ..
 ```
 
@@ -426,8 +412,9 @@ SSE), configuration and migration, cache and placeholders, layout and
 typesetting, the sidecar protocol and cancellation, and the two-phase MCP flow.
 Renderer logic is unit-tested with Vitest + jsdom: helpers (including sidebar
 clamping), the i18n tables and the message slots. There is still no end-to-end
-UI automation, so interaction changes are verified by hand and with DevTools. CI (`.github/workflows/ci.yml`) runs Ruff and pytest on Ubuntu and
-Windows, and the TypeScript checks, frontend tests and build on Ubuntu.
+UI automation, so interaction changes are verified by hand and with DevTools.
+CI (`.github/workflows/ci.yml`) runs Ruff, pytest, the TypeScript checks, the
+frontend tests and the build on Windows.
 
 ## Limitations and troubleshooting
 
@@ -446,7 +433,7 @@ Windows, and the TypeScript checks, frontend tests and build on Ubuntu.
   handled by the viewer, while the border around it is handled by the app.
 - **First run is slow:** the ~75 MB layout model is downloaded, retrying another
   endpoint if the first fails.
-- **SmartScreen / Gatekeeper:** see [Download and install](#download-and-install).
+- **SmartScreen:** see [Download and install](#download-and-install).
 
 ## Contributing
 

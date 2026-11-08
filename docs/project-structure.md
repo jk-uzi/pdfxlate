@@ -85,7 +85,7 @@ pdfxlate/
 ├── .env.example                     环境变量名清单（不含值）
 ├── .npmrc                           Electron 二进制下载镜像
 ├── package.json                     Electron / electron-builder 依赖与构建脚本
-├── electron-builder.yml             三平台打包配置（Windows：NSIS）
+├── electron-builder.yml             Windows 打包配置（NSIS）
 ├── LICENSE                          AGPL-3.0 全文（安装包与 asar 都会带上）
 ├── tsconfig.node.json               主进程 / preload 的 TS 配置
 ├── tsconfig.renderer.json           渲染进程的 TS 配置
@@ -205,8 +205,7 @@ pdfxlate/
 `--config-dir` 或环境变量 `PDFXLATE_CONFIG_DIR` **只覆盖 config**（Electron 传
 `app.getPath('userData')`），cache 与 assets 始终走平台默认位置——这样 CLI 与
 桌面端共享同一份下载资源，不会各下一份 75 MB 模型。
-平台默认：Windows `%APPDATA%`、macOS `~/Library/Application Support`、
-Linux `~/.config` + `~/.cache`。
+平台默认：Windows `%APPDATA%`。
 
 **`config.py`** — `AppConfig`（`providers` / `agents` / `translation` / `layout` / `cache` /
 `ocr`）、`Provider`、`ModelEntry`、`AgentSettings`、
@@ -1223,9 +1222,8 @@ key 名与渲染进程的 `dialog.*` 保持一致，便于人工对照。
 ## 五、测试与检查
 
 ```bash
-# Windows 的 venv 是 .venv/Scripts/python.exe，macOS/Linux 是 .venv/bin/python
-python/.venv/bin/python -m pytest tests/ -q          # Python，当前 584 passed
-python/.venv/bin/python -m pytest tests/ -q -k cache # 单个方向
+python/.venv/Scripts/python -m pytest tests/ -q          # Python，当前 584 passed
+python/.venv/Scripts/python -m pytest tests/ -q -k cache # 单个方向
 npm run typecheck                                    # 前端与测试的类型检查
 npm run test:frontend                                # Vitest + jsdom，28 个用例
 npm run check:i18n                                   # 中英文字符串表一致性
@@ -1329,8 +1327,7 @@ gitleaks detect                            # 扫 git 历史
 - **字体渲染已确认**：中文以真实字形渲染，非空白方块（曾是最担心的风险点）。
 - **端到端已跑通**：上游样例 `translate.cli.plain.text.pdf` 与真实 arXiv 文献
   （Attention Is All You Need，15 页）均产出 mono + dual。
-- **打包已验证**：Linux AppImage（253 MB）实机运行，包内 sidecar 正常拉起，
-  打包产物能完成真实翻译任务。
+- **打包已验证**：Windows NSIS 安装包（186 MB）已构建成功，打包产物包含 sidecar。
 - **真实 API 调用已验证**：用本地 mock OpenAI 兼容服务确认 `reasoning_effort`
   与 `extra_body` 确实进入请求体、`Authorization` 头正确。
 - **排版适配已量化验证**（2026-10-16）：双栏 BERT 论文 16 页 / 253 段，用译文长度

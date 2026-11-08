@@ -7,7 +7,7 @@
 
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/jk-uzi/pdfxlate)](https://github.com/jk-uzi/pdfxlate/releases)
-[![Platform](https://img.shields.io/badge/platform-Windows%20x64%20%7C%20Linux-lightgrey)]()
+[![Platform](https://img.shields.io/badge/platform-Windows%20x64-lightgrey)]()
 
 ![pdfxlate 界面：左侧文件列表与选项，右侧译文预览](docs/images/screenshot.png)
 
@@ -72,9 +72,6 @@
 - 如果启动时报 ONNX Runtime 的 DLL 加载失败，安装
   [Microsoft Visual C++ 运行库](https://aka.ms/vs/17/release/vc_redist.x64.exe)。
 
-Linux 与 macOS 的打包配置已在仓库里，但当前只实际构建并验证过 Windows 安装包与
-Linux AppImage；macOS 安装包尚未验证，需要自行构建。
-
 ## 从源码运行
 
 需要 Node.js 18+ 与 Python 3.11–3.12。
@@ -83,8 +80,7 @@ Linux AppImage；macOS 安装包尚未验证，需要自行构建。
 # 1. Python 引擎
 cd python
 python -m venv .venv
-.venv/bin/pip install -e .            # macOS / Linux
-# .venv\Scripts\pip install -e .      # Windows
+.venv/Scripts/pip install -e .
 cd ..
 
 # 2. 桌面端
@@ -171,8 +167,7 @@ pdfxlate 可以作为 [Model Context Protocol](https://modelcontextprotocol.io) 
 
 ```bash
 cd python
-.venv/Scripts/pip install -e ".[mcp]"    # Windows
-.venv/bin/pip install -e ".[mcp]"        # macOS / Linux
+.venv/Scripts/pip install -e ".[mcp]"
 ```
 
 手工配置示例（Windows 用 `.venv\Scripts\python.exe`）：
@@ -214,15 +209,8 @@ MCP 服务是独立的 stdio 进程，共享配置、缓存与已下载的资源
 
 ## 配置
 
-`config.yaml` 位于平台配置目录：
-
-| 平台 | 位置 |
-|---|---|
-| Windows | `%APPDATA%\pdfxlate\config.yaml` |
-| macOS | `~/Library/Application Support/pdfxlate/config.yaml` |
-| Linux | `$XDG_CONFIG_HOME/pdfxlate/config.yaml`（默认 `~/.config/pdfxlate/`） |
-
-桌面端使用 Electron 的 `userData` 目录，位置相同。首次启动会写出一份带注释的模板。
+`config.yaml` 位于 `%APPDATA%\pdfxlate\config.yaml`。桌面端使用 Electron 的
+`userData` 目录，位置相同。首次启动会写出一份带注释的模板。
 
 ```yaml
 # 这个文件描述「有哪些」，不指定「用哪个」。每次运行单独选模型（选项面板、
@@ -354,8 +342,8 @@ bash scripts/build.sh          # Windows 上用 Git Bash
 binary 镜像指向 npmmirror，因为在部分网络下 `github.com` 的 release 资源不可达；可以
 用 `ELECTRON_BUILDER_BINARIES_MIRROR` 换成别的镜像。
 
-PyInstaller 的产物与平台绑定，每个目标平台都要在对应系统上构建。签名尚未配置：未签名
-的产物在 Windows 上会触发 SmartScreen，在 macOS 上会触发 Gatekeeper。
+PyInstaller 的产物与平台绑定，安装包需要在 Windows 上构建。签名尚未配置：未签名的
+安装包会触发 SmartScreen。
 
 ## 测试
 
@@ -363,9 +351,9 @@ PyInstaller 的产物与平台绑定，每个目标平台都要在对应系统�
 
 ```bash
 cd python
-.venv/bin/pip install -e '.[dev]'      # Windows: .venv\Scripts\pip install -e ".[dev]"
-.venv/bin/python -m pytest ../tests -q # Windows: .venv\Scripts\python -m pytest ..\tests -q
-.venv/bin/ruff check ..                # Windows: .venv\Scripts\ruff check ..
+.venv/Scripts/pip install -e '.[dev]'
+.venv/Scripts/python -m pytest ../tests -q
+.venv/Scripts/ruff check ..
 cd ..
 ```
 
@@ -381,8 +369,8 @@ npm run check:i18n      # 中英文案表必须键、占位符、取值一一对
 Python 侧的测试覆盖适配器（对着本地真实 HTTP 服务，含 SSE）、配置与迁移、缓存与占位符、
 版面与排版、sidecar 协议与取消、MCP 两段式流程等。渲染进程的单元测试用 Vitest + jsdom，
 覆盖纯函数（含侧栏宽度夹取）、i18n 表与消息插槽；界面仍没有端到端自动化，交互改动靠手工
-与 DevTools 验证。CI（`.github/workflows/ci.yml`）在 Ubuntu 与 Windows 上跑 Ruff 和
-pytest，在 Ubuntu 上跑 TypeScript 检查、前端测试与构建。
+与 DevTools 验证。CI（`.github/workflows/ci.yml`）在 Windows 上跑 Ruff、pytest、
+TypeScript 检查、前端测试与构建。
 
 ## 已知限制与排错
 
@@ -397,7 +385,7 @@ pytest，在 Ubuntu 上跑 TypeScript 检查、前端测试与构建。
   外层页面无法脚本化它。因此页码以应用自己记录的为准；直接拖到预览页面上的文件会被
   查看器接管，拖到四周边框才会由应用处理。
 - **首次运行慢**：需要下载约 75 MB 的版面模型；下载失败会自动换另一个入口重试。
-- **SmartScreen / Gatekeeper**：见 [下载与安装](#下载与安装)。
+- **SmartScreen**：见 [下载与安装](#下载与安装)。
 
 ## 参与贡献
 

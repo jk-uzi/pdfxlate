@@ -33,13 +33,6 @@ extraResources:
     filter:
       - "**/*"
 
-# --- Linux -----------------------------------------------------------------
-linux:
-  target:
-    - AppImage
-  category: Office
-  synopsis: Translate PDF documents while preserving their layout
-
 # --- Windows ---------------------------------------------------------------
 win:
   target:
@@ -57,13 +50,3 @@ nsis:
   # Shows the AGPL notice before installing. The path is relative to the
   # project root (or buildResources); electron-builder accepts plain text.
   license: LICENSE
-
-# --- macOS -----------------------------------------------------------------
-mac:
-  target:
-    - dmg
-  category: public.app-category.productivity
-  # Unsigned builds are blocked by Gatekeeper; notarisation needs a Developer
-  # ID certificate. Remove the line below once signing is configured.
-  identity: null
-  hardenedRuntime: false

@@ -15,12 +15,8 @@ concurrency:
 
 jobs:
   python:
-    name: Python (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
+    name: Python
+    runs-on: windows-latest
     defaults:
       run:
         working-directory: python
@@ -48,7 +44,7 @@ jobs:
 
   node:
     name: Node
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
