@@ -289,6 +289,23 @@ let lastProfileMessage: {
   params?: Record<string, string>;
   error: boolean;
 } | null = null;
+/**
+ * Messages for the two inline add rows.
+ *
+ * Separate from `lastProfileMessage`: that one is painted at the bottom of the
+ * provider detail, which does not exist until a provider does. Validation for
+ * the add-provider row would then be written into a hidden element.
+ */
+let lastProviderAddMessage: {
+  key: string;
+  params?: Record<string, string>;
+  error: boolean;
+} | null = null;
+let lastModelAddMessage: {
+  key: string;
+  params?: Record<string, string>;
+  error: boolean;
+} | null = null;
 
 // Last `providers.list` summary and the full `config.get` document the model
 // editor works against. The summary drives the two selectors and the API-key
@@ -679,6 +696,8 @@ onLocaleChange(() => {
   renderDownloadButton();
   paintProgress();
   paintProfileMessage();
+  paintProviderAddMessage();
+  paintModelAddMessage();
   renderProviderList();
   renderModelList();
   renderOptionModels();
@@ -2783,6 +2802,9 @@ function providerState(name: string): "ready" | "incomplete" | "empty" {
 function selectProvider(name: string): void {
   if (name === editingProvider) return;
   // Preserve whatever is in the editor before the provider changes under it.
+  // The provider-level fields are part of that: they are held in the DOM until
+  // a commit, and repainting them for the next provider would discard the edit.
+  if (editingProvider) commitProviderFields(editingProvider);
   commitOpenEditor();
   editingProvider = name;
   editingModel = pickModel(name);
@@ -2997,8 +3019,10 @@ function commitOpenEditor(): void {
 async function setModelEnabled(alias: string, enabled: boolean): Promise<void> {
   const provider = editingProvider;
   if (!provider) return;
-  // Commit first so a pending edit in the open editor is not overwritten by
-  // the reload that follows the save.
+  // Commit first so pending edits are not overwritten by the reload that
+  // follows the save. That includes the provider fields, which the switch
+  // itself does not touch but the reload does repaint.
+  commitProviderFields(provider);
   commitOpenEditor();
   const entry = draftProviders()[provider]?.models?.[alias];
   if (!entry) return;
@@ -3011,6 +3035,10 @@ async function removeModel(alias: string): Promise<void> {
   const provider = editingProvider;
   if (!provider) return;
   if (!confirm(t("model.removeModelConfirm", { name: alias }))) return;
+  // The reload after the save repaints both editors; keep whatever is open
+  // before mutating the draft.
+  commitProviderFields(provider);
+  commitOpenEditor();
   const prov = draftProviders()[provider];
   if (prov?.models) delete prov.models[alias];
   if (expandedModel === alias) expandedModel = null;
@@ -3289,38 +3317,96 @@ function setProfileMessage(
   paintProfileMessage();
 }
 
+function paintProviderAddMessage(): void {
+  const msg = $("provider-add-msg");
+  msg.textContent = lastProviderAddMessage
+    ? t(lastProviderAddMessage.key, lastProviderAddMessage.params)
+    : "";
+  msg.className = lastProviderAddMessage?.error ? "msg msg--error" : "msg";
+}
+
+function setProviderAddMessage(
+  key: string,
+  params?: Record<string, string>,
+  error = false,
+): void {
+  lastProviderAddMessage = key ? { key, params, error } : null;
+  paintProviderAddMessage();
+}
+
+function paintModelAddMessage(): void {
+  const msg = $("model-add-msg");
+  msg.textContent = lastModelAddMessage
+    ? t(lastModelAddMessage.key, lastModelAddMessage.params)
+    : "";
+  msg.className = lastModelAddMessage?.error ? "msg msg--error" : "msg";
+}
+
+function setModelAddMessage(
+  key: string,
+  params?: Record<string, string>,
+  error = false,
+): void {
+  lastModelAddMessage = key ? { key, params, error } : null;
+  paintModelAddMessage();
+}
+
+/**
+ * Show or hide the inline provider form.
+ *
+ * The "+" in the list heading and the empty state's button are two entry
+ * points to this one form, which lives in the providers column. The empty
+ * state's button has to follow the form's state: leaving it visible while the
+ * form is open makes the click look like it did nothing, because the result is
+ * in the other column.
+ */
+function setProviderAddOpen(open: boolean): void {
+  $("provider-add").classList.toggle("hidden", !open);
+  $("btn-add-provider-empty").classList.toggle("hidden", open);
+  $("btn-add-provider").setAttribute("aria-expanded", String(open));
+  setProviderAddMessage("");
+  if (!open) return;
+  const input = $<HTMLInputElement>("new-provider-name");
+  input.focus();
+  input.select();
+}
+
 $("btn-add-provider").addEventListener("click", () => {
-  const box = $("provider-add");
-  box.classList.toggle("hidden");
-  if (!box.classList.contains("hidden")) {
-    $<HTMLInputElement>("new-provider-name").focus();
-  }
+  setProviderAddOpen($("provider-add").classList.contains("hidden"));
 });
 
 $("btn-add-provider-empty").addEventListener("click", () => {
-  $("provider-add").classList.remove("hidden");
-  $<HTMLInputElement>("new-provider-name").focus();
+  setProviderAddOpen(true);
 });
 
 $("btn-add-provider-confirm").addEventListener("click", () => {
   const input = $<HTMLInputElement>("new-provider-name");
   const name = input.value.trim();
   if (!name) {
-    setProfileMessage("model.nameRequired", undefined, true);
+    setProviderAddMessage("model.nameRequired", undefined, true);
+    input.focus();
     return;
   }
   const providers = draftProviders();
   if (providers[name]) {
-    setProfileMessage("model.providerExists", { name }, true);
+    setProviderAddMessage("model.providerExists", { name }, true);
+    input.focus();
+    input.select();
     return;
   }
+  // Adding saves the whole draft and then reloads it. The endpoint and key
+  // fields only live in the DOM until committed, so commit them (and the open
+  // model editor) first; otherwise the reload repaints the stale draft over
+  // what was just typed.
+  if (editingProvider) commitProviderFields(editingProvider);
+  commitOpenEditor();
   providers[name] = {
     kind: "openai_compat",
     base_url: null,
     models: {},
   };
   input.value = "";
-  $("provider-add").classList.add("hidden");
+  setProviderAddOpen(false);
   editingProvider = name;
   editingModel = null;
   expandedModel = null;
@@ -3331,8 +3417,16 @@ $("btn-add-provider-confirm").addEventListener("click", () => {
   void saveConfig("model.saved");
 });
 
+$("new-provider-name").addEventListener("input", () => setProviderAddMessage(""));
+
 $("new-provider-name").addEventListener("keydown", (event) => {
-  if ((event as KeyboardEvent).key === "Enter") $("btn-add-provider-confirm").click();
+  const key = (event as KeyboardEvent).key;
+  if (key === "Enter") {
+    $("btn-add-provider-confirm").click();
+  } else if (key === "Escape") {
+    event.preventDefault();
+    setProviderAddOpen(false);
+  }
 });
 
 /**
@@ -3480,6 +3574,12 @@ async function renameProvider(oldName: string, rawName: string): Promise<boolean
   }
   if (!providers[oldName]) return false;
 
+  // The rename saves and reloads the draft, and the form still holds the old
+  // provider's values in the DOM. Commit them first, or the reload repaints
+  // the stored endpoint/key over what the user just typed.
+  commitProviderFields(oldName);
+  commitOpenEditor();
+
   const rebuilt: Record<string, ProviderDraft> = {};
   for (const [name, value] of Object.entries(providers)) {
     rebuilt[name === oldName ? newName : name] = value;
@@ -3615,12 +3715,19 @@ $("btn-remove-provider").addEventListener("click", () => {
   void saveConfig("model.saved");
 });
 
+/** Show or hide the inline model form, clearing a previous error either way. */
+function setModelAddOpen(open: boolean): void {
+  $("model-add").classList.toggle("hidden", !open);
+  $("btn-add-model").setAttribute("aria-expanded", String(open));
+  setModelAddMessage("");
+  if (!open) return;
+  const input = $<HTMLInputElement>("new-model-name");
+  input.focus();
+  input.select();
+}
+
 $("btn-add-model").addEventListener("click", () => {
-  const box = $("model-add");
-  box.classList.toggle("hidden");
-  if (!box.classList.contains("hidden")) {
-    $<HTMLInputElement>("new-model-name").focus();
-  }
+  setModelAddOpen($("model-add").classList.contains("hidden"));
 });
 
 // --- importing models from the upstream catalogue --------------------------
@@ -3847,9 +3954,11 @@ $("btn-models-import").addEventListener("click", (event) => {
 });
 
 $("btn-add-model-confirm").addEventListener("click", () => {
-  const name = $<HTMLInputElement>("new-model-name").value.trim();
+  const input = $<HTMLInputElement>("new-model-name");
+  const name = input.value.trim();
   if (!name) {
-    setProfileMessage("model.nameRequired", undefined, true);
+    setModelAddMessage("model.nameRequired", undefined, true);
+    input.focus();
     return;
   }
   const provider = editingProvider;
@@ -3857,19 +3966,25 @@ $("btn-add-model-confirm").addEventListener("click", () => {
     setProfileMessage("model.noProvider", undefined, true);
     return;
   }
-  const providers = draftProviders();
-  const prov = providers[provider];
-  if (!prov) return;
-  if (!prov.models) prov.models = {};
-  if (prov.models[name]) {
-    setProfileMessage("model.modelExists", { name }, true);
+  if (draftProviders()[provider]?.models?.[name]) {
+    setModelAddMessage("model.modelExists", { name }, true);
+    input.focus();
+    input.select();
     return;
   }
+  // The save below writes the whole draft and then reloads it. Commit the
+  // provider fields and the open model editor first, or the reload would show
+  // the stored values again and the edits would be gone.
+  commitProviderFields(provider);
+  commitOpenEditor();
+  const prov = draftProviders()[provider];
+  if (!prov) return;
+  if (!prov.models) prov.models = {};
   // A new model defaults to its alias as the API model id, matching the
   // backend's own fill-in behaviour.
   prov.models[name] = { model: name, temperature: 0 };
-  $<HTMLInputElement>("new-model-name").value = "";
-  $("model-add").classList.add("hidden");
+  input.value = "";
+  setModelAddOpen(false);
   editingModel = name;
   expandedModel = name;
   renderModelList();
@@ -3877,8 +3992,16 @@ $("btn-add-model-confirm").addEventListener("click", () => {
   void saveConfig("model.saved");
 });
 
+$("new-model-name").addEventListener("input", () => setModelAddMessage(""));
+
 $("new-model-name").addEventListener("keydown", (event) => {
-  if ((event as KeyboardEvent).key === "Enter") $("btn-add-model-confirm").click();
+  const key = (event as KeyboardEvent).key;
+  if (key === "Enter") {
+    $("btn-add-model-confirm").click();
+  } else if (key === "Escape") {
+    event.preventDefault();
+    setModelAddOpen(false);
+  }
 });
 
 $("btn-editor-close").addEventListener("click", () => {

@@ -941,14 +941,33 @@ body {
 
 /* Inline "name + add" row, used by both provider and model add buttons. */
 .add-inline {
-  display: flex;
-  gap: 6px;
   margin: 0 4px 8px;
 }
 
-.add-inline input {
+.add-inline__row {
+  display: flex;
+  gap: 6px;
+}
+
+.add-inline__row input {
   flex: 1 1 auto;
   min-width: 0;
+}
+
+/*
+ * Validation errors sit under the row they belong to. The shared `model-msg`
+ * lives at the bottom of the detail column: that whole column is hidden while
+ * no provider exists, and even with one it can be scrolled out of view, so an
+ * add attempt would look like it silently did nothing.
+ */
+.add-inline .msg {
+  display: block;
+  margin-top: 4px;
+}
+
+/* An empty message should not leave a gap of its own. */
+.add-inline .msg:empty {
+  display: none;
 }
 
 .icon-btn--bare {
