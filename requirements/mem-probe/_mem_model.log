@@ -1,0 +1,11 @@
+bare                        18.4 MB
++numpy+cv2                  34.1 MB
++onnxruntime                54.3 MB
+model file                  71.8 MB on disk
+onnx.load(no data)         144.7 MB
+after del                   72.0 MB
+session (ORT_ENABLE_ALL)   161.3 MB   <-- model resident
+  infer 0                  303.5 MB
+  infer 1                  409.5 MB
+  infer 2                  409.5 MB
+after del session          330.9 MB

@@ -42,6 +42,16 @@ _BACKEND_PROVIDERS = {
 
 _preferred_backend: str | None = None
 
+# ONNX Runtime's CPU memory arena caches allocations between inference calls.
+# That is a speed optimisation whose cost is resident memory which never
+# shrinks: measured on this project's DocLayout model, three consecutive runs
+# grow the process by ~235 MB with the arena on versus ~6 MB with it off, and
+# the peak drops from ~400 MB to ~174 MB (about 227 MB saved).  In exchange,
+# one page takes about 1.1 s instead of 0.6 s.  Off is the default so a
+# finished job does not leave that memory pinned; a machine with memory to
+# spare can switch it back on through ``layout.cpu_mem_arena``.
+_memory_arena: bool = False
+
 
 def set_backend(name: str) -> None:
     """Set the ONNX Runtime execution provider backend.
@@ -51,6 +61,18 @@ def set_backend(name: str) -> None:
     """
     global _preferred_backend
     _preferred_backend = None if name == "auto" else name
+
+
+def set_memory_arena(enabled: bool) -> None:
+    """Enable or disable ONNX Runtime's CPU memory arena.
+
+    Args:
+        enabled: ``True`` trades roughly 227 MB of resident memory for about
+            half the per-page inference time (measured on the DocLayout
+            model).  Applies to models constructed after the call.
+    """
+    global _memory_arena
+    _memory_arena = enabled
 
 
 class DocLayoutModel(abc.ABC):
@@ -102,6 +124,8 @@ class OnnxModel(DocLayoutModel):
         del model
 
         sess_options = onnxruntime.SessionOptions()
+        # See _memory_arena: the arena is memory that outlives the run.
+        sess_options.enable_cpu_mem_arena = _memory_arena
         sess_options.graph_optimization_level = (
             onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
         )

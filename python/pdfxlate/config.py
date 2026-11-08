@@ -328,6 +328,12 @@ class TranslationSettings(BaseModel):
 
 class LayoutSettings(BaseModel):
     backend: Backend = "auto"
+    # ONNX Runtime's CPU memory arena caches allocations across inference
+    # calls.  Measured on the DocLayout model, enabling it costs roughly
+    # 227 MB of resident memory but halves the per-page inference time
+    # (about 1.1 s -> 0.6 s).  Off by default to keep the idle footprint
+    # down; enable it on a machine where speed matters more than memory.
+    cpu_mem_arena: bool = False
     # Override the downloaded DocLayout model path.
     model_path: str | None = None
 

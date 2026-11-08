@@ -1,0 +1,9 @@
+file on disk        46.55 MB   rss    89.9
+Document(stream)                rss    90.4
++2nd Document                   rss    90.4
++save->BytesIO      46.55 MB   rss   137.4
++Document(from B)               rss   137.3
++tobytes()          46.55 MB   rss   183.9
++2nd tobytes()      46.55 MB   rss   230.4
+  ==> 同时持有 146424321.0 MB 的字节副本
+after close+del                 rss   137.4

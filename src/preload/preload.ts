@@ -5,7 +5,6 @@
  */
 
 import { contextBridge, ipcRenderer, webUtils } from "electron";
-import { pathToFileURL } from "node:url";
 
 export interface OutputPair {
   mono: string;
@@ -146,15 +145,14 @@ const api = {
     ipcRenderer.invoke("shell:openExternal", target),
 
   /**
-   * Absolute filesystem path -> `file://` URL, for the PDF preview iframe.
+   * Read a PDF's bytes for the pdf.js preview.
    *
-   * A pure conversion, not an IPC round trip: the renderer is sandboxed with
-   * `contextIsolation` and has no access to Node's `url` module, so the
-   * conversion has to be handed to it. Windows paths in particular cannot be
-   * built by hand — `pathToFileURL` handles the drive letter, backslashes and
-   * percent-encoding.
+   * The renderer cannot `fetch('file://…')`: its origin is opaque, so CORS
+   * refuses the response. The main process reads the file and returns an
+   * ArrayBuffer through structured clone. Read-only, and only `.pdf` files.
    */
-  fileUrl: (target: string): string => pathToFileURL(target).href,
+  readPdf: (target: string): Promise<ArrayBuffer> =>
+    ipcRenderer.invoke("app:readPdf", target),
 
   /**
    * Absolute path of a dropped `File`.

@@ -69,6 +69,21 @@ OUTPUT_BOTH = "both"
 OUTPUT_MODES = (OUTPUT_MONO, OUTPUT_DUAL, OUTPUT_BOTH)
 
 
+def _mask_dtype(region_count: int) -> np.dtype:
+    """Smallest unsigned dtype for a layout mask with ``region_count`` regions.
+
+    A mask holds ``0`` (preserve the page area verbatim) and the labels
+    ``2 .. region_count + 1``, so its largest value is one past the region
+    count.  uint8 therefore covers up to 254 regions (label 255); from 255
+    regions on the next label would overflow, so switch to uint16.
+
+    These masks are kept for the whole document, which makes the width worth
+    choosing: a 1236x1582 page is 3.8 MB as the old float64 array and 0.5 MB
+    as uint8.
+    """
+    return np.dtype(np.uint8) if region_count < 255 else np.dtype(np.uint16)
+
+
 def _selected_pages(pages: Optional[list[int]], page_count: int) -> Optional[list[int]]:
     """Normalise a page selection, or ``None`` when everything is included.
 
@@ -124,6 +139,39 @@ def check_files(files: list[str]) -> list[str]:
     return [f for f in files if not os.path.exists(f)]
 
 
+class _FileSink:
+    """A stream view of an open file that hides its ``name`` from PyMuPDF.
+
+    ``Document.save()`` treats any object carrying a ``name`` attribute as a
+    path: it opens a second handle and writes there.  On Windows the original
+    ``tempfile.TemporaryFile()`` handle then does not see those bytes (a fresh
+    open of the same path does), so pdfminer would parse an empty working
+    copy.  Exposing only the stream protocol makes PyMuPDF use the handle we
+    actually read from.
+    """
+
+    def __init__(self, file: BinaryIO) -> None:
+        self._file = file
+
+    def write(self, data) -> int:
+        return self._file.write(data)
+
+    def read(self, size: int = -1) -> bytes:
+        return self._file.read(size)
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        return self._file.seek(offset, whence)
+
+    def tell(self) -> int:
+        return self._file.tell()
+
+    def truncate(self) -> int:
+        return self._file.truncate()
+
+    def flush(self) -> None:
+        self._file.flush()
+
+
 def _save_document(doc: Document, target, **options) -> None:
     """Save ``doc`` to a stream or path, tolerating mildly broken PDFs.
 
@@ -144,8 +192,10 @@ def _save_document(doc: Document, target, **options) -> None:
             target.seek(0)
             target.truncate()
     # garbage=4 removes unreachable objects and renumbers, which drops the
-    # dangling reference that breaks the plain write.
-    doc.save(target, garbage=4, clean=True, deflate=True, **options)
+    # dangling reference that breaks the plain write.  Build the fallback by
+    # overriding, not by repeating keywords, so callers may pass garbage=.
+    fallback = {**options, "garbage": 4, "clean": True, "deflate": True}
+    doc.save(target, **fallback)
 
 
 def translate_patch(
@@ -251,7 +301,12 @@ def translate_patch(
                         cancellation_event,
                     )
                     continue
-                box = np.ones((pix.height, pix.width))
+                # uint8 unless the page has 255+ translatable regions; the
+                # mask is kept for the whole job, so its width matters.
+                box = np.ones(
+                    (pix.height, pix.width),
+                    dtype=_mask_dtype(len(page_layout.boxes)),
+                )
                 h, w = box.shape
                 vcls = [
                     "abandon",
@@ -427,6 +482,8 @@ def translate_stream(
     progress: ProgressFn = None,
     ocr_settings=None,
     output_mode: str = OUTPUT_BOTH,
+    _mono_sink: Optional[BinaryIO] = None,
+    _dual_sink: Optional[BinaryIO] = None,
     **kwarg: Any,
 ):
     """Translate a PDF given as bytes.
@@ -443,11 +500,80 @@ def translate_stream(
     range is a request for that part of the paper, so a range of 2-3 is a
     two-page result — not the whole document with the other pages left
     untranslated.
+
+    ``_mono_sink``/``_dual_sink`` are internal: :func:`translate` passes open
+    output files so the documents are saved straight to their final paths.  In
+    that mode the returned bytes are empty; the sinks receive the PDFs.
     """
     if output_mode not in OUTPUT_MODES:
         raise ValueError(
             f"output_mode must be one of {', '.join(OUTPUT_MODES)}; got {output_mode!r}"
         )
+    own_sinks = _mono_sink is None and _dual_sink is None
+    if own_sinks:
+        mono_sink: Optional[BinaryIO] = (
+            io.BytesIO() if output_mode in (OUTPUT_MONO, OUTPUT_BOTH) else None
+        )
+        dual_sink: Optional[BinaryIO] = (
+            io.BytesIO() if output_mode in (OUTPUT_DUAL, OUTPUT_BOTH) else None
+        )
+    else:
+        mono_sink, dual_sink = _mono_sink, _dual_sink
+
+    _translate_to_sinks(
+        stream,
+        translator,
+        mono_sink=mono_sink,
+        dual_sink=dual_sink,
+        pages=pages,
+        thread=thread,
+        vfont=vfont,
+        vchar=vchar,
+        callback=callback,
+        cancellation_event=cancellation_event,
+        model=model,
+        skip_subset_fonts=skip_subset_fonts,
+        ultrafast=ultrafast,
+        perf=perf,
+        progress=progress,
+        ocr_settings=ocr_settings,
+        output_mode=output_mode,
+    )
+    if not own_sinks:
+        return b"", b""
+    return (
+        mono_sink.getvalue() if mono_sink is not None else b"",
+        dual_sink.getvalue() if dual_sink is not None else b"",
+    )
+
+
+def _translate_to_sinks(
+    stream: bytes,
+    translator: ModelAdapter,
+    mono_sink: Optional[BinaryIO] = None,
+    dual_sink: Optional[BinaryIO] = None,
+    pages: Optional[list[int]] = None,
+    thread: int = 0,
+    vfont: str = "",
+    vchar: str = "",
+    callback: object = None,
+    cancellation_event: asyncio.Event = None,
+    model=None,
+    skip_subset_fonts: bool = False,
+    ultrafast: bool = False,
+    perf=None,
+    progress: ProgressFn = None,
+    ocr_settings=None,
+    output_mode: str = OUTPUT_BOTH,
+) -> None:
+    """Build the requested documents and write them into the given sinks.
+
+    The working copy handed to :func:`translate_patch` and the finished
+    documents both leave through streams: a ``BytesIO`` for the public
+    :func:`translate_stream`, a temporary file and the final output files for
+    :func:`translate`.  This is what keeps each full PDF from being held in
+    memory as well as on disk.
+    """
     if ultrafast and not thread:
         thread = 16
     own_perf = perf is None
@@ -527,30 +653,35 @@ def translate_stream(
 
     if perf:
         perf.step("font_resources")
-    fp = io.BytesIO()
-
-    _save_document(doc_zh, fp)
-    if perf:
-        perf.step("working_copy_save")
-    obj_patch: dict = translate_patch(
-        fp,
-        translator,
-        pages=pages,
-        vfont=vfont,
-        vchar=vchar,
-        thread=thread,
-        doc_zh=doc_zh,
-        noto_name=noto_name,
-        noto=noto,
-        callback=callback,
-        cancellation_event=cancellation_event,
-        model=model,
-        ocr_pages=ocr_pages,
-        ultrafast=ultrafast,
-        perf=perf,
-        text_items=text_items,
-        progress=progress,
-    )
+    # `translate_patch` needs a seekable binary stream, not a path.  A temporary
+    # file keeps this serialized working copy on disk instead of holding a
+    # second full copy of the document in memory.  `_FileSink` is required
+    # because Document.save() would otherwise write by path on Windows, leaving
+    # this handle unaware of the bytes pdfminer is about to read.
+    with tempfile.TemporaryFile() as raw_fp:
+        fp = _FileSink(raw_fp)
+        _save_document(doc_zh, fp)
+        if perf:
+            perf.step("working_copy_save")
+        obj_patch: dict = translate_patch(
+            fp,
+            translator,
+            pages=pages,
+            vfont=vfont,
+            vchar=vchar,
+            thread=thread,
+            doc_zh=doc_zh,
+            noto_name=noto_name,
+            noto=noto,
+            callback=callback,
+            cancellation_event=cancellation_event,
+            model=model,
+            ocr_pages=ocr_pages,
+            ultrafast=ultrafast,
+            perf=perf,
+            text_items=text_items,
+            progress=progress,
+        )
     if perf:
         perf.step("page_processing")
 
@@ -591,20 +722,18 @@ def translate_stream(
     if perf:
         perf.step("font_subset")
 
-    def serialize(doc: Document) -> bytes:
-        try:
-            return doc.write(deflate=True, garbage=3, use_objstms=1)
-        except Exception as exc:  # noqa: BLE001 - see _save_document
-            logger.warning("serialize failed (%s); retrying with aggressive cleanup", exc)
-            return doc.write(deflate=True, garbage=4, clean=True, use_objstms=1)
-
-    mono_bytes = serialize(doc_zh) if want_mono else b""
-    dual_bytes = serialize(doc_en) if want_dual else b""
+    # Write each finished document straight to its sink.  `_save_document`
+    # keeps the old "plain save, then garbage=4 retry" behaviour, so mildly
+    # broken PDFs are repaired the same way they were when this was a
+    # serialize-to-bytes step.
+    if want_mono and mono_sink is not None:
+        _save_document(doc_zh, mono_sink, deflate=True, garbage=3, use_objstms=1)
+    if want_dual and dual_sink is not None:
+        _save_document(doc_en, dual_sink, deflate=True, garbage=3, use_objstms=1)
     if perf:
         perf.step("pdf_serialize")
         if own_perf:
             perf.report()
-    return mono_bytes, dual_bytes
 
 
 def translate(
@@ -663,23 +792,6 @@ def translate(
         if perf:
             perf.step("input_read")
 
-        s_mono, s_dual = translate_stream(
-            s_raw,
-            translator=translator,
-            pages=pages,
-            thread=thread,
-            vfont=vfont,
-            vchar=vchar,
-            callback=callback,
-            cancellation_event=cancellation_event,
-            model=model,
-            skip_subset_fonts=skip_subset_fonts,
-            ultrafast=ultrafast,
-            perf=perf,
-            progress=progress,
-            ocr_settings=ocr_settings,
-            output_mode=output_mode,
-        )
         # An empty `output` means "beside the source": each file gets its own
         # `translated/` subfolder, so a job over files from several folders
         # keeps every output with the paper it came from.  Callers that want one
@@ -687,23 +799,82 @@ def translate(
         target = Path(output) if output else Path(file).resolve().parent / OUTPUT_SUBDIR
         target.mkdir(parents=True, exist_ok=True)
 
-        # Only the documents that were actually built, and never on top of an
-        # earlier result — a second run of the same paper adds a numbered copy.
-        sides = []
-        if s_mono:
-            sides.append(("-mono.pdf", s_mono))
-        if s_dual:
-            sides.append(("-dual.pdf", s_dual))
-        paths = _unique_paths(target, filename, [s for s, _ in sides]) if sides else {}
-        for suffix, data in sides:
-            Path(paths[suffix]).write_bytes(data)
+        # Decide the names *before* the translation and share one ` (n)` marker
+        # between the pair: an earlier result is never overwritten, and the two
+        # sides stay recognisable as a pair.  Knowing the paths up front lets
+        # the finished documents be saved straight into them.
+        suffixes = []
+        if output_mode in (OUTPUT_MONO, OUTPUT_BOTH):
+            suffixes.append("-mono.pdf")
+        if output_mode in (OUTPUT_DUAL, OUTPUT_BOTH):
+            suffixes.append("-dual.pdf")
+        paths = _unique_paths(target, filename, suffixes)
+
+        opened: dict[str, BinaryIO] = {}
+        sinks: dict[str, _FileSink] = {}
+        produced: dict[str, Path] = {}
+        failed = True
+        try:
+            for suffix in suffixes:
+                raw = open(paths[suffix], "wb")
+                opened[suffix] = raw
+                sinks[suffix] = _FileSink(raw)
+            s_mono, s_dual = translate_stream(
+                s_raw,
+                translator=translator,
+                pages=pages,
+                thread=thread,
+                vfont=vfont,
+                vchar=vchar,
+                callback=callback,
+                cancellation_event=cancellation_event,
+                model=model,
+                skip_subset_fonts=skip_subset_fonts,
+                ultrafast=ultrafast,
+                perf=perf,
+                progress=progress,
+                ocr_settings=ocr_settings,
+                output_mode=output_mode,
+                _mono_sink=sinks.get("-mono.pdf"),
+                _dual_sink=sinks.get("-dual.pdf"),
+            )
+            # The real implementation writes into the sinks and returns empty
+            # bytes.  A replacement (a test double, or a caller-supplied
+            # override) may return the documents instead; write those, but
+            # never a second time.
+            for suffix, data in (("-mono.pdf", s_mono), ("-dual.pdf", s_dual)):
+                sink = sinks.get(suffix)
+                if sink is None:
+                    continue
+                if data and sink.tell() == 0:
+                    sink.write(data)
+                if sink.tell() > 0:
+                    produced[suffix] = paths[suffix]
+            failed = False
+        finally:
+            for raw in opened.values():
+                raw.close()
+            if failed:
+                # Match the old write-only-after-success behaviour: a cancelled
+                # or failed job leaves no half-written result behind.
+                for suffix in opened:
+                    try:
+                        paths[suffix].unlink()
+                    except FileNotFoundError:
+                        pass
+                    except OSError:
+                        logger.warning(
+                            "could not remove partial output %s",
+                            paths[suffix],
+                            exc_info=True,
+                        )
         if perf:
             perf.step("output_write")
             perf.report()
         result_files.append(
             (
-                str(paths.get("-mono.pdf", "")),
-                str(paths.get("-dual.pdf", "")),
+                str(produced.get("-mono.pdf", "")),
+                str(produced.get("-dual.pdf", "")),
             )
         )
 

@@ -56,7 +56,6 @@ def layout_mask(page, items):
     x0, y0, x1, y1 = page.cropbox
     width, height = x1 - x0, y1 - y0
     shape = (math.ceil(height), math.ceil(width))
-    mask = np.zeros(shape, dtype=np.int32)
     regions = []
     # ponytail: proximity groups native text; use normal mode for complex layouts.
     for item in sorted(items, key=lambda i: (-i.y, i.x)):
@@ -87,6 +86,11 @@ def layout_mask(page, items):
                 break
         else:
             regions.append([rect, size, item.y])
+    # Same width rule as the model-driven mask in pipeline.py: labels run
+    # 2..len(regions)+1, so fewer than 255 regions always fit uint8.
+    from pdfxlate.pdf.pipeline import _mask_dtype
+
+    mask = np.zeros(shape, dtype=_mask_dtype(len(regions)))
     for label, (rect, _, _) in enumerate(regions, 2):
         left, bottom, right, top = rect
         h, w = mask.shape

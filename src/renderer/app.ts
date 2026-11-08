@@ -202,8 +202,8 @@ interface PdfxlateApi {
   openPath(target: string): Promise<void>;
   /** Open an `https:` link in the browser; the renderer cannot navigate. */
   openExternal(target: string): Promise<void>;
-  /** Absolute path -> `file://` URL. Synchronous: it is a pure conversion. */
-  fileUrl(target: string): string;
+  /** Read a PDF's bytes for the pdf.js preview; only `.pdf` files, read-only. */
+  readPdf(target: string): Promise<ArrayBuffer>;
   /** Absolute path of a dropped `File`; see the preload for why. */
   pathForFile(file: File): string;
   platform: string;
@@ -353,9 +353,10 @@ let previewZoom: number | ZoomMode = "fit-width";
  * Whether two pages are shown side by side.
  *
  * Global like the zoom, for the same reason: it describes how you read, not
- * which document you are reading. The built-in viewer has no spread mode of its
- * own (no fragment parameter selects one), so this is implemented by mounting a
- * second frame next to the first and stepping the page number by two.
+ * which document you are reading. pdf.js draws both pages in this document, so
+ * a spread is two viewer panes of the same loaded PDF, kept in step by page
+ * number and the fraction scrolled into that page — not by absolute pixels,
+ * which would drift as soon as the two pages differ in height.
  *
  * `page` keeps meaning "the first page of the spread", so turning the mode off
  * leaves you on a page that is actually on screen.
@@ -565,10 +566,9 @@ function restoreSidebarWidth(): void {
  * Drag the sidebar's edge to set its width.
  *
  * The move and release listeners are on `window`, not on the handle. The handle
- * is only 5px wide, and dragging means leaving it immediately — and once the
- * pointer is over the preview it is over an `<iframe>`, a separate document
- * whose events never reach this one. Listening on `window` keeps the gesture
- * alive across the whole width of the app.
+ * is only 5px wide, and dragging means leaving it immediately; listening on
+ * `window` keeps the gesture alive across the whole width of the app, including
+ * over the page canvas.
  *
  * `setPointerCapture` would be the other way to do this, but it does not take
  * effect under synthetic (and, in this app's case, real) pointer input here —
@@ -1527,27 +1527,8 @@ function activateTab(file: string): void {
   activeTab = file;
   renderTabs();
   renderFiles();
-  // Ask for the count only when this document has never been shown; the answer
-  // does not change while the app runs.
-  if (!pageState.has(file)) void refreshPageCount();
   updatePreviewControls();
   renderPreview();
-  // In spread mode this document may never have been combined into a spread
-  // file. Built after the first paint so switching tabs stays instant: until it
-  // arrives the pane shows a placeholder, not the wrong document.
-  if (spreadMode) void prepareSpreadFor(file);
-}
-
-/** Build a spread for `file` if needed, then repaint if it is still current. */
-async function prepareSpreadFor(file: string): Promise<void> {
-  try {
-    await ensureSpread(file);
-  } catch (err) {
-    appendLog(t("preview.spreadFailed", { error: String(err) }));
-    return;
-  }
-  // The tab may have changed while the engine was working.
-  if (activeTab === file && spreadMode) renderPreview();
 }
 
 function closeTab(file: string): void {
@@ -1555,17 +1536,10 @@ function closeTab(file: string): void {
   if (index < 0) return;
   openTabs.splice(index, 1);
   pageState.delete(file);
-  // The derived file is still on disk and cheap to reuse, but this map is only
-  // a session cache; dropping the entry keeps it from growing with every file
-  // ever opened.
-  spreadFiles.delete(file);
   if (activeTab === file) {
     // Prefer the tab to the right, which is where the one being closed was
     // pointing; fall back to the left, then to nothing open at all.
     activeTab = openTabs[index] ?? openTabs[index - 1] ?? null;
-    if (activeTab) {
-      if (!pageState.has(activeTab)) void refreshPageCount();
-    }
   }
   renderTabs();
   renderFiles();
@@ -1590,52 +1564,631 @@ function stateFor(file: string): { page: number; pages: number } {
   return state;
 }
 
-/** Ask the engine how many pages a document has. */
-async function refreshPageCount(): Promise<void> {
-  const file = activeTab;
-  if (!file) return;
-  try {
-    // `pdf.info` may be missing on an older engine; an unknown count is fine —
-    // the controls then show the page number alone.
-    const info = await api.request<{ pages: number }>("pdf.info", { path: file });
-    // The active tab may have changed while this was in flight.
-    if (!pageState.has(file)) return;
-    stateFor(file).pages = info.pages ?? 0;
-  } catch (err) {
-    stateFor(file).pages = 0;
-    appendLog(t("log.pageCountFailed", { error: String(err) }));
-  }
-  updatePreviewControls();
+// --- pdf.js engine ---------------------------------------------------------
+
+/**
+ * The slice of pdf.js this preview uses.
+ *
+ * `pdfjs-dist` ships ES modules, but this renderer is compiled by plain `tsc`
+ * into a native module loaded from `file://`, where bare specifiers do not
+ * resolve. The runtime is copied to `out/renderer/pdfjs/` by
+ * `scripts/copy-static.mjs` and imported by URL; these declarations keep the
+ * call sites typed without importing a browser-only package into the build.
+ */
+interface PdfViewport {
+  width: number;
+  height: number;
+}
+
+interface PdfRenderTask {
+  promise: Promise<void>;
+  cancel(): void;
+}
+
+interface PdfPage {
+  getViewport(params: { scale: number; rotation?: number }): PdfViewport;
+  render(params: {
+    canvasContext: CanvasRenderingContext2D;
+    viewport: PdfViewport;
+    background?: string;
+  }): PdfRenderTask;
+  cleanup(): void;
+}
+
+interface PdfDocument {
+  numPages: number;
+  getPage(page: number): Promise<PdfPage>;
+  /** Drop every page proxy the measurement pass created. */
+  cleanup(): Promise<void>;
+  destroy(): Promise<void>;
+}
+
+interface PdfJs {
+  getDocument(params: {
+    data: Uint8Array;
+    cMapUrl: string;
+    cMapPacked: boolean;
+    standardFontDataUrl: string;
+    isEvalSupported: boolean;
+  }): { promise: Promise<PdfDocument> };
+  GlobalWorkerOptions: { workerSrc: string };
+}
+
+/** Where copy-static put the pdf.js runtime, relative to this module. */
+const PDFJS_BASE = new URL("./pdfjs/", import.meta.url);
+
+let pdfjsLoading: Promise<PdfJs> | null = null;
+
+/** Load the copied pdf.js runtime once, pointing it at its copied worker. */
+function loadPdfJs(): Promise<PdfJs> {
+  pdfjsLoading ??= (async () => {
+    // A computed specifier keeps `tsc` from resolving a file that only exists
+    // after copy-static has run.
+    const pdfjs = (await import(
+      /* @vite-ignore */ new URL("pdf.min.mjs", PDFJS_BASE).href
+    )) as PdfJs;
+    pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+      "pdf.worker.min.mjs",
+      PDFJS_BASE,
+    ).href;
+    return pdfjs;
+  })();
+  return pdfjsLoading;
+}
+
+// --- page cache ------------------------------------------------------------
+
+/** Decoded pages kept at once: the visible page and its nearest neighbours. */
+const PAGE_CACHE_LIMIT = 3;
+/** Breathing room around a page inside its scroll pane, in CSS pixels. */
+const PAGE_MARGIN = 12;
+
+interface PageSize {
+  width: number;
+  height: number;
+}
+
+interface CachedPage {
+  index: number;
+  canvas: HTMLCanvasElement;
+  page: PdfPage;
+  task: PdfRenderTask | null;
+  scale: number;
+  stamp: number;
 }
 
 /**
- * Build the viewer URL for one file.
+ * Rendered pages, shared by both panes and keyed by page number.
  *
- * The fragment is what drives the built-in viewer: `toolbar=0&navpanes=0`
- * hides its own chrome (that is why the app can supply a toolbar of its own),
- * and `page` / `zoom` / `view` set the initial view.
- *
- * Fit-width maps to `zoom=page-width`, which this viewer honours. Fit-height
- * does NOT: `zoom=page-height` and `zoom=page-fit` are accepted but ignored in
- * this Chromium build, whereas `view=FitV` does resize the rendered page. So
- * the two fit modes use two different fragment parameters.
+ * Bounded at `PAGE_CACHE_LIMIT`. Evicting zeroes the canvas backing store and
+ * calls `page.cleanup()`, which is what returns the bitmap and the operator
+ * list to the browser; dropping the DOM node alone would keep both alive.
  */
-function viewerUrl(file: string, page: number): string {
-  const fragment =
-    previewZoom === "fit-width"
-      ? "zoom=page-width"
-      : previewZoom === "fit-height"
-        ? "view=FitV"
-        : `zoom=${previewZoom}`;
-  return `${api.fileUrl(file)}#toolbar=0&navpanes=0&page=${page}&${fragment}`;
+const pageCache = new Map<number, CachedPage>();
+let pageCacheStamp = 0;
+
+function dropCachedPage(entry: CachedPage): void {
+  try {
+    entry.task?.cancel();
+  } catch {
+    // The task may have settled between the check and the cancel.
+  }
+  entry.canvas.remove();
+  entry.canvas.width = 0;
+  entry.canvas.height = 0;
+  try {
+    entry.page.cleanup();
+  } catch {
+    // The page's document may already be destroyed; nothing is left to free.
+  }
+  if (pageCache.get(entry.index) === entry) pageCache.delete(entry.index);
+}
+
+function isRenderCancelled(err: unknown): boolean {
+  return (
+    err instanceof Error &&
+    (err.name === "RenderingCancelledException" || /cancell?ed/i.test(err.message))
+  );
+}
+
+// --- viewer panes ----------------------------------------------------------
+
+interface PageSlot {
+  /** 1-based PDF page number. */
+  index: number;
+  el: HTMLDivElement;
+  naturalWidth: number;
+  naturalHeight: number;
+  cssWidth: number;
+  cssHeight: number;
+  /** Offset from the top of the pane's scroll content, in CSS pixels. */
+  top: number;
+  scale: number;
+  /** Right-hand tail sheet after an odd final page; never rendered. */
+  blank: boolean;
+  pending: boolean;
+  /**
+   * Identifies the render currently owning this slot.
+   *
+   * A relayout cancels work in flight, and the cancelled render may already
+   * have handed the slot to a new one; only the owner may clear `pending` or
+   * retry, or two renders would race for the same node.
+   */
+  renderSeq: number;
+}
+
+interface Pane {
+  root: HTMLDivElement;
+  pages: HTMLDivElement;
+  slots: Map<number, PageSlot>;
+  order: PageSlot[];
+  /**
+   * The scrollTop a programmatic scroll is aiming for.
+   *
+   * Scroll events arrive asynchronously, so the pane that was moved by the
+   * other one has to recognise its own settle rather than treating it as user
+   * input and bouncing the sync back.
+   */
+  expectedScroll: number | null;
+  scrollFrame: number;
+}
+
+type ZoomValue = number | ZoomMode;
+
+/**
+ * One loaded document rendered by pdf.js.
+ *
+ * Single-page mode is one scrollable pane. Spread mode is two panes of the
+ * same document, each with its own scrollbar; they are kept in step by page
+ * number plus the fraction scrolled into that page. Absolute pixels would be
+ * wrong the moment facing pages differ in height.
+ */
+class PdfPreviewView {
+  readonly el: HTMLDivElement;
+  private readonly wrap: HTMLDivElement;
+  private readonly panes: Pane[] = [];
+  private readonly sizes: PageSize[];
+  private readonly doc: PdfDocument;
+  private readonly resizeObserver: ResizeObserver;
+  private zoom: ZoomValue;
+  private spread: boolean;
+  private destroyed = false;
+  private layoutEpoch = 0;
+  private layoutFrame = 0;
+  /** Called when scrolling changes the page in view; the app updates its state. */
+  onPageChange: ((page: number) => void) | null = null;
+
+  constructor(doc: PdfDocument, sizes: PageSize[], zoom: ZoomValue, spread: boolean) {
+    this.doc = doc;
+    this.sizes = sizes;
+    this.zoom = zoom;
+    this.spread = spread;
+    this.el = document.createElement("div");
+    this.el.className = "preview__viewer";
+    this.wrap = document.createElement("div");
+    this.wrap.className = "preview__panes";
+    this.el.append(this.wrap);
+    // Panel size changes (window, sidebar drag, settings pane closing) change
+    // every page's fit size, so the layout is recomputed rather than stretched.
+    this.resizeObserver = new ResizeObserver(() => this.scheduleRelayout());
+    this.resizeObserver.observe(this.wrap);
+    this.buildPanes();
+  }
+
+  /** Apply the current spread/zoom and jump back to `page` (the left page). */
+  configure(zoom: ZoomValue, spread: boolean, page: number): void {
+    if (this.destroyed) return;
+    this.zoom = zoom;
+    if (spread !== this.spread) {
+      this.spread = spread;
+      this.buildPanes();
+    }
+    this.relayout();
+    this.goToPage(page);
+  }
+
+  goToPage(page: number): void {
+    if (this.destroyed || !this.panes.length) return;
+    const first = Math.max(1, Math.min(page, this.doc.numPages));
+    this.panes.forEach((pane, index) => {
+      this.scrollToPosition(pane, first + index, 0);
+    });
+    this.renderAll();
+  }
+
+  destroy(): void {
+    if (this.destroyed) return;
+    this.destroyed = true;
+    this.layoutEpoch++;
+    this.resizeObserver.disconnect();
+    if (this.layoutFrame) cancelAnimationFrame(this.layoutFrame);
+    this.layoutFrame = 0;
+    for (const pane of this.panes) {
+      if (pane.scrollFrame) cancelAnimationFrame(pane.scrollFrame);
+      pane.root.remove();
+    }
+    this.panes.length = 0;
+    for (const entry of Array.from(pageCache.values())) dropCachedPage(entry);
+    this.el.remove();
+  }
+
+  private buildPanes(): void {
+    for (const pane of this.panes) {
+      if (pane.scrollFrame) cancelAnimationFrame(pane.scrollFrame);
+      pane.root.remove();
+    }
+    this.panes.length = 0;
+    const kinds: Array<"single" | "left" | "right"> = this.spread
+      ? ["left", "right"]
+      : ["single"];
+    for (const kind of kinds) this.panes.push(this.makePane(kind));
+  }
+
+  private makePane(kind: "single" | "left" | "right"): Pane {
+    const root = document.createElement("div");
+    root.className = "pdf-pane";
+    const pages = document.createElement("div");
+    pages.className = "pdf-pane__pages";
+    root.append(pages);
+
+    // In a spread the right pane starts at page 2 and gets one extra blank
+    // sheet after an odd final page. That is what the old derived document
+    // drew: the last page sits beside a blank half rather than alone, and the
+    // blank is never duplicated from the left pane.
+    const indexes: number[] = [];
+    if (kind === "single" || kind === "left") {
+      for (let index = 1; index <= this.doc.numPages; index++) indexes.push(index);
+    } else {
+      for (let index = 2; index <= this.doc.numPages; index++) indexes.push(index);
+      indexes.push(this.doc.numPages + 1);
+    }
+
+    const pane: Pane = {
+      root,
+      pages,
+      slots: new Map(),
+      order: [],
+      expectedScroll: null,
+      scrollFrame: 0,
+    };
+
+    for (const index of indexes) {
+      const blank = index > this.doc.numPages;
+      // A zero-page document still needs a shape for the tail sheet. Fall back
+      // to A4 rather than reading past the (empty) size table.
+      const size = blank
+        ? (this.sizes[0] ?? { width: 595, height: 842 })
+        : this.sizes[index - 1];
+      const el = document.createElement("div");
+      el.className = blank ? "pdf-page pdf-page--blank" : "pdf-page";
+      el.dataset.page = String(index);
+      const slot: PageSlot = {
+        index,
+        el,
+        naturalWidth: size.width,
+        naturalHeight: size.height,
+        cssWidth: 0,
+        cssHeight: 0,
+        top: 0,
+        scale: 1,
+        blank,
+        pending: false,
+        renderSeq: 0,
+      };
+      pane.slots.set(index, slot);
+      pane.order.push(slot);
+      pages.append(el);
+    }
+
+    root.addEventListener("scroll", () => this.onScroll(pane), { passive: true });
+    this.wrap.append(root);
+    return pane;
+  }
+
+  /** Recompute every page's fitted size, keeping the reading position. */
+  private scheduleRelayout(): void {
+    if (this.destroyed || this.layoutFrame) return;
+    this.layoutFrame = requestAnimationFrame(() => {
+      this.layoutFrame = 0;
+      this.relayout();
+    });
+  }
+
+  private relayout(): void {
+    if (this.destroyed || !this.panes.length) return;
+    const positions = this.panes.map((pane) => this.positionOf(pane));
+    // The cache holds bitmaps at the old scale; they are worthless now.
+    this.layoutEpoch++;
+    for (const entry of Array.from(pageCache.values())) dropCachedPage(entry);
+
+    for (const pane of this.panes) {
+      const width = pane.root.clientWidth;
+      const height = pane.root.clientHeight;
+      if (width <= 0 || height <= 0) continue; // hidden (settings pane)
+      const usableWidth = Math.max(1, width - PAGE_MARGIN * 2);
+      const usableHeight = Math.max(1, height - PAGE_MARGIN * 2);
+
+      for (const slot of pane.order) {
+        let scale: number;
+        if (typeof this.zoom === "number") {
+          scale = this.zoom / 100;
+        } else if (this.zoom === "fit-width") {
+          scale = usableWidth / slot.naturalWidth;
+        } else {
+          scale = usableHeight / slot.naturalHeight;
+        }
+        // Guard against a zero-sized page or a collapsed pane producing
+        // Infinity/0, which would make the layout arithmetic unusable.
+        scale = Math.max(0.05, Math.min(scale, 8));
+        slot.scale = scale;
+        slot.cssWidth = slot.naturalWidth * scale;
+        slot.cssHeight = slot.naturalHeight * scale;
+        slot.el.style.width = `${slot.cssWidth}px`;
+        slot.el.style.height = `${slot.cssHeight}px`;
+      }
+      this.measureOffsets(pane);
+    }
+
+    this.panes.forEach((pane, index) => {
+      const position = positions[index];
+      if (position) this.scrollToPosition(pane, position.page, position.ratio);
+    });
+    this.renderAll();
+  }
+
+  private measureOffsets(pane: Pane): void {
+    const rootBox = pane.root.getBoundingClientRect();
+    const scrollTop = pane.root.scrollTop;
+    for (const slot of pane.order) {
+      const box = slot.el.getBoundingClientRect();
+      slot.top = box.top - rootBox.top + scrollTop;
+    }
+  }
+
+  private positionOf(pane: Pane): { page: number; ratio: number } {
+    const top = pane.root.scrollTop;
+    let slot = pane.order[0];
+    for (const candidate of pane.order) {
+      if (candidate.top <= top + 1) slot = candidate;
+      else break;
+    }
+    if (!slot) return { page: 1, ratio: 0 };
+    const ratio =
+      slot.cssHeight > 0
+        ? Math.max(0, Math.min(1, (top - slot.top) / slot.cssHeight))
+        : 0;
+    return { page: slot.index, ratio };
+  }
+
+  private scrollToPosition(pane: Pane, page: number, ratio: number): void {
+    if (!pane.order.length) return;
+    let slot = pane.slots.get(page);
+    if (!slot) {
+      slot = page < pane.order[0].index ? pane.order[0] : pane.order[pane.order.length - 1];
+    }
+    const max = Math.max(0, pane.root.scrollHeight - pane.root.clientHeight);
+    const top = Math.max(0, Math.min(slot.top + slot.cssHeight * ratio, max));
+    pane.expectedScroll = top;
+    pane.root.scrollTop = top;
+  }
+
+  private onScroll(pane: Pane): void {
+    if (this.destroyed || pane.scrollFrame) return;
+    pane.scrollFrame = requestAnimationFrame(() => {
+      pane.scrollFrame = 0;
+      if (this.destroyed) return;
+      if (pane.expectedScroll !== null) {
+        const settled = Math.abs(pane.root.scrollTop - pane.expectedScroll) <= 1;
+        pane.expectedScroll = null;
+        if (settled) {
+          // This was our own scroll being echoed back; the other pane was
+          // already positioned. Do not sync again or the pair would oscillate.
+          this.renderVisible(pane);
+          return;
+        }
+      }
+      const position = this.positionOf(pane);
+      this.syncFrom(pane, position.page, position.ratio);
+      this.renderVisible(pane);
+    });
+  }
+
+  /** Mirror one pane's page + intra-page fraction onto the other pane. */
+  private syncFrom(source: Pane, page: number, ratio: number): void {
+    if (!this.spread || this.panes.length < 2) {
+      this.onPageChange?.(Math.max(1, Math.min(page, this.doc.numPages)));
+      return;
+    }
+    const [left, right] = this.panes;
+    let leftPage: number;
+    if (source === left) {
+      leftPage = Math.max(1, Math.min(page, this.doc.numPages));
+      this.scrollToPosition(right, Math.min(leftPage + 1, this.doc.numPages + 1), ratio);
+    } else {
+      leftPage = Math.max(1, Math.min(page - 1, this.doc.numPages));
+      this.scrollToPosition(left, leftPage, ratio);
+    }
+    this.renderVisible(source === left ? right : left);
+    this.onPageChange?.(leftPage);
+  }
+
+  private renderAll(): void {
+    for (const pane of this.panes) this.renderVisible(pane);
+  }
+
+  private renderVisible(pane: Pane): void {
+    if (this.destroyed || pane.root.clientHeight <= 0) return;
+    const top = pane.root.scrollTop;
+    const bottom = top + pane.root.clientHeight;
+    for (const slot of pane.order) {
+      if (slot.top >= bottom) break;
+      if (slot.top + slot.cssHeight <= top) continue;
+      this.requestPage(pane, slot);
+    }
+  }
+
+  private requestPage(pane: Pane, slot: PageSlot): void {
+    if (slot.blank) return;
+    const cached = pageCache.get(slot.index);
+    if (cached && Math.abs(cached.scale - slot.scale) < 0.001) {
+      cached.stamp = ++pageCacheStamp;
+      this.attach(slot, cached.canvas, slot.cssWidth, slot.cssHeight);
+      return;
+    }
+    if (slot.pending) return;
+    slot.pending = true;
+    const seq = ++slot.renderSeq;
+    void this.renderPage(pane, slot, seq).finally(() => {
+      // A superseded render must not clear the flag of the one that replaced
+      // it; only the owner settles its own slot.
+      if (slot.renderSeq === seq) slot.pending = false;
+    });
+  }
+
+  private attach(
+    slot: PageSlot,
+    canvas: HTMLCanvasElement,
+    width: number,
+    height: number,
+  ): void {
+    if (slot.el.firstElementChild !== canvas) slot.el.replaceChildren(canvas);
+    canvas.style.width = `${width}px`;
+    canvas.style.height = `${height}px`;
+  }
+
+  private async renderPage(pane: Pane, slot: PageSlot, seq: number): Promise<void> {
+    const epoch = this.layoutEpoch;
+    try {
+      const page = await this.doc.getPage(slot.index);
+      if (this.destroyed) return;
+      if (epoch !== this.layoutEpoch) {
+        // The zoom or pane size changed while this page was being fetched, so
+        // the work above is stale. Nothing else re-asks for this slot — its
+        // `pending` flag kept the relayout's own pass from starting one — so
+        // ask again here at the new scale.
+        this.retryAfterRelayout(pane, slot, seq);
+        return;
+      }
+
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const viewport = page.getViewport({ scale: slot.scale * dpr });
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.floor(viewport.width));
+      canvas.height = Math.max(1, Math.floor(viewport.height));
+      const context = canvas.getContext("2d", { alpha: false });
+      if (!context) throw new Error("canvas 2D context unavailable");
+      // An `alpha: false` canvas starts opaque black, and pdf.js only paints
+      // the page white when it begins rendering. Fill now so a page that is
+      // still decoding looks like paper rather than a black hole.
+      context.fillStyle = "#ffffff";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+
+      // A copy at the old scale must go before its key is reused.
+      const previous = pageCache.get(slot.index);
+      if (previous) dropCachedPage(previous);
+
+      this.evictIfNeeded(slot.index);
+      const entry: CachedPage = {
+        index: slot.index,
+        canvas,
+        page,
+        task: null,
+        scale: slot.scale,
+        stamp: ++pageCacheStamp,
+      };
+      pageCache.set(slot.index, entry);
+      this.attach(slot, canvas, slot.cssWidth, slot.cssHeight);
+
+      const task = page.render({
+        canvasContext: context,
+        viewport,
+        background: "#ffffff",
+      });
+      entry.task = task;
+      await task.promise;
+      entry.task = null;
+      entry.stamp = ++pageCacheStamp;
+    } catch (err) {
+      if (this.destroyed) return;
+      if (epoch !== this.layoutEpoch) {
+        this.retryAfterRelayout(pane, slot, seq);
+        return;
+      }
+      if (isRenderCancelled(err)) return;
+      appendLog(t("log.pageRenderFailed", { page: slot.index, error: String(err) }));
+    }
+  }
+
+  /** Ask for a slot again after a relayout invalidated its in-flight render. */
+  private retryAfterRelayout(pane: Pane, slot: PageSlot, seq: number): void {
+    if (slot.renderSeq !== seq) return; // a newer render already owns the slot
+    slot.pending = false;
+    this.renderVisible(pane);
+  }
+
+  private evictIfNeeded(keepIndex: number): void {
+    if (pageCache.size < PAGE_CACHE_LIMIT) return;
+    const visible = new Set<number>();
+    for (const pane of this.panes) {
+      const top = pane.root.scrollTop;
+      const bottom = top + pane.root.clientHeight;
+      for (const slot of pane.order) {
+        if (slot.top < bottom && slot.top + slot.cssHeight > top) visible.add(slot.index);
+      }
+    }
+    const findVictim = (skipVisible: boolean): CachedPage | undefined => {
+      let victim: CachedPage | undefined;
+      for (const entry of pageCache.values()) {
+        if (entry.index === keepIndex) continue;
+        if (skipVisible && visible.has(entry.index)) continue;
+        if (!victim || entry.stamp < victim.stamp) victim = entry;
+      }
+      return victim;
+    };
+    // Prefer a page nobody is looking at; if all three are on screen, take the
+    // least recently used anyway rather than breaking the cache bound.
+    const victim = findVictim(true) ?? findVictim(false);
+    if (victim) dropCachedPage(victim);
+  }
+}
+
+// --- preview wiring --------------------------------------------------------
+
+interface LoadedPreview {
+  path: string;
+  doc: PdfDocument;
+  view: PdfPreviewView;
+}
+
+/** The document on screen, if one has finished loading. */
+let loadedPreview: LoadedPreview | null = null;
+/** Invalidates async loads when the preview target changes. */
+let previewToken = 0;
+/** The path currently being read/parsed, so repaints do not start it twice. */
+let loadingPreviewPath: string | null = null;
+
+function overlayNodes(): HTMLElement[] {
+  return VIEWER_OVERLAYS.map((id) => $(id));
+}
+
+/** Drop the current document and its viewer (the page cache goes with it). */
+function releaseLoadedPreview(): void {
+  loadingPreviewPath = null;
+  if (!loadedPreview) return;
+  const { view, doc } = loadedPreview;
+  loadedPreview = null;
+  view.destroy();
+  void doc.destroy().catch(() => {
+    // A load cancelled before it finished may already have torn the worker
+    // down; there is nothing left to report.
+  });
 }
 
 /**
  * The pages a spread shows, in order.
  *
  * Two adjacent pages, except at the end of an odd-length document where there
- * is only one left. Pages are 1-based, matching both the viewer fragment and
- * `state.page`.
+ * is only one left. Pages are 1-based, matching `state.page`.
  */
 function spreadPages(state: { page: number; pages: number }): number[] {
   const first = state.page;
@@ -1645,87 +2198,123 @@ function spreadPages(state: { page: number; pages: number }): number[] {
 }
 
 /**
- * Derived spread documents, keyed by source path.
- *
- * Building one rewrites every page, so the result is kept for the session and
- * the engine also caches it on disk. Cleared on locale change? No — the path
- * does not depend on language; it is dropped when a tab closes.
- */
-const spreadFiles = new Map<string, string>();
-
-/**
- * Make sure a spread document exists for `file`, returning its path.
- *
- * Rejects rather than falling back to the source: showing the single-page
- * document in spread mode would look like the toggle silently failed.
- */
-async function ensureSpread(file: string): Promise<string> {
-  const cached = spreadFiles.get(file);
-  if (cached) return cached;
-  const result = await api.request<{ path: string }>("pdf.spread", { path: file });
-  spreadFiles.set(file, result.path);
-  return result.path;
-}
-
-/**
  * Repaint the preview for the active tab, page and zoom.
  *
- * Always exactly one frame, including in spread mode: the facing pages are
- * combined into a derived document by the engine, so there is one viewer and
- * one scrollbar. Two frames would each own a scrollbar and could not be kept in
- * step — the viewer runs out of process and does not report its scroll offset.
- *
- * The frame is built fresh rather than having its `src` updated: changing the
- * fragment of an already-loaded viewer frame does NOT navigate, so replacing
- * the element is the only way to move to another page or zoom level.
+ * The loaded pdf.js document is kept across repaints: changing page or zoom
+ * only moves/scales the existing panes, it never re-reads the file. A different
+ * tab (or none) replaces the document and cancels any load still in flight.
  */
 function renderPreview(): void {
   const host = $("preview-host");
-  // Every overlay lives inside the host, so clearing it would delete them along
-  // with the frame. Detach and re-append them: they are absolutely positioned,
-  // so their place in the flow does not matter.
-  const overlays = VIEWER_OVERLAYS.map((id) => $(id));
-  host.innerHTML = "";
-  host.append(...overlays);
   const source = previewSource();
+
   if (!source) {
-    const empty = document.createElement("div");
-    empty.className = "preview__empty";
-    const title = document.createElement("p");
-    title.className = "preview__empty-title";
-    title.textContent = t("preview.emptyTitle");
-    const hint = document.createElement("p");
-    hint.className = "preview__empty-hint";
-    hint.textContent = t("preview.emptyHint");
-    empty.append(title, hint);
-    host.append(empty);
+    previewToken++;
+    releaseLoadedPreview();
+    host.replaceChildren(...overlayNodes());
+    paintEmpty(t("preview.emptyTitle"), t("preview.emptyHint"));
     return;
   }
 
-  const state = stateFor(source);
-  const spreadPath = spreadMode ? spreadFiles.get(source) : undefined;
-  if (spreadMode && !spreadPath) {
-    // The file has not been built yet. `toggleSpread` and `activateTab` build it
-    // before asking for a repaint, so this is only a transient state; showing
-    // the source meanwhile is better than an empty pane.
-    paintEmpty(t("preview.spreadPending"));
+  if (loadedPreview && loadedPreview.path === source) {
+    loadedPreview.view.configure(previewZoom, spreadMode, stateFor(source).page);
     return;
   }
 
-  const frame = document.createElement("iframe");
-  frame.className = "preview__frame";
-  // In spread mode the derived document has one page per pair, so the page
-  // number is halved (and rounded up: source page 3 lives on spread page 2).
-  const page = spreadPath ? Math.ceil(state.page / 2) : state.page;
-  frame.src = viewerUrl(spreadPath ?? source, page);
-  // A drag may be in flight; a freshly built frame must not become droppable
-  // again underneath it.
-  if (!frameDroppable) frame.style.pointerEvents = "none";
-  host.append(frame);
+  // A load for this tab is already running; its placeholder is still on screen.
+  if (loadingPreviewPath === source) return;
+
+  previewToken++;
+  const token = previewToken;
+  releaseLoadedPreview();
+  host.replaceChildren(...overlayNodes());
+  paintEmpty(t("preview.loading"));
+  loadingPreviewPath = source;
+  void openPdfPreview(source, token);
+}
+
+/** Read, decode and mount one document, unless a newer request won the race. */
+async function openPdfPreview(file: string, token: number): Promise<void> {
+  try {
+    const [pdfjs, bytes] = await Promise.all([loadPdfJs(), api.readPdf(file)]);
+    if (token !== previewToken) return;
+
+    const doc = await pdfjs.getDocument({
+      data: new Uint8Array(bytes),
+      cMapUrl: new URL("cmaps/", PDFJS_BASE).href,
+      cMapPacked: true,
+      standardFontDataUrl: new URL("standard_fonts/", PDFJS_BASE).href,
+      // Font glyph paths are built with `new Function` when this stays on, and
+      // the page's CSP refuses eval. Rendering works with it off.
+      isEvalSupported: false,
+    }).promise;
+    if (token !== previewToken) {
+      void doc.destroy().catch(() => {});
+      return;
+    }
+
+    const sizes = await measurePages(doc);
+    if (token !== previewToken) {
+      void doc.destroy().catch(() => {});
+      return;
+    }
+
+    const state = stateFor(file);
+    state.pages = doc.numPages;
+    const view = new PdfPreviewView(doc, sizes, previewZoom, spreadMode);
+    view.onPageChange = (page) => {
+      if (activeTab !== file || loadedPreview?.view !== view) return;
+      const current = stateFor(file);
+      if (current.page === page) return;
+      current.page = page;
+      updatePreviewControls();
+      flashViewerOverlay();
+    };
+
+    loadedPreview = { path: file, doc, view };
+    loadingPreviewPath = null;
+    const host = $("preview-host");
+    // Overlays are absolute children of the host; appending the viewer first
+    // keeps them painted above the scrolling canvas and still clickable.
+    host.replaceChildren(view.el, ...overlayNodes());
+    view.configure(previewZoom, spreadMode, state.page);
+    updatePreviewControls();
+  } catch (err) {
+    if (token !== previewToken) return;
+    loadingPreviewPath = null;
+    const host = $("preview-host");
+    host.replaceChildren(...overlayNodes());
+    paintEmpty(t("preview.openFailed", { error: String(err) }));
+    appendLog(t("preview.openFailed", { error: String(err) }));
+  }
+}
+
+/**
+ * Measure every page once, so placeholders have the right shape before any of
+ * them is rendered. A modest concurrency cap keeps a long document from
+ * queueing hundreds of page parses at once.
+ */
+async function measurePages(doc: PdfDocument): Promise<PageSize[]> {
+  const sizes = new Array<PageSize>(doc.numPages);
+  let next = 1;
+  const worker = async (): Promise<void> => {
+    while (next <= doc.numPages) {
+      const index = next++;
+      const page = await doc.getPage(index);
+      const viewport = page.getViewport({ scale: 1 });
+      sizes[index - 1] = { width: viewport.width, height: viewport.height };
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(8, doc.numPages) }, () => worker()));
+  // pdf.js keeps every page proxy it has handed out for the document's whole
+  // life. Measurement only needed the viewport, so drop them here rather than
+  // carrying a paragraph of PDF state per page until the tab is closed.
+  await doc.cleanup();
+  return sizes;
 }
 
 /** A one-line placeholder inside the preview host. */
-function paintEmpty(text: string): void {
+function paintEmpty(text: string, hint?: string): void {
   const host = $("preview-host");
   const empty = document.createElement("div");
   empty.className = "preview__empty";
@@ -1733,6 +2322,12 @@ function paintEmpty(text: string): void {
   title.className = "preview__empty-title";
   title.textContent = text;
   empty.append(title);
+  if (hint) {
+    const hintEl = document.createElement("p");
+    hintEl.className = "preview__empty-hint";
+    hintEl.textContent = hint;
+    empty.append(hintEl);
+  }
   host.append(empty);
 }
 
@@ -1875,39 +2470,22 @@ $("page-next").addEventListener("click", () => stepPage(1));
 /**
  * Turn the two-page spread on or off.
  *
- * Async because the first time a document is shown this way, the engine has to
- * build the derived file. The mode is only switched after that succeeds: a
- * toggle that flipped and then showed the single-page document would look
- * broken, so a failure leaves the view as it was and says why in the log.
+ * Both panes render the already-loaded document, so this only rebuilds the
+ * pane layout — no engine round trip and no second file.
  *
  * `page` always means the left page of the spread, so switching off lands on a
  * page that is genuinely on screen rather than on the right-hand one, which
  * would be indistinguishable from skipping forward.
  */
-async function toggleSpread(): Promise<void> {
-  const file = previewSource();
-  if (!file) return;
-  if (!spreadMode) {
-    const button = $<HTMLButtonElement>("spread-toggle");
-    button.disabled = true;
-    try {
-      await ensureSpread(file);
-    } catch (err) {
-      appendLog(t("preview.spreadFailed", { error: String(err) }));
-      return;
-    } finally {
-      button.disabled = false;
-    }
-    spreadMode = true;
-  } else {
-    spreadMode = false;
-  }
+function toggleSpread(): void {
+  if (!previewSource()) return;
+  spreadMode = !spreadMode;
   updatePreviewControls();
   renderPreview();
   flashViewerOverlay();
 }
 
-$("spread-toggle").addEventListener("click", () => void toggleSpread());
+$("spread-toggle").addEventListener("click", toggleSpread);
 
 function stepZoom(delta: number): void {
   // From either fit mode, the first press lands on the step nearest to 100% so
@@ -1956,56 +2534,32 @@ $("btn-open-file").addEventListener("click", () => {
  * this handler a no-op. The `filter(Boolean)` below is what hid that — it turns
  * "every path is undefined" into "nothing was dropped".
  *
- * An open document covers this area with the viewer's `<iframe>`, which is a
- * separate document and would take the drop itself; measured directly, the
- * parent receives `dragenter` but never `drop`. So a drag in progress switches
- * the frame off, letting the drop land here. Without this, dropping would work
- * only when nothing was open — exactly backwards for a drop zone.
+ * pdf.js renders in this document (canvas, not an `<iframe>`), so drops on an
+ * open page reach these handlers directly; the old pointer-events workaround
+ * for a cross-document viewer is gone.
  */
 const previewHost = $("preview-host");
-
-/**
- * Whether the viewer frame currently accepts pointer events.
- *
- * Tracked as well as applied, because `renderPreview()` builds a fresh frame
- * and a new element would come back interactive even in the middle of a drag.
- */
-let frameDroppable = true;
-
-function setFrameDroppable(droppable: boolean): void {
-  frameDroppable = droppable;
-  for (const frame of previewHost.querySelectorAll<HTMLIFrameElement>(".preview__frame")) {
-    frame.style.pointerEvents = droppable ? "" : "none";
-  }
-}
 
 /**
  * Whether a drag carries files rather than one of the app's own drags.
  *
  * Reordering a tab also fires `dragenter` on the document, and without this
- * test that would switch the viewer frame off and light up the drop outline —
- * so dragging a tab across the window would look like a file about to be
- * dropped, and dropping it there would run the file handler on no files.
+ * test that would light up the drop outline — so dragging a tab across the
+ * window would look like a file about to be dropped, and dropping it there
+ * would run the file handler on no files.
  */
 function isFileDrag(e: DragEvent): boolean {
   return Array.from(e.dataTransfer?.types ?? []).includes("Files");
 }
 
-// Listened for on `document`, not on the host: with a document open the frame
-// swallows events aimed at the host, and this is the one event that still
-// reaches the parent, so it is where the frame has to be switched off.
 document.addEventListener("dragenter", (e) => {
   if (!isFileDrag(e)) return;
-  setFrameDroppable(false);
   previewHost.classList.add("preview__host--over");
 });
 document.addEventListener("dragleave", (e) => {
   // Only when the pointer has actually left the window; moving between elements
   // fires this constantly and would make the highlight flicker.
-  if (!e.relatedTarget) {
-    setFrameDroppable(true);
-    previewHost.classList.remove("preview__host--over");
-  }
+  if (!e.relatedTarget) previewHost.classList.remove("preview__host--over");
 });
 previewHost.addEventListener("dragover", (e) => {
   if (!isFileDrag(e)) return;
@@ -2015,7 +2569,6 @@ previewHost.addEventListener("dragover", (e) => {
 previewHost.addEventListener("drop", (e) => {
   if (!isFileDrag(e)) return;
   e.preventDefault();
-  setFrameDroppable(true);
   previewHost.classList.remove("preview__host--over");
   const files = Array.from(e.dataTransfer?.files ?? []);
   const paths = files.map((f) => api.pathForFile(f)).filter((p): p is string => Boolean(p));

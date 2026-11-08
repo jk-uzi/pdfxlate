@@ -2,7 +2,7 @@
 
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, shell } from "electron";
 import { existsSync } from "node:fs";
-import { copyFile, readdir } from "node:fs/promises";
+import { copyFile, readFile, readdir, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -147,11 +147,6 @@ function createWindow(): void {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
-      // Required by the PDF preview: Chromium's built-in viewer is a plugin,
-      // and with this off the frame loads as a blank page. It only ever loads
-      // local file:// PDFs the user picked; the renderer's CSP still refuses
-      // remote content and inline script.
-      plugins: true,
     },
   });
 
@@ -347,6 +342,34 @@ function registerIpc(): void {
       ...(await scan(dir, false)),
       ...(await scan(path.join(dir, TRANSLATED_SUBDIR), true)),
     ];
+  });
+
+  /**
+   * Read one PDF's bytes for the renderer's pdf.js preview.
+   *
+   * `fetch('file://…')` is not an option: a renderer loaded from `file://`
+   * has an opaque origin, so CORS refuses the response and CSP treats the
+   * request as cross-origin. The main process has filesystem access, reads the
+   * file and hands back a structured-cloned ArrayBuffer instead.
+   *
+   * Read-only, and narrower than the listing handlers: only an existing
+   * regular file with a `.pdf` extension is served. The renderer only ever
+   * asks for paths it received from the folder scan, the open dialog or a
+   * drop, so this keeps the same posture — page code cannot turn this into a
+   * general file-read primitive for arbitrary extensions.
+   */
+  ipcMain.handle("app:readPdf", async (_event, file: string) => {
+    if (typeof file !== "string" || !file.trim()) throw new Error("no file given");
+    if (!file.toLowerCase().endsWith(".pdf")) {
+      throw new Error(`not a PDF file: ${file}`);
+    }
+    const target = path.resolve(file);
+    const info = await stat(target);
+    if (!info.isFile()) throw new Error(`not a regular file: ${target}`);
+    const data = await readFile(target);
+    // A Node Buffer may share a pooled ArrayBuffer; copy the exact range so
+    // the renderer never receives bytes belonging to another allocation.
+    return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
   });
 
   ipcMain.handle("dialog:pickPdf", async (_event, locale?: string) => {

@@ -1068,17 +1068,6 @@ body.is-resizing .sidebar {
 }
 
 /*
- * The pointer leaves this document the moment it crosses into the PDF viewer,
- * which is an `<iframe>` with its own event target. Its moves never reach the
- * parent, so the width froze until the pointer came back — the drag stuttered in
- * exactly the direction people drag it. Taking the frame out of hit-testing for
- * the duration keeps every move in this document.
- */
-body.is-resizing .preview__frame {
-  pointer-events: none;
-}
-
-/*
  * Collapsed sidebar, driven from a class on `<body>` rather than per element:
  * there are two sidebars (task and settings) and both must move together.
  *
@@ -1900,7 +1889,7 @@ input[readonly] {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  /* Matches the Chromium PDF viewer's own canvas so the frame edges blend in. */
+  /* The pdf.js page backdrop, so the pane edges blend into the page area. */
   background: #525659;
 }
 
@@ -1918,24 +1907,16 @@ input[readonly] {
   text-align: center;
 }
 
-/* Host for the viewer iframes. */
+/* Host for the pdf.js viewer panes and the floating controls. */
 .preview__host {
   flex: 1 1 auto;
   min-height: 0;
   display: flex;
   position: relative;
   /*
-   * An intentional margin around the document, not decoration.
-   *
-   * The viewer is an `<iframe>` — a separate document — so a file dragged
-   * straight onto it delivers its events to the viewer, and the app's own drop
-   * handler never runs. Measured directly: entering the window over the frame,
-   * or at the window edge, produced no events at all in the parent. This strip
-   * belongs to the parent, so a drag entering here is seen, and the parent can
-   * then claim the rest of the drag.
-   *
-   * It also reads as a border around the page, which is what makes the drop
-   * area visible rather than something you have to know about.
+   * An intentional margin around the document, not decoration. It reads as a
+   * border around the page and gives the drop outline somewhere to draw; the
+   * page itself gets its own margin inside each scroll pane.
    */
   padding: 6px;
 }
@@ -2131,20 +2112,77 @@ body.overlays-pinned .viewer-saveas {
 }
 
 /*
- * The page area.
+ * The page area, rendered by pdf.js in this document.
  *
- * Always one frame, including in spread mode: the facing pages are combined
- * into a single derived document by the engine, so the viewer owns one
- * scrollbar. Two frames would each scroll independently and could not be kept
- * in step — the viewer runs out of process and never reports its scroll offset.
+ * Single-page mode is one scroll pane; spread mode is two panes side by side.
+ * Each pane owns its scrollbar, and app.ts keeps them in step by page number
+ * and the fraction scrolled into that page — not absolute pixels, which would
+ * drift whenever facing pages differ in height.
  */
-.preview__frame {
-  flex: 1 1 0;
-  width: 100%;
-  height: 100%;
+.preview__viewer {
+  flex: 1 1 auto;
   min-width: 0;
-  border: 0;
+  min-height: 0;
+  display: flex;
+}
+
+.preview__panes {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+
+.pdf-pane {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+  overflow: auto;
+  /* Reserve the vertical scrollbar's width whether or not it is showing, so a
+   * fit-width page does not resize itself when the scrollbar appears. */
+  scrollbar-gutter: stable;
+  background: #525659;
+}
+
+/* A hairline between the two sheets; in single-page mode there is no divider. */
+.pdf-pane + .pdf-pane {
+  border-left: 1px solid #2c2f31;
+}
+
+.pdf-pane__pages {
+  position: relative;
+  box-sizing: border-box;
+  min-height: 100%;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  /*
+   * Cross-axis alignment is left to the page's own auto margins. `center`
+   * here would make a page wider than the pane overflow equally on both
+   * sides, and the left half would sit at a negative scroll offset that no
+   * scrollbar can reach. Auto margins center while there is room and fall
+   * back to zero when the page is wider than the pane.
+   */
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.pdf-page {
+  position: relative;
+  flex: none;
+  margin: 0 auto;
+  background: #ffffff;
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.4);
+}
+
+.pdf-page canvas {
   display: block;
+}
+
+/* The tail sheet beside an odd final page: blank, but the same size. */
+.pdf-page--blank {
+  background: #ffffff;
 }
 
 .preview__empty {
